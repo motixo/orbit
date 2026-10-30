@@ -2,6 +2,8 @@
 
 mod app;
 mod i18n;
+mod shelf;
+mod transfer;
 
 fn main() -> cosmic::iced::Result {
     let languages = i18n_embed::DesktopLanguageRequester::requested_languages();
