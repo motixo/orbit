@@ -7,6 +7,7 @@ use crate::{
 };
 use cosmic::cctk::sctk::shell::wlr_layer::{Anchor, KeyboardInteractivity, Layer};
 use cosmic::{
+    Application,
     iced::{self, Alignment, Length, Subscription, keyboard, window},
     prelude::*,
     widget,
@@ -14,7 +15,10 @@ use cosmic::{
 use iced::clipboard::dnd::DndAction;
 use iced::platform_specific::{
     runtime::wayland::layer_surface::{IcedMargin, SctkLayerSurfaceSettings},
-    shell::commands::layer_surface::{destroy_layer_surface, get_layer_surface},
+    shell::commands::{
+        activation,
+        layer_surface::{destroy_layer_surface, get_layer_surface},
+    },
 };
 use std::path::PathBuf;
 
@@ -124,10 +128,8 @@ impl cosmic::Application for Orbit {
         }
         if self.pinned.is_some() {
             Task::none()
-        } else if let Some(id) = self.core.main_window_id() {
-            iced::window::minimize(id, false).chain(iced::window::gain_focus(id))
         } else {
-            Task::none()
+            self.restore_window(None)
         }
     }
 
@@ -261,12 +263,10 @@ impl cosmic::Application for Orbit {
             Message::Noop => (),
             Message::TogglePin => {
                 if let Some(id) = self.pinned.take() {
-                    let mut tasks = vec![destroy_layer_surface(id)];
-                    if let Some(main) = self.core.main_window_id() {
-                        tasks.push(iced::window::minimize(main, false));
-                        tasks.push(iced::window::gain_focus(main));
-                    }
-                    return Task::batch(tasks);
+                    // Keep the focused layer alive until its activation token is issued.
+                    return self
+                        .restore_window(Some(id))
+                        .chain(destroy_layer_surface(id));
                 }
                 let id = window::Id::unique();
                 self.pinned = Some(id);
@@ -298,6 +298,20 @@ impl cosmic::Application for Orbit {
 }
 
 impl Orbit {
+    fn restore_window(&self, source: Option<window::Id>) -> Task<cosmic::Action<Message>> {
+        let Some(main) = self.core.main_window_id() else {
+            return Task::none();
+        };
+        // Wayland restores minimized windows through xdg-activation.
+        activation::request_token(Some(Self::APP_ID.into()), source).then(move |token| {
+            if let Some(token) = token {
+                activation::activate(main, token)
+            } else {
+                iced::window::gain_focus(main)
+            }
+        })
+    }
+
     fn pin_button(&self) -> Element<'_, Message> {
         let label = if self.pinned.is_some() {
             fl!("unpin-shelf")
