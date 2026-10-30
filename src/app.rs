@@ -339,7 +339,7 @@ impl Orbit {
         let body: Element<_> = if self.shelf.items.is_empty() {
             widget::container(
                 widget::column::with_children(vec![
-                    widget::icon::from_name("folder-download-symbolic")
+                    widget::icon::from_name("folder-symbolic")
                         .size(32)
                         .icon()
                         .content_fit(iced::ContentFit::Contain)
