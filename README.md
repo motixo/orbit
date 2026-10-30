@@ -6,6 +6,9 @@ The header's **+** opens an independent shelf. From a pinned shelf, the new shel
 opens pinned beside it. Collect files with drag and drop or Ctrl+V. Ctrl+O adds
 files; Ctrl+Shift+O adds folders.
 
+Floating shelves stay above normal windows and appear on every workspace using
+COSMIC's sticky window layer.
+
 Dragging files out requests Move from the destination. After a successful drop,
 their shelf entries are removed and the shelf closes if empty. Cancelled drags
 keep their files.

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
+mod always_on_top;
 mod app;
 mod i18n;
 mod pin;
@@ -48,6 +49,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .min_height(size)
                 .max_height(size),
         );
+    always_on_top::start()?;
     cosmic::app::run_single_instance::<app::Orbit>(
         settings,
         app::Flags {
