@@ -4,7 +4,7 @@ use crate::{
     fl,
     pin::{Area, Motion, Placement, Startup},
     shelf::{Item, Shelf},
-    transfer::{FileList, URI_LIST},
+    transfer::{DragFiles, FileList, URI_LIST},
 };
 use cosmic::cctk::sctk::shell::wlr_layer::{Anchor, KeyboardInteractivity, Layer};
 use cosmic::{
@@ -1033,9 +1033,9 @@ impl Orbit {
             widget::Id::new(format!("orbit-source-{window:?}-{id}")),
         )
         .window(window)
-        .action(DndAction::Copy)
+        .action(DndAction::Move)
         .on_start(Some(Message::DragStarted(paths.clone())))
-        .drag_content(move || FileList(paths.clone()))
+        .drag_content(move || DragFiles(FileList(paths.clone())))
         .drag_icon(move |_| {
             let icon: Element<'static, ()> = widget::container(widget::text::body(label.clone()))
                 .padding(12)

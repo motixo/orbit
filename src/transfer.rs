@@ -75,6 +75,23 @@ impl AsMimeTypes for FileList {
     }
 }
 
+pub struct DragFiles(pub FileList);
+
+impl AsMimeTypes for DragFiles {
+    fn available(&self) -> Cow<'static, [String]> {
+        // The drag action carries Move; keep the clipboard's copy format out of the offer.
+        Cow::Owned(vec![URI_LIST.into()])
+    }
+
+    fn as_bytes(&self, mime: &str) -> Option<Cow<'static, [u8]>> {
+        if mime == URI_LIST {
+            self.0.as_bytes(mime)
+        } else {
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
