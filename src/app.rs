@@ -18,6 +18,22 @@ use iced::platform_specific::{
 };
 use std::path::PathBuf;
 
+pub struct Flags {
+    pub uris: Vec<String>,
+    pub action: String,
+}
+
+impl cosmic::app::CosmicFlags for Flags {
+    type SubCommand = String;
+    type Args = Vec<String>;
+    fn action(&self) -> Option<&String> {
+        Some(&self.action)
+    }
+    fn args(&self) -> Vec<&str> {
+        self.uris.iter().map(String::as_str).collect()
+    }
+}
+
 pub struct Orbit {
     core: cosmic::Core,
     shelf: Shelf,
@@ -46,7 +62,7 @@ pub enum Message {
 
 impl cosmic::Application for Orbit {
     type Executor = cosmic::executor::Default;
-    type Flags = ();
+    type Flags = Flags;
     type Message = Message;
     const APP_ID: &'static str = "io.github.motixo.Orbit";
 
@@ -57,7 +73,7 @@ impl cosmic::Application for Orbit {
         &mut self.core
     }
 
-    fn init(core: cosmic::Core, (): ()) -> (Self, Task<cosmic::Action<Message>>) {
+    fn init(core: cosmic::Core, flags: Flags) -> (Self, Task<cosmic::Action<Message>>) {
         let mut app = Self {
             core,
             shelf: Shelf::default(),
@@ -66,6 +82,9 @@ impl cosmic::Application for Orbit {
             pinned: None,
         };
         app.set_header_title(fl!("app-title"));
+        if !flags.uris.is_empty() {
+            let _ = app.update(Message::Incoming(files_from_uris(flags.uris)));
+        }
         let title = app
             .core
             .main_window_id()
@@ -80,6 +99,30 @@ impl cosmic::Application for Orbit {
 
     fn header_end(&self) -> Vec<Element<'_, Message>> {
         vec![self.pin_button()]
+    }
+
+    fn dbus_activation(
+        &mut self,
+        message: cosmic::dbus_activation::Message,
+    ) -> Task<cosmic::Action<Message>> {
+        use cosmic::dbus_activation::Details;
+        let incoming = match message.msg {
+            Details::Open { url } => Some(url.into_iter().map(|url| url.to_string()).collect()),
+            Details::ActivateAction { action, args } if action == "collect" && !args.is_empty() => {
+                Some(args)
+            }
+            _ => None,
+        };
+        if let Some(uris) = incoming {
+            let _ = self.update(Message::Incoming(files_from_uris(uris)));
+        }
+        if self.pinned.is_some() {
+            Task::none()
+        } else if let Some(id) = self.core.main_window_id() {
+            iced::window::minimize(id, false).chain(iced::window::gain_focus(id))
+        } else {
+            Task::none()
+        }
     }
 
     fn view_window(&self, id: window::Id) -> Element<'_, Message> {
@@ -496,4 +539,9 @@ impl Orbit {
         .on_cancel(Some(Message::DragFinished))
         .into()
     }
+}
+
+fn files_from_uris(uris: Vec<String>) -> Result<FileList, String> {
+    FileList::try_from((uris.join("\r\n").into_bytes(), URI_LIST.into()))
+        .map_err(|_| fl!("unsupported-files"))
 }
