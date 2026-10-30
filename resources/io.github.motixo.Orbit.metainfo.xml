@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.motixo.Orbit</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-only</project_license>
+  <developer id="io.github.motixo"><name>Orbit contributors</name></developer>
+  <name>Orbit</name>
+  <summary>A floating file shelf for the COSMIC desktop</summary>
+  <description>
+    <p>Collect files and folders from different locations on a temporary shelf,
+    then drag them together to your destination. Orbit keeps references to your
+    files and leaves the originals in place.</p>
+  </description>
+  <launchable type="desktop-id">io.github.motixo.Orbit.desktop</launchable>
+  <provides><binary>orbit</binary></provides>
+  <categories><category>Utility</category><category>FileTools</category></categories>
+  <supports><control>keyboard</control><control>pointing</control></supports>
+  <content_rating type="oars-1.1"/>
+  <releases><release version="0.1.0" date="2026-10-30"/></releases>
+</component>
