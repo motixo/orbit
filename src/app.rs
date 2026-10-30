@@ -2,6 +2,7 @@
 
 use crate::{
     fl,
+    pin::{Area, Placement},
     shelf::{Item, Shelf},
     transfer::{FileList, URI_LIST},
 };
@@ -14,10 +15,10 @@ use cosmic::{
 };
 use iced::clipboard::dnd::DndAction;
 use iced::platform_specific::{
-    runtime::wayland::layer_surface::{IcedMargin, SctkLayerSurfaceSettings},
+    runtime::wayland::layer_surface::SctkLayerSurfaceSettings,
     shell::commands::{
         activation,
-        layer_surface::{destroy_layer_surface, get_layer_surface, set_anchor},
+        layer_surface::{destroy_layer_surface, get_layer_surface, set_anchor, set_margin},
     },
 };
 use std::path::PathBuf;
@@ -46,6 +47,8 @@ pub struct Orbit {
     hovering: bool,
     status: String,
     pinned: Option<window::Id>,
+    pin_placement: Option<Placement>,
+    pin_pending: bool,
     pin_anchor: Anchor,
     drop_target: widget::Id,
 }
@@ -66,6 +69,8 @@ pub enum Message {
     DragFinished,
     Noop,
     TogglePin,
+    PinReady(Option<Area>),
+    PinReleased,
     NextCorner,
     Quit,
 }
@@ -93,6 +98,8 @@ impl cosmic::Application for Orbit {
             hovering: false,
             status: String::new(),
             pinned: None,
+            pin_placement: None,
+            pin_pending: false,
             pin_anchor: Anchor::TOP | Anchor::RIGHT,
             drop_target: widget::Id::unique(),
         };
@@ -316,9 +323,12 @@ impl cosmic::Application for Orbit {
             }
             Message::DragFinished => self.status.clear(),
             Message::Noop => (),
+            Message::PinReleased => self.pin_pending = false,
             Message::NextCorner => {
-                if let Some(id) = self.pinned {
-                    self.pin_anchor = match (
+                if let Some(id) = self.pinned
+                    && let Some(placement) = self.pin_placement.as_mut()
+                {
+                    let anchor = match (
                         self.pin_anchor.contains(Anchor::TOP),
                         self.pin_anchor.contains(Anchor::RIGHT),
                     ) {
@@ -327,16 +337,64 @@ impl cosmic::Application for Orbit {
                         (false, false) => Anchor::TOP | Anchor::LEFT,
                         (true, false) => Anchor::TOP | Anchor::RIGHT,
                     };
-                    return set_anchor(id, self.pin_anchor);
+                    match placement.move_to(anchor) {
+                        Ok(margin) => {
+                            self.status.clear();
+                            self.pin_anchor = anchor;
+                            return Task::batch([
+                                set_anchor(id, anchor),
+                                set_margin(
+                                    id,
+                                    margin.top,
+                                    margin.right,
+                                    margin.bottom,
+                                    margin.left,
+                                ),
+                            ]);
+                        }
+                        Err(_) => self.status = fl!("pin-error"),
+                    }
                 }
             }
             Message::TogglePin => {
+                if self.pin_pending {
+                    return Task::none();
+                }
                 if let Some(id) = self.pinned.take() {
+                    self.pin_pending = true;
+                    let placement = self.pin_placement.take();
                     // Keep the focused layer alive until its activation token is issued.
                     return self
                         .restore_window(Some(id))
-                        .chain(destroy_layer_surface(id));
+                        .chain(destroy_layer_surface(id))
+                        .chain(cosmic::task::future(async move {
+                            drop(placement);
+                            Message::PinReleased
+                        }));
                 }
+                if let Some(main) = self.core.main_window_id() {
+                    self.pin_pending = true;
+                    return iced::window::monitor_size(main).map(|size| {
+                        cosmic::Action::App(Message::PinReady(size.map(|size| Area {
+                            width: size.width as u32,
+                            height: size.height as u32,
+                        })))
+                    });
+                }
+            }
+            Message::PinReady(area) => {
+                self.pin_pending = false;
+                let Some(area) = area else {
+                    self.status = fl!("pin-error");
+                    return Task::none();
+                };
+                let Ok(placement) = Placement::new(area, self.pin_anchor) else {
+                    self.status = fl!("pin-error");
+                    return Task::none();
+                };
+                let margin = placement.margin;
+                self.status.clear();
+                self.pin_placement = Some(placement);
                 let id = window::Id::unique();
                 self.pinned = Some(id);
                 let settings = SctkLayerSurfaceSettings {
@@ -345,12 +403,7 @@ impl cosmic::Application for Orbit {
                     anchor: self.pin_anchor,
                     namespace: Self::APP_ID.into(),
                     keyboard_interactivity: KeyboardInteractivity::OnDemand,
-                    margin: IcedMargin {
-                        top: 12,
-                        right: 12,
-                        bottom: 12,
-                        left: 12,
-                    },
+                    margin,
                     size: Some((Some(SHELF_SIZE), Some(SHELF_SIZE))),
                     exclusive_zone: 0,
                     ..Default::default()

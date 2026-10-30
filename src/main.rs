@@ -2,6 +2,7 @@
 
 mod app;
 mod i18n;
+mod pin;
 mod shelf;
 mod transfer;
 

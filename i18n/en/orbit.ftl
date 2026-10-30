@@ -25,3 +25,4 @@ added-with-skips = Added { $added } items; { $skipped } unavailable or unsupport
 unsupported-files = Choose or copy local files and folders to collect them.
 dialog-error = Could not open the file chooser: { $error }
 new-orbit-error = Could not open Orbit.
+pin-error = Could not pin Orbit.
