@@ -9,7 +9,7 @@ use crate::{
 use cosmic::cctk::sctk::shell::wlr_layer::{Anchor, KeyboardInteractivity, Layer};
 use cosmic::{
     Application,
-    iced::{self, Alignment, Length, Subscription, keyboard, window},
+    iced::{self, Alignment, Length, Subscription, keyboard, mouse, window},
     prelude::*,
     surface::action::{LiveSettings, app_layer_shell},
     widget,
@@ -52,6 +52,9 @@ pub struct Orbit {
     pin_placement: Option<Placement>,
     pin_pending: bool,
     pin_anchor: Anchor,
+    pin_drag_start: Option<iced::Point>,
+    pin_cursor: iced::Point,
+    pin_pointer_down: bool,
     drop_target: widget::Id,
 }
 
@@ -77,7 +80,8 @@ pub enum Message {
     },
     PinReleased,
     RefreshPins,
-    NextCorner,
+    StartPinDrag,
+    PinPointer(window::Id, mouse::Event),
     Quit,
 }
 
@@ -111,6 +115,9 @@ impl cosmic::Application for Orbit {
                 .as_ref()
                 .map(|startup| startup.anchor)
                 .unwrap_or(Anchor::TOP | Anchor::RIGHT),
+            pin_drag_start: None,
+            pin_cursor: iced::Point::ORIGIN,
+            pin_pointer_down: false,
             drop_target: widget::Id::unique(),
         };
         app.set_header_title(fl!("app-title"));
@@ -171,14 +178,15 @@ impl cosmic::Application for Orbit {
         let header = widget::header_bar()
             .title(fl!("app-title"))
             .start(self.new_orbit_button())
-            .end(
-                widget::button::icon(widget::icon::from_name("object-rotate-right-symbolic"))
-                    .name(fl!("next-corner"))
-                    .on_press(Message::NextCorner),
-            )
             .end(self.pin_button())
+            .on_drag(Message::StartPinDrag)
             .on_close(Message::Quit)
             .focused(true);
+        let header = widget::mouse_area(header).interaction(if self.pin_drag_start.is_some() {
+            mouse::Interaction::Grabbing
+        } else {
+            mouse::Interaction::Grab
+        });
         widget::container(
             widget::column::with_children(vec![header.into(), self.shelf_view(id)])
                 .height(Length::Fill),
@@ -239,7 +247,24 @@ impl cosmic::Application for Orbit {
         } else {
             Subscription::none()
         };
-        Subscription::batch([keyboard, layout])
+        let pointer = if self.pinned.is_some() {
+            // The implicit Wayland grab keeps reporting motion and release outside the header.
+            iced::event::listen_with(|event, _, id| match event {
+                iced::Event::Mouse(
+                    event @ (mouse::Event::CursorMoved { .. }
+                    | mouse::Event::ButtonPressed(mouse::Button::Left)
+                    | mouse::Event::ButtonReleased(mouse::Button::Left)
+                    | mouse::Event::CursorLeft),
+                ) => Some(Message::PinPointer(id, event)),
+                iced::Event::Window(window::Event::Unfocused) => {
+                    Some(Message::PinPointer(id, mouse::Event::CursorLeft))
+                }
+                _ => None,
+            })
+        } else {
+            Subscription::none()
+        };
+        Subscription::batch([keyboard, layout, pointer])
     }
 
     fn update(&mut self, message: Message) -> Task<cosmic::Action<Message>> {
@@ -358,46 +383,66 @@ impl cosmic::Application for Orbit {
             Message::Noop => (),
             Message::PinReleased => self.pin_pending = false,
             Message::RefreshPins => {
-                if let Some(id) = self.pinned
+                if self.pin_drag_start.is_none()
+                    && let Some(id) = self.pinned
                     && let Some(placement) = self.pin_placement.as_mut()
                     && let Ok(Some(margin)) = placement.refresh(self.pin_anchor)
                 {
                     return set_margin(id, margin.top, margin.right, margin.bottom, margin.left);
                 }
             }
-            Message::NextCorner => {
-                if let Some(id) = self.pinned
-                    && let Some(placement) = self.pin_placement.as_mut()
-                {
-                    let anchor = match (
-                        self.pin_anchor.contains(Anchor::TOP),
-                        self.pin_anchor.contains(Anchor::RIGHT),
-                    ) {
-                        (true, true) => Anchor::BOTTOM | Anchor::RIGHT,
-                        (false, true) => Anchor::BOTTOM | Anchor::LEFT,
-                        (false, false) => Anchor::TOP | Anchor::LEFT,
-                        (true, false) => Anchor::TOP | Anchor::RIGHT,
-                    };
-                    match placement.move_to(anchor) {
-                        Ok(margin) => {
-                            self.status.clear();
-                            self.pin_anchor = anchor;
-                            return Task::batch([
-                                set_anchor(id, anchor),
-                                set_margin(
-                                    id,
-                                    margin.top,
-                                    margin.right,
-                                    margin.bottom,
-                                    margin.left,
-                                ),
-                            ]);
-                        }
-                        Err(_) => self.status = fl!("pin-error"),
+            Message::StartPinDrag => {
+                if self.pinned.is_some() && self.pin_pointer_down && !self.pin_pending {
+                    self.pin_drag_start = Some(self.pin_cursor);
+                }
+            }
+            Message::PinPointer(id, event) => {
+                if Some(id) != self.pinned {
+                    return Task::none();
+                }
+                match event {
+                    mouse::Event::CursorMoved { position } => self.pin_cursor = position,
+                    mouse::Event::ButtonPressed(mouse::Button::Left) => {
+                        self.pin_pointer_down = true
                     }
+                    mouse::Event::CursorLeft => {
+                        self.pin_drag_start = None;
+                        self.pin_pointer_down = false;
+                    }
+                    mouse::Event::ButtonReleased(mouse::Button::Left) => {
+                        self.pin_pointer_down = false;
+                        if self
+                            .pin_drag_start
+                            .take()
+                            .is_some_and(|start| start.distance(self.pin_cursor) >= 8.0)
+                            && let Some(placement) = self.pin_placement.as_mut()
+                        {
+                            let anchor = placement.corner_at(self.pin_cursor);
+                            match placement.move_to(anchor) {
+                                Ok(margin) => {
+                                    self.status.clear();
+                                    self.pin_anchor = anchor;
+                                    return Task::batch([
+                                        set_anchor(id, anchor),
+                                        set_margin(
+                                            id,
+                                            margin.top,
+                                            margin.right,
+                                            margin.bottom,
+                                            margin.left,
+                                        ),
+                                    ]);
+                                }
+                                Err(_) => self.status = fl!("pin-error"),
+                            }
+                        }
+                    }
+                    _ => (),
                 }
             }
             Message::TogglePin => {
+                self.pin_drag_start = None;
+                self.pin_pointer_down = false;
                 if self.pin_pending {
                     return Task::none();
                 }

@@ -6,6 +6,8 @@ The header's **+** opens an independent shelf. From a pinned shelf, the new shel
 opens pinned beside it. Collect files with drag and drop or Ctrl+V. Ctrl+O adds
 files; Ctrl+Shift+O adds folders.
 
+Drag a pinned shelf by its header and release toward a screen corner to move it there.
+
 Orbit is an independent community application. It follows the
 [System76 COSMIC app template](https://github.com/pop-os/cosmic-app-template)
 and [toolkit](https://pop-os.github.io/libcosmic-book/).

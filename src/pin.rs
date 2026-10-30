@@ -124,6 +124,20 @@ impl Placement {
         }
     }
 
+    pub fn corner_at(&self, position: cosmic::iced::Point) -> Anchor {
+        let horizontal = if self.margin.left as f32 + position.x < self.area.width as f32 / 2.0 {
+            Anchor::LEFT
+        } else {
+            Anchor::RIGHT
+        };
+        let vertical = if self.margin.top as f32 + position.y < self.area.height as f32 / 2.0 {
+            Anchor::TOP
+        } else {
+            Anchor::BOTTOM
+        };
+        horizontal | vertical
+    }
+
     pub fn move_to(&mut self, anchor: Anchor) -> io::Result<IcedMargin> {
         let registry = open(self.directory.join("layout.lock"))?;
         registry.lock()?;
