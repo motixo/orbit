@@ -2,11 +2,11 @@
 set -eu
 cd "$(dirname "$0")/.."
 
-orbit_profile=debug
+orbit_profile=release
 case "${1:-}" in
-    --release) orbit_profile=release; cargo build --locked --release ;;
-    '') cargo build --locked ;;
-    *) printf 'Usage: %s [--release]\n' "$0" >&2; exit 2 ;;
+    ''|--release) cargo build --locked --release ;;
+    --debug) orbit_profile=debug; cargo build --locked ;;
+    *) printf 'Usage: %s [--release|--debug]\n' "$0" >&2; exit 2 ;;
 esac
 
 orbit_prefix=${ORBIT_PREFIX:-"$HOME/.local"}

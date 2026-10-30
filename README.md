@@ -29,9 +29,9 @@ The optional `just` recipes mirror the official COSMIC template. `just install`
 installs the release binary, desktop entry, icon and AppStream metadata under
 `~/.local`. Packagers can override `prefix` and `rootdir`.
 
-For local testing without installing `just`, run `scripts/install.sh`. It installs
-a debug build under `~/.local`; `scripts/install.sh --release` installs a release
-build. Updates replace the binary atomically, so a running Orbit stays open;
+Without `just`, run `scripts/install.sh`. It installs an optimized release build
+under `~/.local`; `scripts/install.sh --debug` installs a debug build.
+Updates replace the binary atomically, so a running Orbit stays open;
 close and reopen it to use the new version. Set `ORBIT_PREFIX` for another prefix.
 
 ## Development
