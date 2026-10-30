@@ -2,11 +2,9 @@
 Type=Application
 Name=Orbit
 Comment=A floating file shelf for COSMIC
-Comment[fa]=قفسه‌ای شناور برای فایل‌ها در کازمیک
 Exec=orbit %F
 Icon=io.github.motixo.Orbit
 Terminal=false
 StartupNotify=true
 Categories=Utility;FileTools;COSMIC;
 Keywords=Shelf;Files;Drag;Drop;COSMIC;
-Keywords[fa]=فایل;قفسه;کشیدن;رهاکردن;کازمیک;
