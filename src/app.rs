@@ -454,8 +454,9 @@ impl cosmic::Application for Orbit {
                     ..Default::default()
                 };
                 let surface = app_layer_shell::<Self>(
+                    // libcosmic also calls this while holding the global theme lock.
                     |app| LiveSettings {
-                        blur: Some(app.core.frosted(cosmic::theme::active().cosmic())),
+                        blur: Some(app.core.frosted(app.core.system_theme().cosmic())),
                         ..Default::default()
                     },
                     move |_| settings.clone(),
