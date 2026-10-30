@@ -899,8 +899,16 @@ impl Orbit {
             .height(Length::Fill);
         if !self.shelf.items.is_empty() {
             let selected = self.shelf.selected_count();
+            let muted = cosmic::theme::Text::Custom(|theme| iced::widget::text::Style {
+                color: Some(
+                    iced::Color::from(theme.cosmic().background(false).on).scale_alpha(0.5),
+                ),
+                ..Default::default()
+            });
             let selection = widget::row::with_children(vec![
-                widget::text::caption(fl!("shelf-count", count = self.shelf.items.len())).into(),
+                widget::text::caption(fl!("shelf-count", count = self.shelf.items.len()))
+                    .class(muted)
+                    .into(),
                 widget::space::horizontal().into(),
                 widget::button::text(if selected == self.shelf.items.len() {
                     fl!("deselect-all")
@@ -909,9 +917,17 @@ impl Orbit {
                 })
                 .on_press(Message::SelectAll)
                 .into(),
-                widget::button::text(fl!("clear-shelf"))
-                    .on_press(Message::Clear)
-                    .into(),
+                widget::button::custom(
+                    widget::text::body(fl!("clear-shelf"))
+                        .class(muted)
+                        .height(spacing.space_l)
+                        .align_y(iced::alignment::Vertical::Center),
+                )
+                .padding([0, spacing.space_s])
+                .class(cosmic::theme::Button::Text)
+                .name(fl!("clear-shelf"))
+                .on_press(Message::Clear)
+                .into(),
             ])
             .align_y(Alignment::Center);
             content = content.push(selection);
