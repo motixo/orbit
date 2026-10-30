@@ -917,17 +917,9 @@ impl Orbit {
                 })
                 .on_press(Message::SelectAll)
                 .into(),
-                widget::button::custom(
-                    widget::text::body(fl!("clear-shelf"))
-                        .class(muted)
-                        .height(spacing.space_l)
-                        .align_y(iced::alignment::Vertical::Center),
-                )
-                .padding([0, spacing.space_s])
-                .class(cosmic::theme::Button::Text)
-                .name(fl!("clear-shelf"))
-                .on_press(Message::Clear)
-                .into(),
+                widget::button::text(fl!("clear-shelf"))
+                    .on_press(Message::Clear)
+                    .into(),
             ])
             .align_y(Alignment::Center);
             content = content.push(selection);
