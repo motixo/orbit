@@ -24,5 +24,5 @@ unsupported-files = Choose or copy local files and folders to collect them.
 dialog-error = Could not open the file chooser: { $error }
 new-orbit-error = Could not open Orbit.
 pin-error = Could not pin Orbit.
-loading-image = Loading…
+image-name = Image
 image-import-error = Could not add image.

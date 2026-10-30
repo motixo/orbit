@@ -8,6 +8,7 @@ files; Ctrl+Shift+O adds folders.
 
 Drop images directly from a browser. Orbit accepts image data or downloads an
 image URL into a temporary file, which can then be dragged out as a regular file.
+Downloads appear dimmed in the list with a circular progress indicator.
 Images stay in Orbit's cache while the receiving app finishes moving them.
 
 Floating shelves stay above normal windows and appear on every workspace using

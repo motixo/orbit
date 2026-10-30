@@ -2,7 +2,7 @@
 
 use crate::{
     fl,
-    import::ImportedFiles,
+    import::{ImportedFiles, Progress},
     pin::{Area, Motion, Placement, Startup},
     shelf::{Item, Shelf},
     transfer::{DragFiles, FileList, URI_LIST},
@@ -16,6 +16,7 @@ use cosmic::{
     widget,
 };
 use iced::clipboard::dnd::DndAction;
+use iced::futures::SinkExt;
 use iced::platform_specific::{
     runtime::wayland::layer_surface::{IcedMargin, SctkLayerSurfaceSettings},
     shell::commands::{
@@ -49,7 +50,8 @@ pub struct Orbit {
     core: cosmic::Core,
     shelf: Shelf,
     imported_images: Vec<PathBuf>,
-    pending_imports: usize,
+    pending_imports: Vec<(u64, Progress)>,
+    next_import: u64,
     dragged_paths: Vec<PathBuf>,
     hovering: bool,
     status: String,
@@ -74,7 +76,9 @@ pub enum Message {
     NewOrbit,
     Incoming(Result<FileList, String>),
     DropData(Vec<u8>, String),
-    DropImported(Result<ImportedFiles, String>),
+    DropProgress(u64, Progress),
+    DropImported(u64, Result<ImportedFiles, String>),
+    RemoveImport(u64),
     Hover(bool),
     Toggle(PathBuf),
     SelectAll,
@@ -129,7 +133,8 @@ impl cosmic::Application for Orbit {
             core,
             shelf: Shelf::default(),
             imported_images: Vec::new(),
-            pending_imports: 0,
+            pending_imports: Vec::new(),
+            next_import: 0,
             dragged_paths: Vec::new(),
             hovering: false,
             status: String::new(),
@@ -380,18 +385,38 @@ impl cosmic::Application for Orbit {
         match message {
             Message::DropData(bytes, mime) => {
                 self.hovering = false;
-                self.pending_imports += 1;
-                self.status = fl!("loading-image");
-                return cosmic::task::future(async move {
-                    Message::DropImported(
-                        crate::import::receive(bytes, mime)
-                            .await
-                            .map_err(|_| fl!("image-import-error")),
-                    )
-                });
+                let id = self.next_import;
+                self.next_import += 1;
+                self.pending_imports.push((id, Progress::default()));
+                self.status.clear();
+                return cosmic::task::stream(iced::stream::channel(4, async move |mut output| {
+                    let result = crate::import::receive(bytes, mime, |progress| {
+                        let _ = output.try_send(Message::DropProgress(id, progress));
+                    })
+                    .await
+                    .map_err(|_| fl!("image-import-error"));
+                    let _ = output.send(Message::DropImported(id, result)).await;
+                }));
             }
-            Message::DropImported(result) => {
-                self.pending_imports = self.pending_imports.saturating_sub(1);
+            Message::DropProgress(id, progress) => {
+                if let Some((_, state)) =
+                    self.pending_imports.iter_mut().find(|(key, _)| *key == id)
+                {
+                    *state = progress;
+                }
+            }
+            Message::DropImported(id, result) => {
+                if !self.pending_imports.iter().any(|(key, _)| *key == id) {
+                    if let Ok(ImportedFiles {
+                        directory: Some(directory),
+                        ..
+                    }) = result
+                    {
+                        let _ = std::fs::remove_dir_all(directory);
+                    }
+                    return Task::none();
+                }
+                self.pending_imports.retain(|(key, _)| *key != id);
                 let files = result.map(|imported| {
                     if let Some(directory) = imported.directory {
                         self.imported_images.push(directory);
@@ -399,6 +424,9 @@ impl cosmic::Application for Orbit {
                     imported.files
                 });
                 return self.update(Message::Incoming(files));
+            }
+            Message::RemoveImport(id) => {
+                self.pending_imports.retain(|(key, _)| *key != id);
             }
             Message::Incoming(result) => {
                 self.hovering = false;
@@ -491,6 +519,7 @@ impl cosmic::Application for Orbit {
             }
             Message::Clear => {
                 self.shelf.clear();
+                self.pending_imports.clear();
                 self.release_imports();
                 self.status.clear();
             }
@@ -527,7 +556,7 @@ impl cosmic::Application for Orbit {
                         self.shelf.remove(&path);
                     }
                     self.release_imports();
-                    if self.shelf.items.is_empty() && self.pending_imports == 0 {
+                    if self.shelf.items.is_empty() && self.pending_imports.is_empty() {
                         return iced::exit();
                     }
                 }
@@ -903,7 +932,8 @@ impl Orbit {
 
     fn shelf_view(&self, window: window::Id) -> Element<'_, Message> {
         let spacing = cosmic::theme::spacing();
-        let body: Element<_> = if self.shelf.items.is_empty() {
+        let count = self.shelf.items.len() + self.pending_imports.len();
+        let body: Element<_> = if count == 0 {
             widget::container(
                 widget::column::with_children(vec![
                     widget::icon::from_name("folder-symbolic")
@@ -943,6 +973,11 @@ impl Orbit {
                     .items
                     .iter()
                     .map(|item| self.item_view(item, window))
+                    .chain(
+                        self.pending_imports
+                            .iter()
+                            .map(|(id, progress)| self.import_view(*id, progress)),
+                    )
                     .collect::<Vec<_>>(),
             )
             .spacing(spacing.space_xxs);
@@ -989,7 +1024,7 @@ impl Orbit {
         let mut content = widget::column::with_children(vec![destination.into()])
             .spacing(spacing.space_xs)
             .height(Length::Fill);
-        if !self.shelf.items.is_empty() {
+        if count > 0 {
             let selected = self.shelf.selected_count();
             let muted = cosmic::theme::Text::Custom(|theme| iced::widget::text::Style {
                 color: Some(
@@ -998,16 +1033,16 @@ impl Orbit {
                 ..Default::default()
             });
             let selection = widget::row::with_children(vec![
-                widget::text::caption(fl!("shelf-count", count = self.shelf.items.len()))
+                widget::text::caption(fl!("shelf-count", count = count))
                     .class(muted)
                     .into(),
                 widget::space::horizontal().into(),
-                widget::button::text(if selected == self.shelf.items.len() {
+                widget::button::text(if selected > 0 && selected == self.shelf.items.len() {
                     fl!("deselect-all")
                 } else {
                     fl!("select-all")
                 })
-                .on_press(Message::SelectAll)
+                .on_press_maybe((!self.shelf.items.is_empty()).then_some(Message::SelectAll))
                 .into(),
                 widget::button::text(fl!("clear-shelf"))
                     .on_press(Message::Clear)
@@ -1022,6 +1057,77 @@ impl Orbit {
         widget::container(content)
             .padding([0, spacing.space_xs, spacing.space_xs, spacing.space_xs])
             .height(Length::Fill)
+            .into()
+    }
+
+    fn import_view<'a>(&self, id: u64, progress: &'a Progress) -> Element<'a, Message> {
+        use iced::advanced::text::{Ellipsize, EllipsizeHeightLimit};
+
+        let spacing = cosmic::theme::spacing();
+        let name = progress.name.clone().unwrap_or_else(|| fl!("image-name"));
+        let fraction = progress
+            .total
+            .filter(|total| *total > 0)
+            .map(|total| (progress.received as f32 / total as f32).clamp(0.0, 1.0));
+        let indicator = if let Some(fraction) = fraction {
+            widget::determinate_circular(fraction)
+        } else {
+            widget::indeterminate_circular()
+        }
+        .size(28.0)
+        .bar_height(2.5);
+        let detail = if let Some(fraction) = fraction {
+            format!("{}%", (fraction * 100.0) as u32)
+        } else if progress.received >= 1024 * 1024 {
+            format!("{:.1} MB", progress.received as f64 / (1024.0 * 1024.0))
+        } else {
+            format!("{:.0} KB", progress.received as f64 / 1024.0)
+        };
+        let muted = cosmic::theme::Text::Custom(|theme| iced::widget::text::Style {
+            color: Some(iced::Color::from(theme.cosmic().background(false).on).scale_alpha(0.5)),
+            ..Default::default()
+        });
+        let label = widget::column::with_children(vec![
+            widget::text::body(name.clone())
+                .class(muted)
+                .width(Length::Fill)
+                .wrapping(iced::widget::text::Wrapping::None)
+                .ellipsize(Ellipsize::Middle(EllipsizeHeightLimit::Lines(1)))
+                .into(),
+            widget::text::caption(detail).class(muted).into(),
+        ])
+        .width(Length::Fill);
+        let file = widget::row::with_children(vec![
+            widget::container(indicator)
+                .center_x(32)
+                .center_y(32)
+                .into(),
+            widget::container(label)
+                .width(Length::Fill)
+                .clip(true)
+                .into(),
+        ])
+        .spacing(spacing.space_s)
+        .align_y(Alignment::Center)
+        .width(Length::Fill);
+        let row = widget::row::with_children(vec![
+            widget::checkbox(false)
+                .name(fl!("select-item", name = name.as_str()))
+                .into(),
+            file.into(),
+            widget::button::icon(widget::icon::from_name("list-remove-symbolic"))
+                .name(fl!("remove-item", name = name.as_str()))
+                .width(32)
+                .height(32)
+                .on_press(Message::RemoveImport(id))
+                .into(),
+        ])
+        .width(Length::Fill)
+        .spacing(spacing.space_xs)
+        .align_y(Alignment::Center);
+        widget::container(row)
+            .padding(spacing.space_xs)
+            .class(cosmic::theme::Container::Card)
             .into()
     }
 

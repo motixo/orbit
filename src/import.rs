@@ -5,7 +5,7 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use std::{
     error::Error,
     path::{Path, PathBuf},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use url::Url;
 
@@ -36,9 +36,17 @@ pub struct ImportedFiles {
     pub directory: Option<PathBuf>,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct Progress {
+    pub name: Option<String>,
+    pub received: u64,
+    pub total: Option<u64>,
+}
+
 pub async fn receive(
     bytes: Vec<u8>,
     mime: String,
+    progress: impl FnMut(Progress),
 ) -> Result<ImportedFiles, Box<dyn Error + Send + Sync>> {
     if bytes.is_empty() || bytes.len() > MAX_IMAGE_SIZE {
         return Err("Invalid image size".into());
@@ -97,7 +105,7 @@ pub async fn receive(
     }
     let url = Url::parse(address)?;
     match url.scheme() {
-        "http" | "https" => download(url).await,
+        "http" | "https" => download(url, progress).await,
         "data" => {
             let (metadata, encoded) = address
                 .strip_prefix("data:")
@@ -118,7 +126,15 @@ pub async fn receive(
     }
 }
 
-async fn download(url: Url) -> Result<ImportedFiles, Box<dyn Error + Send + Sync>> {
+async fn download(
+    url: Url,
+    mut progress: impl FnMut(Progress),
+) -> Result<ImportedFiles, Box<dyn Error + Send + Sync>> {
+    let mut state = Progress {
+        name: image_name(&url),
+        ..Default::default()
+    };
+    progress(state.clone());
     let client = reqwest::Client::builder()
         .user_agent(concat!("Orbit/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(Duration::from_secs(10))
@@ -132,19 +148,35 @@ async fn download(url: Url) -> Result<ImportedFiles, Box<dyn Error + Send + Sync
     {
         return Err("Image exceeds 50 MiB".into());
     }
-    let name = response
-        .url()
-        .path_segments()
-        .and_then(|mut segments| segments.next_back())
-        .map(str::to_owned);
+    state.name = image_name(response.url()).or(state.name);
+    state.total = response.content_length().filter(|length| *length > 0);
+    progress(state.clone());
     let mut bytes = Vec::new();
+    let mut last_update = Instant::now();
     while let Some(chunk) = response.chunk().await? {
         if chunk.len() > MAX_IMAGE_SIZE - bytes.len() {
             return Err("Image exceeds 50 MiB".into());
         }
         bytes.extend_from_slice(&chunk);
+        state.received = bytes.len() as u64;
+        if last_update.elapsed() >= Duration::from_millis(80) {
+            progress(state.clone());
+            last_update = Instant::now();
+        }
     }
-    save_image(&bytes, name.as_deref())
+    progress(state.clone());
+    save_image(&bytes, state.name.as_deref())
+}
+
+fn image_name(url: &Url) -> Option<String> {
+    url.path_segments()
+        .and_then(|mut segments| segments.next_back())
+        .filter(|name| !name.is_empty())
+        .map(|name| {
+            percent_encoding::percent_decode_str(name)
+                .decode_utf8_lossy()
+                .into_owned()
+        })
 }
 
 fn save_image(
