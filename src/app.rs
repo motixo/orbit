@@ -49,6 +49,7 @@ pub struct Orbit {
     pin_anchor: Anchor,
     drop_target: widget::Id,
     show_add_menu: bool,
+    show_corner_tooltip: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -68,6 +69,7 @@ pub enum Message {
     Noop,
     TogglePin,
     NextCorner,
+    ShowCornerTooltip,
     Quit,
 }
 
@@ -96,6 +98,7 @@ impl cosmic::Application for Orbit {
             pin_anchor: Anchor::TOP | Anchor::RIGHT,
             drop_target: widget::Id::unique(),
             show_add_menu: false,
+            show_corner_tooltip: true,
         };
         app.set_header_title(fl!("app-title"));
         if !flags.uris.is_empty() {
@@ -144,10 +147,17 @@ impl cosmic::Application for Orbit {
         let header = widget::header_bar()
             .title(fl!("app-title"))
             .end(
-                widget::button::icon(widget::icon::from_name("object-rotate-right-symbolic"))
-                    .name(fl!("next-corner"))
-                    .tooltip(fl!("next-corner"))
-                    .on_press(Message::NextCorner),
+                widget::mouse_area(
+                    widget::button::icon(widget::icon::from_name("object-rotate-right-symbolic"))
+                        .name(fl!("next-corner"))
+                        .tooltip(if self.show_corner_tooltip {
+                            fl!("next-corner")
+                        } else {
+                            String::new()
+                        })
+                        .on_press(Message::NextCorner),
+                )
+                .on_enter(Message::ShowCornerTooltip),
             )
             .end(self.pin_button())
             .on_close(Message::Quit)
@@ -299,9 +309,12 @@ impl cosmic::Application for Orbit {
             }
             Message::DragFinished => self.status.clear(),
             Message::Noop => (),
+            Message::ShowCornerTooltip => self.show_corner_tooltip = true,
             Message::NextCorner => {
                 if let Some(id) = self.pinned {
                     self.show_add_menu = false;
+                    // Layer moves can leave the old pointer position cached until it moves.
+                    self.show_corner_tooltip = false;
                     self.pin_anchor = match (
                         self.pin_anchor.contains(Anchor::TOP),
                         self.pin_anchor.contains(Anchor::RIGHT),
