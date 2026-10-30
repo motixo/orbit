@@ -48,13 +48,12 @@ pub struct Orbit {
     pinned: Option<window::Id>,
     pin_anchor: Anchor,
     drop_target: widget::Id,
-    show_add_menu: bool,
 }
 
 #[derive(Debug, Clone)]
 pub enum Message {
     Choose(bool),
-    ShowAddMenu(bool),
+    NewOrbit,
     Incoming(Result<FileList, String>),
     Hover(bool),
     Toggle(PathBuf),
@@ -96,7 +95,6 @@ impl cosmic::Application for Orbit {
             pinned: None,
             pin_anchor: Anchor::TOP | Anchor::RIGHT,
             drop_target: widget::Id::unique(),
-            show_add_menu: false,
         };
         app.set_header_title(fl!("app-title"));
         if !flags.uris.is_empty() {
@@ -115,7 +113,7 @@ impl cosmic::Application for Orbit {
     }
 
     fn header_start(&self) -> Vec<Element<'_, Message>> {
-        vec![self.add_button()]
+        vec![self.new_orbit_button()]
     }
 
     fn header_end(&self) -> Vec<Element<'_, Message>> {
@@ -147,7 +145,7 @@ impl cosmic::Application for Orbit {
     fn view_window(&self, id: window::Id) -> Element<'_, Message> {
         let header = widget::header_bar()
             .title(fl!("app-title"))
-            .start(self.add_button())
+            .start(self.new_orbit_button())
             .end(
                 widget::button::icon(widget::icon::from_name("object-rotate-right-symbolic"))
                     .name(fl!("next-corner"))
@@ -195,9 +193,6 @@ impl cosmic::Application for Orbit {
             else {
                 return None;
             };
-            if key == keyboard::Key::Named(keyboard::key::Named::Escape) {
-                return Some(Message::ShowAddMenu(false));
-            }
             if modifiers.control() {
                 return match key
                     .to_latin(physical_key)
@@ -237,7 +232,6 @@ impl cosmic::Application for Orbit {
                 };
             }
             Message::Choose(folders) => {
-                self.show_add_menu = false;
                 return cosmic::task::future(async move {
                     use cosmic::dialog::file_chooser::{self, open::Dialog};
                     let dialog = Dialog::new().title(if folders {
@@ -266,7 +260,31 @@ impl cosmic::Application for Orbit {
                     }
                 });
             }
-            Message::ShowAddMenu(show) => self.show_add_menu = show,
+            Message::NewOrbit => {
+                let source = self.pinned.or(self.core.main_window_id());
+                return activation::request_token(Some(Self::APP_ID.into()), source).then(
+                    |token| {
+                        cosmic::task::future(async move {
+                            let Ok(executable) = std::env::current_exe() else {
+                                return Message::Incoming(Err(fl!("new-orbit-error")));
+                            };
+                            let mut command = std::process::Command::new(executable);
+                            // Bypass single-instance activation so each shelf has its own state.
+                            command
+                                .env("COSMIC_SINGLE_INSTANCE", "0")
+                                .env_remove("XDG_ACTIVATION_TOKEN")
+                                .env_remove("DESKTOP_STARTUP_ID");
+                            if let Some(token) = token {
+                                command.env("XDG_ACTIVATION_TOKEN", token);
+                            }
+                            match cosmic::process::spawn(command).await {
+                                Some(_) => Message::Noop,
+                                None => Message::Incoming(Err(fl!("new-orbit-error"))),
+                            }
+                        })
+                    },
+                );
+            }
             Message::Hover(value) => self.hovering = value,
             Message::Toggle(path) => self.shelf.toggle(&path),
             Message::SelectAll => self.shelf.select_all(),
@@ -300,7 +318,6 @@ impl cosmic::Application for Orbit {
             Message::Noop => (),
             Message::NextCorner => {
                 if let Some(id) = self.pinned {
-                    self.show_add_menu = false;
                     self.pin_anchor = match (
                         self.pin_anchor.contains(Anchor::TOP),
                         self.pin_anchor.contains(Anchor::RIGHT),
@@ -314,7 +331,6 @@ impl cosmic::Application for Orbit {
                 }
             }
             Message::TogglePin => {
-                self.show_add_menu = false;
                 if let Some(id) = self.pinned.take() {
                     // Keep the focused layer alive until its activation token is issued.
                     return self
@@ -352,31 +368,11 @@ impl cosmic::Application for Orbit {
 }
 
 impl Orbit {
-    fn add_button(&self) -> Element<'_, Message> {
-        let button = widget::button::icon(widget::icon::from_name("list-add-symbolic"))
-            .name(fl!("add-items"))
-            .on_press(Message::ShowAddMenu(!self.show_add_menu));
-        let mut popover = widget::popover(button)
-            .position(widget::popover::Position::Bottom)
-            .on_close(Message::ShowAddMenu(false));
-        if self.show_add_menu {
-            popover = popover.popup(
-                widget::container(widget::column::with_children(vec![
-                    widget::button::text(fl!("add-files"))
-                        .on_press(Message::Choose(false))
-                        .width(Length::Fill)
-                        .into(),
-                    widget::button::text(fl!("add-folders"))
-                        .on_press(Message::Choose(true))
-                        .width(Length::Fill)
-                        .into(),
-                ]))
-                .width(160)
-                .padding(cosmic::theme::spacing().space_xxs)
-                .class(cosmic::theme::Container::Dropdown),
-            );
-        }
-        popover.into()
+    fn new_orbit_button(&self) -> Element<'_, Message> {
+        widget::button::icon(widget::icon::from_name("list-add-symbolic"))
+            .name(fl!("new-orbit"))
+            .on_press(Message::NewOrbit)
+            .into()
     }
 
     fn restore_window(&self, source: Option<window::Id>) -> Task<cosmic::Action<Message>> {

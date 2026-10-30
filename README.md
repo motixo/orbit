@@ -2,6 +2,9 @@
 
 A floating file shelf for the COSMIC desktop, built with Rust and libcosmic.
 
+The header's **+** opens an independent shelf. Collect files with drag and drop
+or Ctrl+V. Ctrl+O adds files; Ctrl+Shift+O adds folders.
+
 Orbit is an independent community application. It follows the
 [System76 COSMIC app template](https://github.com/pop-os/cosmic-app-template)
 and [toolkit](https://pop-os.github.io/libcosmic-book/).

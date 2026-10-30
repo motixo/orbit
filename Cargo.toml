@@ -15,7 +15,7 @@ url = "2.5"
 [dependencies.libcosmic]
 git = "https://github.com/pop-os/libcosmic"
 rev = "5a8bd9482a35ae94c1e54edf77b331c6b970f170"
-features = ["single-instance", "wayland", "xdg-portal"]
+features = ["process", "single-instance", "wayland", "xdg-portal"]
 
 [profile.dev]
 debug = 1
