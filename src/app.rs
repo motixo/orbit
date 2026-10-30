@@ -350,6 +350,15 @@ impl Orbit {
                     } else {
                         fl!("empty-title")
                     })
+                    .class(cosmic::theme::Text::Custom(|theme| {
+                        iced::widget::text::Style {
+                            color: Some(
+                                iced::Color::from(theme.cosmic().background(false).on)
+                                    .scale_alpha(0.45),
+                            ),
+                            ..Default::default()
+                        }
+                    }))
                     .align_x(iced::alignment::Horizontal::Center)
                     .into(),
                 ])
