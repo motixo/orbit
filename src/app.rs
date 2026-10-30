@@ -340,7 +340,10 @@ impl Orbit {
             widget::container(
                 widget::column::with_children(vec![
                     widget::icon::from_name("folder-download-symbolic")
-                        .size(40)
+                        .size(32)
+                        .icon()
+                        .content_fit(iced::ContentFit::Contain)
+                        .opacity(0.35)
                         .into(),
                     widget::text::body(if self.hovering {
                         fl!("drop-now")
