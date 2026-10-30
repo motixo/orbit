@@ -49,7 +49,6 @@ pub struct Orbit {
     pin_anchor: Anchor,
     drop_target: widget::Id,
     show_add_menu: bool,
-    show_corner_tooltip: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -69,7 +68,6 @@ pub enum Message {
     Noop,
     TogglePin,
     NextCorner,
-    ShowCornerTooltip,
     Quit,
 }
 
@@ -99,7 +97,6 @@ impl cosmic::Application for Orbit {
             pin_anchor: Anchor::TOP | Anchor::RIGHT,
             drop_target: widget::Id::unique(),
             show_add_menu: false,
-            show_corner_tooltip: true,
         };
         app.set_header_title(fl!("app-title"));
         if !flags.uris.is_empty() {
@@ -152,17 +149,9 @@ impl cosmic::Application for Orbit {
             .title(fl!("app-title"))
             .start(self.add_button())
             .end(
-                widget::mouse_area(
-                    widget::button::icon(widget::icon::from_name("object-rotate-right-symbolic"))
-                        .name(fl!("next-corner"))
-                        .tooltip(if self.show_corner_tooltip {
-                            fl!("next-corner")
-                        } else {
-                            String::new()
-                        })
-                        .on_press(Message::NextCorner),
-                )
-                .on_enter(Message::ShowCornerTooltip),
+                widget::button::icon(widget::icon::from_name("object-rotate-right-symbolic"))
+                    .name(fl!("next-corner"))
+                    .on_press(Message::NextCorner),
             )
             .end(self.pin_button())
             .on_close(Message::Quit)
@@ -309,12 +298,9 @@ impl cosmic::Application for Orbit {
             }
             Message::DragFinished => self.status.clear(),
             Message::Noop => (),
-            Message::ShowCornerTooltip => self.show_corner_tooltip = true,
             Message::NextCorner => {
                 if let Some(id) = self.pinned {
                     self.show_add_menu = false;
-                    // Layer moves can leave the old pointer position cached until it moves.
-                    self.show_corner_tooltip = false;
                     self.pin_anchor = match (
                         self.pin_anchor.contains(Anchor::TOP),
                         self.pin_anchor.contains(Anchor::RIGHT),
@@ -369,7 +355,6 @@ impl Orbit {
     fn add_button(&self) -> Element<'_, Message> {
         let button = widget::button::icon(widget::icon::from_name("list-add-symbolic"))
             .name(fl!("add-items"))
-            .tooltip(fl!("add-items"))
             .on_press(Message::ShowAddMenu(!self.show_add_menu));
         let mut popover = widget::popover(button)
             .position(widget::popover::Position::Bottom)
@@ -419,8 +404,7 @@ impl Orbit {
         } else {
             "pin-symbolic"
         }))
-        .name(label.clone())
-        .tooltip(label)
+        .name(label)
         .on_press(Message::TogglePin)
         .into()
     }
@@ -532,12 +516,10 @@ impl Orbit {
                 ),
                 widget::button::icon(widget::icon::from_name("edit-copy-symbolic"))
                     .name(fl!("copy-files"))
-                    .tooltip(fl!("copy-files"))
                     .on_press(Message::Copy)
                     .into(),
                 widget::button::icon(widget::icon::from_name("edit-clear-all-symbolic"))
                     .name(fl!("clear-shelf"))
-                    .tooltip(fl!("clear-shelf"))
                     .on_press(Message::Clear)
                     .into(),
             ])
@@ -605,16 +587,6 @@ impl Orbit {
         .spacing(spacing.space_s)
         .align_y(Alignment::Center)
         .width(Length::Fill);
-        let draggable = widget::tooltip(
-            draggable,
-            widget::container(
-                widget::text::body(item.path.to_string_lossy().into_owned())
-                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-            )
-            .max_width(320),
-            widget::tooltip::Position::Top,
-        )
-        .delay(std::time::Duration::from_millis(600));
         let path = item.path.clone();
         let row = widget::row::with_children(vec![
             checkbox.into(),
@@ -629,7 +601,6 @@ impl Orbit {
             .into(),
             widget::button::icon(widget::icon::from_name("list-remove-symbolic"))
                 .name(fl!("remove-item", name = item.name.as_str()))
-                .tooltip(fl!("remove-from-shelf"))
                 .width(32)
                 .height(32)
                 .on_press(Message::Remove(path))

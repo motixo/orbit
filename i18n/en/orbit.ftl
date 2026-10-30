@@ -13,7 +13,6 @@ select-all = Select all
 deselect-all = Deselect all
 select-item = Select { $name }
 remove-item = Remove { $name }
-remove-from-shelf = Remove
 drag-items = { $count ->
     [one] Drag 1 item
    *[other] Drag { $count } items
