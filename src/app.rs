@@ -453,10 +453,11 @@ impl cosmic::Application for Orbit {
                     exclusive_zone: 0,
                     ..Default::default()
                 };
+                // Read the loaded theme before callbacks can run under libcosmic's theme lock.
+                let blur = self.core.frosted(cosmic::theme::active().cosmic());
                 let surface = app_layer_shell::<Self>(
-                    // libcosmic also calls this while holding the global theme lock.
-                    |app| LiveSettings {
-                        blur: Some(app.core.frosted(app.core.system_theme().cosmic())),
+                    move |_| LiveSettings {
+                        blur: Some(blur),
                         ..Default::default()
                     },
                     move |_| settings.clone(),
