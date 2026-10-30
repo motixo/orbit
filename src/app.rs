@@ -411,13 +411,12 @@ impl cosmic::Application for Orbit {
                     }
                     mouse::Event::ButtonReleased(mouse::Button::Left) => {
                         self.pin_pointer_down = false;
-                        if self
-                            .pin_drag_start
-                            .take()
-                            .is_some_and(|start| start.distance(self.pin_cursor) >= 8.0)
+                        if let Some(start) = self.pin_drag_start.take()
+                            && start.distance(self.pin_cursor) >= 4.0
                             && let Some(placement) = self.pin_placement.as_mut()
                         {
-                            let anchor = placement.corner_at(self.pin_cursor);
+                            let position = start + (self.pin_cursor - start) * 2.0;
+                            let anchor = placement.corner_at(position);
                             match placement.move_to(anchor) {
                                 Ok(margin) => {
                                     self.status.clear();
