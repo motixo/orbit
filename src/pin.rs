@@ -20,6 +20,65 @@ pub struct Area {
     pub height: u32,
 }
 
+pub struct Startup {
+    pub area: Area,
+    pub anchor: Anchor,
+    pub near: (u32, u32),
+}
+
+impl Startup {
+    pub fn from_env() -> io::Result<Option<Self>> {
+        let Some(value) = env::var_os("ORBIT_START_PINNED") else {
+            return Ok(None);
+        };
+        let values = value
+            .to_str()
+            .ok_or_else(|| io::Error::other("Invalid pin startup"))?
+            .split(',')
+            .map(str::parse::<u32>)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(io::Error::other)?;
+        let [width, height, bits, x, y] = values.as_slice() else {
+            return Err(io::Error::other("Invalid pin startup"));
+        };
+        let anchor = Anchor::from_bits(*bits)
+            .filter(|anchor| {
+                anchor.bits().count_ones() == 2
+                    && anchor.intersects(Anchor::TOP | Anchor::BOTTOM)
+                    && anchor.intersects(Anchor::LEFT | Anchor::RIGHT)
+            })
+            .ok_or_else(|| io::Error::other("Invalid pin corner"))?;
+        if *width == 0
+            || *height == 0
+            || *width > i32::MAX as u32
+            || *height > i32::MAX as u32
+            || *x >= *width
+            || *y >= *height
+        {
+            return Err(io::Error::other("Invalid pin area"));
+        }
+        Ok(Some(Self {
+            area: Area {
+                width: *width,
+                height: *height,
+            },
+            anchor,
+            near: (*x, *y),
+        }))
+    }
+
+    pub fn encode(&self) -> String {
+        format!(
+            "{},{},{},{},{}",
+            self.area.width,
+            self.area.height,
+            self.anchor.bits(),
+            self.near.0,
+            self.near.1
+        )
+    }
+}
+
 pub struct Placement {
     directory: PathBuf,
     area: Area,
@@ -29,7 +88,7 @@ pub struct Placement {
 }
 
 impl Placement {
-    pub fn new(area: Area, anchor: Anchor) -> io::Result<Self> {
+    pub fn new(area: Area, anchor: Anchor, near: Option<(u32, u32)>) -> io::Result<Self> {
         let runtime = env::var_os("XDG_RUNTIME_DIR")
             .ok_or_else(|| io::Error::other("Missing runtime directory"))?;
         let directory = PathBuf::from(runtime).join("io.github.motixo.Orbit/pins");
@@ -53,17 +112,25 @@ impl Placement {
             lease,
             margin: IcedMargin::default(),
         };
-        placement.place(anchor)?;
+        placement.place(anchor, near)?;
         Ok(placement)
+    }
+
+    pub fn startup(&self, anchor: Anchor) -> Startup {
+        Startup {
+            area: self.area.clone(),
+            anchor,
+            near: (self.margin.left as u32, self.margin.top as u32),
+        }
     }
 
     pub fn move_to(&mut self, anchor: Anchor) -> io::Result<IcedMargin> {
         let registry = open(self.directory.join("layout.lock"))?;
         registry.lock()?;
-        self.place(anchor)
+        self.place(anchor, None)
     }
 
-    fn place(&mut self, anchor: Anchor) -> io::Result<IcedMargin> {
+    fn place(&mut self, anchor: Anchor, near: Option<(u32, u32)>) -> io::Result<IcedMargin> {
         let mut occupied = Vec::new();
         let own_name = format!("{}.pin", std::process::id());
         for entry in fs::read_dir(&self.directory)? {
@@ -103,6 +170,7 @@ impl Placement {
         }
         let columns = self.area.width.saturating_sub(GAP) / (SHELF_SIZE + GAP);
         let rows = self.area.height.saturating_sub(GAP) / (SHELF_SIZE + GAP);
+        let mut candidates = Vec::new();
         for row in 0..rows {
             for column in 0..columns {
                 let offset_x = GAP + column * (SHELF_SIZE + GAP);
@@ -117,33 +185,43 @@ impl Placement {
                 } else {
                     offset_y
                 };
-                let size = u64::from(SHELF_SIZE + GAP);
-                if occupied.iter().any(|&(other_x, other_y, width, height)| {
-                    u64::from(x) < other_x.saturating_add(width).saturating_add(u64::from(GAP))
-                        && other_x < u64::from(x) + size
-                        && u64::from(y)
-                            < other_y
-                                .saturating_add(height)
-                                .saturating_add(u64::from(GAP))
-                        && other_y < u64::from(y) + size
-                }) {
-                    continue;
-                }
-                self.lease.rewind()?;
-                self.lease.set_len(0)?;
-                writeln!(
-                    self.lease,
-                    "{} {x} {y} {SHELF_SIZE} {SHELF_SIZE}",
-                    self.output
-                )?;
-                self.margin = IcedMargin {
-                    top: y as i32,
-                    right: (self.area.width - x - SHELF_SIZE) as i32,
-                    bottom: (self.area.height - y - SHELF_SIZE) as i32,
-                    left: x as i32,
-                };
-                return Ok(self.margin);
+                candidates.push((x, y));
             }
+        }
+        if let Some((near_x, near_y)) = near {
+            candidates.sort_by_key(|&(x, y)| {
+                let dx = u64::from(x.abs_diff(near_x));
+                let dy = u64::from(y.abs_diff(near_y));
+                (dx + dy, dy)
+            });
+        }
+        for (x, y) in candidates {
+            let size = u64::from(SHELF_SIZE + GAP);
+            if occupied.iter().any(|&(other_x, other_y, width, height)| {
+                u64::from(x) < other_x.saturating_add(width).saturating_add(u64::from(GAP))
+                    && other_x < u64::from(x) + size
+                    && u64::from(y)
+                        < other_y
+                            .saturating_add(height)
+                            .saturating_add(u64::from(GAP))
+                    && other_y < u64::from(y) + size
+            }) {
+                continue;
+            }
+            self.lease.rewind()?;
+            self.lease.set_len(0)?;
+            writeln!(
+                self.lease,
+                "{} {x} {y} {SHELF_SIZE} {SHELF_SIZE}",
+                self.output
+            )?;
+            self.margin = IcedMargin {
+                top: y as i32,
+                right: (self.area.width - x - SHELF_SIZE) as i32,
+                bottom: (self.area.height - y - SHELF_SIZE) as i32,
+                left: x as i32,
+            };
+            return Ok(self.margin);
         }
         Err(io::Error::other("No room for another shelf"))
     }

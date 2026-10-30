@@ -2,7 +2,7 @@
 
 use crate::{
     fl,
-    pin::{Area, Placement},
+    pin::{Area, Placement, Startup},
     shelf::{Item, Shelf},
     transfer::{FileList, URI_LIST},
 };
@@ -28,6 +28,7 @@ pub const SHELF_SIZE: u32 = 320;
 pub struct Flags {
     pub uris: Vec<String>,
     pub action: String,
+    pub startup: Option<Startup>,
 }
 
 impl cosmic::app::CosmicFlags for Flags {
@@ -69,7 +70,10 @@ pub enum Message {
     DragFinished,
     Noop,
     TogglePin,
-    PinReady(Option<Area>),
+    PinReady {
+        area: Option<Area>,
+        near: Option<(u32, u32)>,
+    },
     PinReleased,
     NextCorner,
     Quit,
@@ -100,7 +104,11 @@ impl cosmic::Application for Orbit {
             pinned: None,
             pin_placement: None,
             pin_pending: false,
-            pin_anchor: Anchor::TOP | Anchor::RIGHT,
+            pin_anchor: flags
+                .startup
+                .as_ref()
+                .map(|startup| startup.anchor)
+                .unwrap_or(Anchor::TOP | Anchor::RIGHT),
             drop_target: widget::Id::unique(),
         };
         app.set_header_title(fl!("app-title"));
@@ -112,7 +120,15 @@ impl cosmic::Application for Orbit {
             .main_window_id()
             .map(|id| app.set_window_title(fl!("app-title"), id))
             .unwrap_or_else(Task::none);
-        (app, title)
+        let startup = if let Some(startup) = flags.startup {
+            app.update(Message::PinReady {
+                area: Some(startup.area),
+                near: Some(startup.near),
+            })
+        } else {
+            Task::none()
+        };
+        (app, Task::batch([title, startup]))
     }
 
     fn view(&self) -> Element<'_, Message> {
@@ -269,8 +285,13 @@ impl cosmic::Application for Orbit {
             }
             Message::NewOrbit => {
                 let source = self.pinned.or(self.core.main_window_id());
+                let startup = self
+                    .pin_placement
+                    .as_ref()
+                    .map(|placement| placement.startup(self.pin_anchor).encode());
                 return activation::request_token(Some(Self::APP_ID.into()), source).then(
-                    |token| {
+                    move |token| {
+                        let startup = startup.clone();
                         cosmic::task::future(async move {
                             let Ok(executable) = std::env::current_exe() else {
                                 return Message::Incoming(Err(fl!("new-orbit-error")));
@@ -279,10 +300,14 @@ impl cosmic::Application for Orbit {
                             // Bypass single-instance activation so each shelf has its own state.
                             command
                                 .env("COSMIC_SINGLE_INSTANCE", "0")
+                                .env_remove("ORBIT_START_PINNED")
                                 .env_remove("XDG_ACTIVATION_TOKEN")
                                 .env_remove("DESKTOP_STARTUP_ID");
                             if let Some(token) = token {
                                 command.env("XDG_ACTIVATION_TOKEN", token);
+                            }
+                            if let Some(startup) = startup {
+                                command.env("ORBIT_START_PINNED", startup);
                             }
                             match cosmic::process::spawn(command).await {
                                 Some(_) => Message::Noop,
@@ -363,9 +388,10 @@ impl cosmic::Application for Orbit {
                 if let Some(id) = self.pinned.take() {
                     self.pin_pending = true;
                     let placement = self.pin_placement.take();
+                    let open = self.ensure_floating();
                     // Keep the focused layer alive until its activation token is issued.
-                    return self
-                        .restore_window(Some(id))
+                    return open
+                        .chain(self.restore_window(Some(id)))
                         .chain(destroy_layer_surface(id))
                         .chain(cosmic::task::future(async move {
                             drop(placement);
@@ -375,22 +401,25 @@ impl cosmic::Application for Orbit {
                 if let Some(main) = self.core.main_window_id() {
                     self.pin_pending = true;
                     return iced::window::monitor_size(main).map(|size| {
-                        cosmic::Action::App(Message::PinReady(size.map(|size| Area {
-                            width: size.width as u32,
-                            height: size.height as u32,
-                        })))
+                        cosmic::Action::App(Message::PinReady {
+                            area: size.map(|size| Area {
+                                width: size.width as u32,
+                                height: size.height as u32,
+                            }),
+                            near: None,
+                        })
                     });
                 }
             }
-            Message::PinReady(area) => {
+            Message::PinReady { area, near } => {
                 self.pin_pending = false;
                 let Some(area) = area else {
                     self.status = fl!("pin-error");
-                    return Task::none();
+                    return self.ensure_floating();
                 };
-                let Ok(placement) = Placement::new(area, self.pin_anchor) else {
+                let Ok(placement) = Placement::new(area, self.pin_anchor, near) else {
                     self.status = fl!("pin-error");
-                    return Task::none();
+                    return self.ensure_floating();
                 };
                 let margin = placement.margin;
                 self.status.clear();
@@ -421,6 +450,28 @@ impl cosmic::Application for Orbit {
 }
 
 impl Orbit {
+    fn ensure_floating(&mut self) -> Task<cosmic::Action<Message>> {
+        if self.core.main_window_id().is_some() {
+            return Task::none();
+        }
+        let size = iced::Size::new(SHELF_SIZE as f32, SHELF_SIZE as f32);
+        let (id, open) = iced::window::open(iced::window::Settings {
+            size,
+            min_size: Some(size),
+            max_size: Some(size),
+            decorations: false,
+            transparent: true,
+            platform_specific: iced::window::settings::PlatformSpecific {
+                application_id: Self::APP_ID.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        self.core.set_main_window_id(Some(id));
+        let title = self.set_window_title(fl!("app-title"), id);
+        Task::batch([open.map(|_| cosmic::Action::App(Message::Noop)), title])
+    }
+
     fn new_orbit_button(&self) -> Element<'_, Message> {
         widget::button::icon(widget::icon::from_name("list-add-symbolic"))
             .name(fl!("new-orbit"))

@@ -35,8 +35,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let languages = i18n_embed::DesktopLanguageRequester::requested_languages();
     i18n::init(&languages);
+    let startup = pin::Startup::from_env()?;
     let size = app::SHELF_SIZE as f32;
     let settings = cosmic::app::Settings::default()
+        .no_main_window(startup.is_some())
         .size(cosmic::iced::Size::new(size, size))
         .size_limits(
             cosmic::iced::Limits::NONE
@@ -50,6 +52,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         app::Flags {
             uris,
             action: "collect".into(),
+            startup,
         },
     )?;
     Ok(())
