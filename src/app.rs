@@ -47,6 +47,7 @@ impl cosmic::app::CosmicFlags for Flags {
 pub struct Orbit {
     core: cosmic::Core,
     shelf: Shelf,
+    dragged_paths: Vec<PathBuf>,
     hovering: bool,
     status: String,
     pinned: Option<window::Id>,
@@ -75,8 +76,9 @@ pub enum Message {
     Clear,
     Copy,
     Paste,
-    DragStarted,
+    DragStarted(Vec<PathBuf>),
     DragFinished,
+    DragCancelled,
     Noop,
     WindowOpened(window::Id),
     WindowAction(cosmic::app::Action),
@@ -118,6 +120,7 @@ impl cosmic::Application for Orbit {
         let mut app = Self {
             core,
             shelf: Shelf::default(),
+            dragged_paths: Vec::new(),
             hovering: false,
             status: String::new(),
             pinned: None,
@@ -463,11 +466,26 @@ impl cosmic::Application for Orbit {
                     ))
                 });
             }
-            Message::DragStarted => {
+            Message::DragStarted(paths) => {
+                self.dragged_paths = paths;
                 self.hovering = false;
                 self.status.clear();
             }
-            Message::DragFinished => self.status.clear(),
+            Message::DragFinished => {
+                self.status.clear();
+                if !self.dragged_paths.is_empty() {
+                    for path in self.dragged_paths.drain(..) {
+                        self.shelf.remove(&path);
+                    }
+                    if self.shelf.items.is_empty() {
+                        return iced::exit();
+                    }
+                }
+            }
+            Message::DragCancelled => {
+                self.dragged_paths.clear();
+                self.status.clear();
+            }
             Message::Noop => (),
             Message::WindowAction(action) => {
                 return cosmic::task::message(cosmic::Action::Cosmic(action));
@@ -868,6 +886,8 @@ impl Orbit {
         .preferred_action(DndAction::Copy)
         .on_enter(|_, _, _| Message::Hover(true))
         .on_leave(|| Message::Hover(false))
+        // Dropping back into this shelf keeps its entries.
+        .on_drop(|_, _| Message::DragCancelled)
         .on_finish(|mime, bytes, _, _, _| {
             Message::Incoming(
                 FileList::try_from((bytes, mime)).map_err(|_| fl!("unsupported-files")),
@@ -1014,6 +1034,7 @@ impl Orbit {
         )
         .window(window)
         .action(DndAction::Copy)
+        .on_start(Some(Message::DragStarted(paths.clone())))
         .drag_content(move || FileList(paths.clone()))
         .drag_icon(move |_| {
             let icon: Element<'static, ()> = widget::container(widget::text::body(label.clone()))
@@ -1024,9 +1045,8 @@ impl Orbit {
             let state = icon.as_widget().state();
             (icon, state, iced::Vector::ZERO)
         })
-        .on_start(Some(Message::DragStarted))
         .on_finish(Some(Message::DragFinished))
-        .on_cancel(Some(Message::DragFinished))
+        .on_cancel(Some(Message::DragCancelled))
         .into()
     }
 }

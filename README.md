@@ -6,6 +6,9 @@ The header's **+** opens an independent shelf. From a pinned shelf, the new shel
 opens pinned beside it. Collect files with drag and drop or Ctrl+V. Ctrl+O adds
 files; Ctrl+Shift+O adds folders.
 
+Files leave the shelf after a successful drop elsewhere. The shelf closes when its
+last files leave. Cancelled drags and drops back into the same shelf keep its files.
+
 Double-click the header or press Ctrl+P to pin or unpin.
 Drag a pinned shelf by its header and release toward a screen corner to move it there.
 A translucent preview follows the cursor while dragging.
