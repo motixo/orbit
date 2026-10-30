@@ -184,8 +184,11 @@ impl cosmic::Application for Orbit {
     fn view_window(&self, id: window::Id) -> Element<'_, Message> {
         if let Some((preview, Some(image))) = &self.pin_preview
             && *preview == id
+            && let Some(start) = self.pin_drag_start
+            && let Some(placement) = self.pin_placement.as_ref()
         {
-            return widget::container(
+            let (x, y) = placement.drag_position(self.pin_cursor - start);
+            let preview = widget::container(
                 widget::container(
                     widget::image(image.clone())
                         .width(SHELF_SIZE as f32)
@@ -211,8 +214,14 @@ impl cosmic::Application for Orbit {
                     }
                 })),
             )
-            .padding(PREVIEW_PADDING as u16)
-            .into();
+            .padding(PREVIEW_PADDING as u16);
+            return iced::widget::pin(preview)
+                .position(iced::Point::new(
+                    x as f32 - PREVIEW_PADDING as f32,
+                    y as f32 - PREVIEW_PADDING as f32,
+                ))
+                .overflow(true)
+                .into();
         }
         if Some(id) != self.pinned {
             return widget::Space::new()
@@ -475,8 +484,7 @@ impl cosmic::Application for Orbit {
                     .pin_preview
                     .as_ref()
                     .is_some_and(|preview| preview.0 == id)
-                    && let Some(start) = self.pin_drag_start
-                    && let Some(placement) = self.pin_placement.as_ref()
+                    && self.pin_drag_start.is_some()
                 {
                     self.pin_preview = Some((
                         id,
@@ -486,21 +494,15 @@ impl cosmic::Application for Orbit {
                             image.rgba,
                         )),
                     ));
-                    let (x, y) = placement.drag_position(self.pin_cursor - start);
-                    let size = SHELF_SIZE + PREVIEW_PADDING * 2;
+                    // Keep the overlay fixed; moving layer margins requires compositor layout.
                     let settings = SctkLayerSurfaceSettings {
                         id,
                         layer: Layer::Overlay,
-                        anchor: Anchor::TOP | Anchor::LEFT,
+                        anchor: Anchor::all(),
                         keyboard_interactivity: KeyboardInteractivity::None,
                         input_zone: Some(Vec::new()),
                         namespace: format!("{}.drag-preview", Self::APP_ID),
-                        margin: IcedMargin {
-                            top: y - PREVIEW_PADDING as i32,
-                            left: x - PREVIEW_PADDING as i32,
-                            ..Default::default()
-                        },
-                        size: Some((Some(size), Some(size))),
+                        size_limits: iced::Limits::NONE,
                         ..Default::default()
                     };
                     return cosmic::task::message(cosmic::Action::Surface(
@@ -523,19 +525,6 @@ impl cosmic::Application for Orbit {
                 match event {
                     mouse::Event::CursorMoved { position } => {
                         self.pin_cursor = position;
-                        if let Some(start) = self.pin_drag_start
-                            && let Some((preview, Some(_))) = &self.pin_preview
-                            && let Some(placement) = self.pin_placement.as_ref()
-                        {
-                            let (x, y) = placement.drag_position(position - start);
-                            return set_margin(
-                                *preview,
-                                y - PREVIEW_PADDING as i32,
-                                0,
-                                0,
-                                x - PREVIEW_PADDING as i32,
-                            );
-                        }
                     }
                     mouse::Event::ButtonPressed(mouse::Button::Left) => {
                         self.pin_pointer_down = true
