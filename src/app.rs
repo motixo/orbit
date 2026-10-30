@@ -899,33 +899,6 @@ impl Orbit {
             .height(Length::Fill);
         if !self.shelf.items.is_empty() {
             let selected = self.shelf.selected_count();
-            let count = if selected > 0 {
-                selected
-            } else {
-                self.shelf.items.len()
-            };
-            let bundle = widget::button::suggested(fl!("drag-items", count = count))
-                .leading_icon(widget::icon::from_name("insert-link-symbolic"))
-                .on_press(Message::Noop)
-                .width(Length::Fill);
-            let footer = widget::row::with_children(vec![
-                self.drag_source(
-                    bundle.into(),
-                    self.shelf.export_paths(),
-                    "bundle".into(),
-                    window,
-                ),
-                widget::button::icon(widget::icon::from_name("edit-copy-symbolic"))
-                    .name(fl!("copy-files"))
-                    .on_press(Message::Copy)
-                    .into(),
-                widget::button::icon(widget::icon::from_name("edit-clear-all-symbolic"))
-                    .name(fl!("clear-shelf"))
-                    .on_press(Message::Clear)
-                    .into(),
-            ])
-            .spacing(spacing.space_xs)
-            .align_y(Alignment::Center);
             let selection = widget::row::with_children(vec![
                 widget::text::caption(fl!("shelf-count", count = self.shelf.items.len())).into(),
                 widget::space::horizontal().into(),
@@ -936,9 +909,12 @@ impl Orbit {
                 })
                 .on_press(Message::SelectAll)
                 .into(),
+                widget::button::text(fl!("clear-shelf"))
+                    .on_press(Message::Clear)
+                    .into(),
             ])
             .align_y(Alignment::Center);
-            content = content.push(selection).push(footer);
+            content = content.push(selection);
         }
         if !self.status.is_empty() {
             content = content.push(widget::text::caption(&self.status));

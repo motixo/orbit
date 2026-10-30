@@ -6,7 +6,6 @@ drop-now = Drop to collect
 add-files = Add files
 add-folders = Add folders
 new-orbit = New Orbit
-copy-files = Copy
 clear-shelf = Clear
 select-all = Select all
 deselect-all = Deselect all
