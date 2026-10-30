@@ -130,6 +130,19 @@ impl Placement {
         self.place(anchor, None)
     }
 
+    pub fn refresh(&mut self, anchor: Anchor) -> io::Result<Option<IcedMargin>> {
+        let registry = open(self.directory.join("layout.lock"))?;
+        match registry.try_lock() {
+            Ok(()) => {
+                let previous = self.margin;
+                let margin = self.place(anchor, None)?;
+                Ok((margin.left != previous.left || margin.top != previous.top).then_some(margin))
+            }
+            Err(TryLockError::WouldBlock) => Ok(None),
+            Err(TryLockError::Error(error)) => Err(error),
+        }
+    }
+
     fn place(&mut self, anchor: Anchor, near: Option<(u32, u32)>) -> io::Result<IcedMargin> {
         let mut occupied = Vec::new();
         let own_name = format!("{}.pin", std::process::id());
@@ -208,20 +221,23 @@ impl Placement {
             }) {
                 continue;
             }
-            self.lease.rewind()?;
-            self.lease.set_len(0)?;
-            writeln!(
-                self.lease,
-                "{} {x} {y} {SHELF_SIZE} {SHELF_SIZE}",
-                self.output
-            )?;
-            self.margin = IcedMargin {
+            let margin = IcedMargin {
                 top: y as i32,
                 right: (self.area.width - x - SHELF_SIZE) as i32,
                 bottom: (self.area.height - y - SHELF_SIZE) as i32,
                 left: x as i32,
             };
-            return Ok(self.margin);
+            if margin.left != self.margin.left || margin.top != self.margin.top {
+                self.lease.rewind()?;
+                self.lease.set_len(0)?;
+                writeln!(
+                    self.lease,
+                    "{} {x} {y} {SHELF_SIZE} {SHELF_SIZE}",
+                    self.output
+                )?;
+                self.margin = margin;
+            }
+            return Ok(margin);
         }
         Err(io::Error::other("No room for another shelf"))
     }

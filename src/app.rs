@@ -76,6 +76,7 @@ pub enum Message {
         near: Option<(u32, u32)>,
     },
     PinReleased,
+    RefreshPins,
     NextCorner,
     Quit,
 }
@@ -204,7 +205,7 @@ impl cosmic::Application for Orbit {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        iced::event::listen_with(|event, status, _| {
+        let keyboard = iced::event::listen_with(|event, status, _| {
             if status == iced::event::Status::Captured {
                 return None;
             }
@@ -232,7 +233,13 @@ impl cosmic::Application for Orbit {
                 };
             }
             None
-        })
+        });
+        let layout = if self.pinned.is_some() {
+            iced::time::every(std::time::Duration::from_millis(200)).map(|_| Message::RefreshPins)
+        } else {
+            Subscription::none()
+        };
+        Subscription::batch([keyboard, layout])
     }
 
     fn update(&mut self, message: Message) -> Task<cosmic::Action<Message>> {
@@ -350,6 +357,14 @@ impl cosmic::Application for Orbit {
             Message::DragFinished => self.status.clear(),
             Message::Noop => (),
             Message::PinReleased => self.pin_pending = false,
+            Message::RefreshPins => {
+                if let Some(id) = self.pinned
+                    && let Some(placement) = self.pin_placement.as_mut()
+                    && let Ok(Some(margin)) = placement.refresh(self.pin_anchor)
+                {
+                    return set_margin(id, margin.top, margin.right, margin.bottom, margin.left);
+                }
+            }
             Message::NextCorner => {
                 if let Some(id) = self.pinned
                     && let Some(placement) = self.pin_placement.as_mut()
