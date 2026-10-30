@@ -140,6 +140,7 @@ impl cosmic::Application for Orbit {
     }
 
     fn view_window(&self, id: window::Id) -> Element<'_, Message> {
+        let border_padding = self.core.window.border_padding.unwrap_or(7);
         let header = widget::header_bar()
             .title(fl!("app-title"))
             .end(
@@ -152,10 +153,30 @@ impl cosmic::Application for Orbit {
             .on_close(Message::Quit)
             .focused(true);
         widget::container(
-            widget::column::with_children(vec![header.into(), self.shelf_view(id)])
-                .height(Length::Fill),
+            widget::column::with_children(vec![
+                header.into(),
+                widget::container(self.shelf_view(id))
+                    .padding([0, border_padding, 0, border_padding])
+                    .into(),
+            ])
+            .height(Length::Fill),
         )
-        .class(cosmic::theme::Container::Background)
+        .padding(1)
+        .class(cosmic::theme::Container::custom(|theme| {
+            let cosmic = theme.cosmic();
+            widget::container::Style {
+                background: Some(cosmic.background(theme.transparent).base.into()),
+                border: iced::Border {
+                    color: cosmic.bg_divider().into(),
+                    width: 1.0,
+                    radius: cosmic
+                        .radius_s()
+                        .map(|radius| if radius < 4.0 { radius } else { radius + 4.0 })
+                        .into(),
+                },
+                ..Default::default()
+            }
+        }))
         .width(Length::Fill)
         .height(Length::Fill)
         .into()
