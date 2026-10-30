@@ -8,6 +8,7 @@ files; Ctrl+Shift+O adds folders.
 
 Drag a pinned shelf by its header and release toward a screen corner to move it there.
 A translucent preview follows the cursor while dragging.
+Pinned shelves slide into place when moved or rearranged.
 
 Orbit is an independent community application. It follows the
 [System76 COSMIC app template](https://github.com/pop-os/cosmic-app-template)

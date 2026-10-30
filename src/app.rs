@@ -2,7 +2,7 @@
 
 use crate::{
     fl,
-    pin::{Area, Placement, Startup},
+    pin::{Area, Motion, Placement, Startup},
     shelf::{Item, Shelf},
     transfer::{FileList, URI_LIST},
 };
@@ -16,7 +16,7 @@ use cosmic::{
 };
 use iced::clipboard::dnd::DndAction;
 use iced::platform_specific::{
-    runtime::wayland::layer_surface::SctkLayerSurfaceSettings,
+    runtime::wayland::layer_surface::{IcedMargin, SctkLayerSurfaceSettings},
     shell::commands::{
         activation,
         layer_surface::{destroy_layer_surface, set_anchor, set_margin},
@@ -57,6 +57,7 @@ pub struct Orbit {
     pin_cursor: iced::Point,
     pin_pointer_down: bool,
     pin_preview: Option<(window::Id, Option<widget::image::Handle>)>,
+    pin_motion: Option<Motion>,
     drop_target: widget::Id,
 }
 
@@ -82,6 +83,7 @@ pub enum Message {
     },
     PinReleased,
     RefreshPins,
+    AnimatePin,
     StartPinDrag,
     PinPreviewReady(window::Id, window::Screenshot),
     PinPointer(window::Id, mouse::Event),
@@ -122,6 +124,7 @@ impl cosmic::Application for Orbit {
             pin_cursor: iced::Point::ORIGIN,
             pin_pointer_down: false,
             pin_preview: None,
+            pin_motion: None,
             drop_target: widget::Id::unique(),
         };
         app.set_header_title(fl!("app-title"));
@@ -306,7 +309,12 @@ impl cosmic::Application for Orbit {
         } else {
             Subscription::none()
         };
-        Subscription::batch([keyboard, layout, pointer])
+        let animation = if self.pin_motion.is_some() {
+            iced::time::every(std::time::Duration::from_millis(16)).map(|_| Message::AnimatePin)
+        } else {
+            Subscription::none()
+        };
+        Subscription::batch([keyboard, layout, pointer, animation])
     }
 
     fn update(&mut self, message: Message) -> Task<cosmic::Action<Message>> {
@@ -426,10 +434,24 @@ impl cosmic::Application for Orbit {
             Message::PinReleased => self.pin_pending = false,
             Message::RefreshPins => {
                 if self.pin_drag_start.is_none()
+                    && self.pin_motion.is_none()
                     && let Some(id) = self.pinned
                     && let Some(placement) = self.pin_placement.as_mut()
-                    && let Ok(Some(margin)) = placement.refresh(self.pin_anchor)
                 {
+                    let from = placement.margin;
+                    if let Ok(Some(margin)) = placement.refresh(self.pin_anchor) {
+                        return self.animate_pin(id, from, margin);
+                    }
+                }
+            }
+            Message::AnimatePin => {
+                if let Some(id) = self.pinned
+                    && let Some(motion) = &self.pin_motion
+                {
+                    let (margin, complete) = motion.frame();
+                    if complete {
+                        self.pin_motion = None;
+                    }
                     return set_margin(id, margin.top, margin.right, margin.bottom, margin.left);
                 }
             }
@@ -438,6 +460,7 @@ impl cosmic::Application for Orbit {
                     && self.pin_pointer_down
                     && !self.pin_pending
                     && self.pin_drag_start.is_none()
+                    && self.pin_motion.is_none()
                 {
                     self.pin_drag_start = Some(self.pin_cursor);
                     let id = window::Id::unique();
@@ -472,12 +495,11 @@ impl cosmic::Application for Orbit {
                         keyboard_interactivity: KeyboardInteractivity::None,
                         input_zone: Some(Vec::new()),
                         namespace: format!("{}.drag-preview", Self::APP_ID),
-                        margin:
-                            iced::platform_specific::runtime::wayland::layer_surface::IcedMargin {
-                                top: y - PREVIEW_PADDING as i32,
-                                left: x - PREVIEW_PADDING as i32,
-                                ..Default::default()
-                            },
+                        margin: IcedMargin {
+                            top: y - PREVIEW_PADDING as i32,
+                            left: x - PREVIEW_PADDING as i32,
+                            ..Default::default()
+                        },
                         size: Some((Some(size), Some(size))),
                         ..Default::default()
                     };
@@ -532,6 +554,7 @@ impl cosmic::Application for Orbit {
                         {
                             let position = start + (self.pin_cursor - start) * 2.0;
                             let anchor = placement.corner_at(position);
+                            let from = placement.margin;
                             match placement.move_to(anchor) {
                                 Ok(margin) => {
                                     self.status.clear();
@@ -539,13 +562,7 @@ impl cosmic::Application for Orbit {
                                     return Task::batch([
                                         close_preview,
                                         set_anchor(id, anchor),
-                                        set_margin(
-                                            id,
-                                            margin.top,
-                                            margin.right,
-                                            margin.bottom,
-                                            margin.left,
-                                        ),
+                                        self.animate_pin(id, from, margin),
                                     ]);
                                 }
                                 Err(_) => self.status = fl!("pin-error"),
@@ -559,6 +576,7 @@ impl cosmic::Application for Orbit {
             Message::TogglePin => {
                 self.pin_drag_start = None;
                 self.pin_pointer_down = false;
+                self.pin_motion = None;
                 let close_preview = self.dismiss_pin_preview();
                 if self.pin_pending {
                     return close_preview;
@@ -639,6 +657,18 @@ impl cosmic::Application for Orbit {
 }
 
 impl Orbit {
+    fn animate_pin(
+        &mut self,
+        id: window::Id,
+        from: IcedMargin,
+        to: IcedMargin,
+    ) -> Task<cosmic::Action<Message>> {
+        if from.left != to.left || from.top != to.top {
+            self.pin_motion = Some(Motion::new(from, to));
+        }
+        set_margin(id, from.top, from.right, from.bottom, from.left)
+    }
+
     fn dismiss_pin_preview(&mut self) -> Task<cosmic::Action<Message>> {
         if let Some((id, Some(_))) = self.pin_preview.take() {
             cosmic::task::message(cosmic::Action::Surface(

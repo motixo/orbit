@@ -10,9 +10,42 @@ use std::{
     io::{self, Read, Seek, Write},
     os::unix::fs::{DirBuilderExt, OpenOptionsExt},
     path::PathBuf,
+    time::Instant,
 };
 
 const GAP: u32 = 12;
+
+pub struct Motion {
+    from: IcedMargin,
+    to: IcedMargin,
+    started: Instant,
+}
+
+impl Motion {
+    pub fn new(from: IcedMargin, to: IcedMargin) -> Self {
+        Self {
+            from,
+            to,
+            started: Instant::now(),
+        }
+    }
+
+    pub fn frame(&self) -> (IcedMargin, bool) {
+        let progress = (self.started.elapsed().as_secs_f32() / 0.22).min(1.0);
+        let eased = 1.0 - (1.0 - progress).powi(3);
+        let interpolate =
+            |from: i32, to: i32| (from as f32 + (to as f32 - from as f32) * eased).round() as i32;
+        (
+            IcedMargin {
+                top: interpolate(self.from.top, self.to.top),
+                right: interpolate(self.from.right, self.to.right),
+                bottom: interpolate(self.from.bottom, self.to.bottom),
+                left: interpolate(self.from.left, self.to.left),
+            },
+            progress >= 1.0,
+        )
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Area {
