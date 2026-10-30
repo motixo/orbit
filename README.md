@@ -6,6 +6,10 @@ The header's **+** opens an independent shelf. From a pinned shelf, the new shel
 opens pinned beside it. Collect files with drag and drop or Ctrl+V. Ctrl+O adds
 files; Ctrl+Shift+O adds folders.
 
+Drop images directly from a browser. Orbit accepts image data or downloads an
+image URL into a temporary file, which can then be dragged out as a regular file.
+Images stay in Orbit's cache while the receiving app finishes moving them.
+
 Floating shelves stay above normal windows and appear on every workspace using
 COSMIC's sticky window layer.
 

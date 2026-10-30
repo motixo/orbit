@@ -3,6 +3,7 @@
 mod always_on_top;
 mod app;
 mod i18n;
+mod import;
 mod pin;
 mod pointer;
 mod shelf;

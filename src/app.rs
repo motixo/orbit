@@ -2,6 +2,7 @@
 
 use crate::{
     fl,
+    import::ImportedFiles,
     pin::{Area, Motion, Placement, Startup},
     shelf::{Item, Shelf},
     transfer::{DragFiles, FileList, URI_LIST},
@@ -47,6 +48,8 @@ impl cosmic::app::CosmicFlags for Flags {
 pub struct Orbit {
     core: cosmic::Core,
     shelf: Shelf,
+    imported_images: Vec<PathBuf>,
+    pending_imports: usize,
     dragged_paths: Vec<PathBuf>,
     hovering: bool,
     status: String,
@@ -70,6 +73,8 @@ pub enum Message {
     Choose(bool),
     NewOrbit,
     Incoming(Result<FileList, String>),
+    DropData(Vec<u8>, String),
+    DropImported(Result<ImportedFiles, String>),
     Hover(bool),
     Toggle(PathBuf),
     SelectAll,
@@ -123,6 +128,8 @@ impl cosmic::Application for Orbit {
         let mut app = Self {
             core,
             shelf: Shelf::default(),
+            imported_images: Vec::new(),
+            pending_imports: 0,
             dragged_paths: Vec::new(),
             hovering: false,
             status: String::new(),
@@ -371,6 +378,28 @@ impl cosmic::Application for Orbit {
 
     fn update(&mut self, message: Message) -> Task<cosmic::Action<Message>> {
         match message {
+            Message::DropData(bytes, mime) => {
+                self.hovering = false;
+                self.pending_imports += 1;
+                self.status = fl!("loading-image");
+                return cosmic::task::future(async move {
+                    Message::DropImported(
+                        crate::import::receive(bytes, mime)
+                            .await
+                            .map_err(|_| fl!("image-import-error")),
+                    )
+                });
+            }
+            Message::DropImported(result) => {
+                self.pending_imports = self.pending_imports.saturating_sub(1);
+                let files = result.map(|imported| {
+                    if let Some(directory) = imported.directory {
+                        self.imported_images.push(directory);
+                    }
+                    imported.files
+                });
+                return self.update(Message::Incoming(files));
+            }
             Message::Incoming(result) => {
                 self.hovering = false;
                 self.status = match result {
@@ -457,10 +486,12 @@ impl cosmic::Application for Orbit {
             Message::SelectAll => self.shelf.select_all(),
             Message::Remove(path) => {
                 self.shelf.remove(&path);
+                self.release_imports();
                 self.status.clear();
             }
             Message::Clear => {
                 self.shelf.clear();
+                self.release_imports();
                 self.status.clear();
             }
             Message::Copy => {
@@ -485,10 +516,18 @@ impl cosmic::Application for Orbit {
             Message::DragFinished => {
                 self.status.clear();
                 if !self.dragged_paths.is_empty() {
+                    // The receiver may still be moving files after acknowledging their URIs.
+                    self.imported_images.retain(|directory| {
+                        !self
+                            .dragged_paths
+                            .iter()
+                            .any(|path| path.starts_with(directory))
+                    });
                     for path in self.dragged_paths.drain(..) {
                         self.shelf.remove(&path);
                     }
-                    if self.shelf.items.is_empty() {
+                    self.release_imports();
+                    if self.shelf.items.is_empty() && self.pending_imports == 0 {
                         return iced::exit();
                     }
                 }
@@ -749,7 +788,29 @@ impl cosmic::Application for Orbit {
     }
 }
 
+impl Drop for Orbit {
+    fn drop(&mut self) {
+        for directory in &self.imported_images {
+            let _ = std::fs::remove_dir_all(directory);
+        }
+    }
+}
+
 impl Orbit {
+    fn release_imports(&mut self) {
+        self.imported_images.retain(|directory| {
+            let referenced = self
+                .shelf
+                .items
+                .iter()
+                .any(|item| item.path.starts_with(directory));
+            if !referenced {
+                let _ = std::fs::remove_dir_all(directory);
+            }
+            referenced
+        });
+    }
+
     fn set_pin_collapsed(&mut self, collapsed: bool) -> Task<cosmic::Action<Message>> {
         if let Some(id) = self.pinned
             && let Some(placement) = self.pin_placement.as_mut()
@@ -912,7 +973,10 @@ impl Orbit {
         let destination = widget::DndDestination::with_id(
             drop_area,
             self.drop_target.clone(),
-            vec![URI_LIST.into()],
+            crate::import::MIME_TYPES
+                .iter()
+                .map(|mime| (*mime).into())
+                .collect(),
         )
         .action(DndAction::Copy)
         .preferred_action(DndAction::Copy)
@@ -920,11 +984,7 @@ impl Orbit {
         .on_leave(|| Message::Hover(false))
         // Dropping back into this shelf keeps its entries.
         .on_drop(|_, _| Message::DragCancelled)
-        .on_finish(|mime, bytes, _, _, _| {
-            Message::Incoming(
-                FileList::try_from((bytes, mime)).map_err(|_| fl!("unsupported-files")),
-            )
-        });
+        .on_finish(|mime, bytes, _, _, _| Message::DropData(bytes, mime));
 
         let mut content = widget::column::with_children(vec![destination.into()])
             .spacing(spacing.space_xs)
