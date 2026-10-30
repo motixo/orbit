@@ -25,6 +25,7 @@ use iced::platform_specific::{
 use std::path::PathBuf;
 
 pub const SHELF_SIZE: u32 = 320;
+const PREVIEW_PADDING: u32 = 20;
 
 pub struct Flags {
     pub uris: Vec<String>,
@@ -55,6 +56,7 @@ pub struct Orbit {
     pin_drag_start: Option<iced::Point>,
     pin_cursor: iced::Point,
     pin_pointer_down: bool,
+    pin_preview: Option<(window::Id, Option<widget::image::Handle>)>,
     drop_target: widget::Id,
 }
 
@@ -81,6 +83,7 @@ pub enum Message {
     PinReleased,
     RefreshPins,
     StartPinDrag,
+    PinPreviewReady(window::Id, window::Screenshot),
     PinPointer(window::Id, mouse::Event),
     Quit,
 }
@@ -118,6 +121,7 @@ impl cosmic::Application for Orbit {
             pin_drag_start: None,
             pin_cursor: iced::Point::ORIGIN,
             pin_pointer_down: false,
+            pin_preview: None,
             drop_target: widget::Id::unique(),
         };
         app.set_header_title(fl!("app-title"));
@@ -175,6 +179,44 @@ impl cosmic::Application for Orbit {
     }
 
     fn view_window(&self, id: window::Id) -> Element<'_, Message> {
+        if let Some((preview, Some(image))) = &self.pin_preview
+            && *preview == id
+        {
+            return widget::container(
+                widget::container(
+                    widget::image(image.clone())
+                        .width(SHELF_SIZE as f32)
+                        .height(SHELF_SIZE as f32)
+                        .opacity(0.7_f32),
+                )
+                .class(cosmic::theme::Container::custom(|theme| {
+                    widget::container::Style {
+                        border: iced::Border {
+                            radius: theme
+                                .cosmic()
+                                .radius_s()
+                                .map(|radius| if radius < 4.0 { radius } else { radius + 4.0 })
+                                .into(),
+                            ..Default::default()
+                        },
+                        shadow: iced::Shadow {
+                            color: theme.cosmic().shade.into(),
+                            offset: iced::Vector::new(0.0, 4.0),
+                            blur_radius: 16.0,
+                        },
+                        ..Default::default()
+                    }
+                })),
+            )
+            .padding(PREVIEW_PADDING as u16)
+            .into();
+        }
+        if Some(id) != self.pinned {
+            return widget::Space::new()
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into();
+        }
         let header = widget::header_bar()
             .title(fl!("app-title"))
             .start(self.new_orbit_button())
@@ -392,8 +434,64 @@ impl cosmic::Application for Orbit {
                 }
             }
             Message::StartPinDrag => {
-                if self.pinned.is_some() && self.pin_pointer_down && !self.pin_pending {
+                if let Some(source) = self.pinned
+                    && self.pin_pointer_down
+                    && !self.pin_pending
+                    && self.pin_drag_start.is_none()
+                {
                     self.pin_drag_start = Some(self.pin_cursor);
+                    let id = window::Id::unique();
+                    self.pin_preview = Some((id, None));
+                    return iced::window::screenshot(source).map(move |image| {
+                        cosmic::Action::App(Message::PinPreviewReady(id, image))
+                    });
+                }
+            }
+            Message::PinPreviewReady(id, image) => {
+                if self
+                    .pin_preview
+                    .as_ref()
+                    .is_some_and(|preview| preview.0 == id)
+                    && let Some(start) = self.pin_drag_start
+                    && let Some(placement) = self.pin_placement.as_ref()
+                {
+                    self.pin_preview = Some((
+                        id,
+                        Some(widget::image::Handle::from_rgba(
+                            image.size.width,
+                            image.size.height,
+                            image.rgba,
+                        )),
+                    ));
+                    let (x, y) = placement.drag_position(self.pin_cursor - start);
+                    let size = SHELF_SIZE + PREVIEW_PADDING * 2;
+                    let settings = SctkLayerSurfaceSettings {
+                        id,
+                        layer: Layer::Overlay,
+                        anchor: Anchor::TOP | Anchor::LEFT,
+                        keyboard_interactivity: KeyboardInteractivity::None,
+                        input_zone: Some(Vec::new()),
+                        namespace: format!("{}.drag-preview", Self::APP_ID),
+                        margin:
+                            iced::platform_specific::runtime::wayland::layer_surface::IcedMargin {
+                                top: y - PREVIEW_PADDING as i32,
+                                left: x - PREVIEW_PADDING as i32,
+                                ..Default::default()
+                            },
+                        size: Some((Some(size), Some(size))),
+                        ..Default::default()
+                    };
+                    return cosmic::task::message(cosmic::Action::Surface(
+                        app_layer_shell::<Self>(
+                            |_| LiveSettings {
+                                blur: Some(false),
+                                corners: Some(Default::default()),
+                                ..Default::default()
+                            },
+                            move |_| settings.clone(),
+                            None,
+                        ),
+                    ));
                 }
             }
             Message::PinPointer(id, event) => {
@@ -401,16 +499,33 @@ impl cosmic::Application for Orbit {
                     return Task::none();
                 }
                 match event {
-                    mouse::Event::CursorMoved { position } => self.pin_cursor = position,
+                    mouse::Event::CursorMoved { position } => {
+                        self.pin_cursor = position;
+                        if let Some(start) = self.pin_drag_start
+                            && let Some((preview, Some(_))) = &self.pin_preview
+                            && let Some(placement) = self.pin_placement.as_ref()
+                        {
+                            let (x, y) = placement.drag_position(position - start);
+                            return set_margin(
+                                *preview,
+                                y - PREVIEW_PADDING as i32,
+                                0,
+                                0,
+                                x - PREVIEW_PADDING as i32,
+                            );
+                        }
+                    }
                     mouse::Event::ButtonPressed(mouse::Button::Left) => {
                         self.pin_pointer_down = true
                     }
                     mouse::Event::CursorLeft => {
                         self.pin_drag_start = None;
                         self.pin_pointer_down = false;
+                        return self.dismiss_pin_preview();
                     }
                     mouse::Event::ButtonReleased(mouse::Button::Left) => {
                         self.pin_pointer_down = false;
+                        let close_preview = self.dismiss_pin_preview();
                         if let Some(start) = self.pin_drag_start.take()
                             && start.distance(self.pin_cursor) >= 4.0
                             && let Some(placement) = self.pin_placement.as_mut()
@@ -422,6 +537,7 @@ impl cosmic::Application for Orbit {
                                     self.status.clear();
                                     self.pin_anchor = anchor;
                                     return Task::batch([
+                                        close_preview,
                                         set_anchor(id, anchor),
                                         set_margin(
                                             id,
@@ -435,6 +551,7 @@ impl cosmic::Application for Orbit {
                                 Err(_) => self.status = fl!("pin-error"),
                             }
                         }
+                        return close_preview;
                     }
                     _ => (),
                 }
@@ -442,15 +559,17 @@ impl cosmic::Application for Orbit {
             Message::TogglePin => {
                 self.pin_drag_start = None;
                 self.pin_pointer_down = false;
+                let close_preview = self.dismiss_pin_preview();
                 if self.pin_pending {
-                    return Task::none();
+                    return close_preview;
                 }
                 if let Some(id) = self.pinned.take() {
                     self.pin_pending = true;
                     let placement = self.pin_placement.take();
                     let open = self.ensure_floating();
                     // Keep the focused layer alive until its activation token is issued.
-                    return open
+                    return close_preview
+                        .chain(open)
                         .chain(self.restore_window(Some(id)))
                         .chain(destroy_layer_surface(id))
                         .chain(cosmic::task::future(async move {
@@ -520,6 +639,16 @@ impl cosmic::Application for Orbit {
 }
 
 impl Orbit {
+    fn dismiss_pin_preview(&mut self) -> Task<cosmic::Action<Message>> {
+        if let Some((id, Some(_))) = self.pin_preview.take() {
+            cosmic::task::message(cosmic::Action::Surface(
+                cosmic::surface::Action::DestroyLayerShell(id),
+            ))
+        } else {
+            Task::none()
+        }
+    }
+
     fn ensure_floating(&mut self) -> Task<cosmic::Action<Message>> {
         if self.core.main_window_id().is_some() {
             return Task::none();

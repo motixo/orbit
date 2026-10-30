@@ -138,6 +138,13 @@ impl Placement {
         horizontal | vertical
     }
 
+    pub fn drag_position(&self, delta: cosmic::iced::Vector) -> (i32, i32) {
+        (
+            self.margin.left.saturating_add(delta.x.round() as i32),
+            self.margin.top.saturating_add(delta.y.round() as i32),
+        )
+    }
+
     pub fn move_to(&mut self, anchor: Anchor) -> io::Result<IcedMargin> {
         let registry = open(self.directory.join("layout.lock"))?;
         registry.lock()?;
