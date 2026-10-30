@@ -34,14 +34,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let languages = i18n_embed::DesktopLanguageRequester::requested_languages();
     i18n::init(&languages);
+    let size = app::SHELF_SIZE as f32;
     let settings = cosmic::app::Settings::default()
-        .size(cosmic::iced::Size::new(440.0, 540.0))
+        .size(cosmic::iced::Size::new(size, size))
         .size_limits(
             cosmic::iced::Limits::NONE
-                .min_width(440.0)
-                .max_width(440.0)
-                .min_height(540.0)
-                .max_height(540.0),
+                .min_width(size)
+                .max_width(size)
+                .min_height(size)
+                .max_height(size),
         );
     cosmic::app::run_single_instance::<app::Orbit>(
         settings,

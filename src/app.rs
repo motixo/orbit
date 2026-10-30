@@ -18,6 +18,8 @@ use iced::platform_specific::{
 };
 use std::path::PathBuf;
 
+pub const SHELF_SIZE: u32 = 360;
+
 pub struct Flags {
     pub uris: Vec<String>,
     pub action: String,
@@ -277,7 +279,7 @@ impl cosmic::Application for Orbit {
                         right: 12,
                         ..Default::default()
                     },
-                    size: Some((Some(440), Some(540))),
+                    size: Some((Some(SHELF_SIZE), Some(SHELF_SIZE))),
                     exclusive_zone: 0,
                     ..Default::default()
                 };
@@ -348,13 +350,13 @@ impl Orbit {
                     .align_x(iced::alignment::Horizontal::Center)
                     .into(),
                 ])
-                .spacing(spacing.space_m)
+                .spacing(spacing.space_xs)
                 .align_x(Alignment::Center)
                 .max_width(320),
             )
             .center_x(Length::Fill)
             .center_y(Length::Fill)
-            .padding(spacing.space_m)
+            .padding(spacing.space_xs)
             .into()
         } else {
             let rows = widget::column::with_children(
@@ -388,7 +390,7 @@ impl Orbit {
                     ..Default::default()
                 }
             }))
-            .padding(spacing.space_xs);
+            .padding(spacing.space_xxs);
         let destination = widget::DndDestination::with_id(
             drop_area,
             self.drop_target.clone(),
@@ -405,7 +407,7 @@ impl Orbit {
         });
 
         let mut content = widget::column::with_children(vec![toolbar.into(), destination.into()])
-            .spacing(spacing.space_s)
+            .spacing(spacing.space_xs)
             .height(Length::Fill);
         if !self.shelf.items.is_empty() {
             let selected = self.shelf.selected_count();
@@ -456,7 +458,7 @@ impl Orbit {
             content = content.push(widget::text::caption(&self.status));
         }
         widget::container(content)
-            .padding(spacing.space_m)
+            .padding(spacing.space_xs)
             .height(Length::Fill)
             .into()
     }
