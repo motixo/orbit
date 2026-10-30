@@ -1016,14 +1016,13 @@ impl Orbit {
         .action(DndAction::Copy)
         .drag_content(move || FileList(paths.clone()))
         .drag_icon(move |_| {
-            (
-                widget::container(widget::text::body(label.clone()))
-                    .padding(12)
-                    .class(cosmic::theme::Container::Card)
-                    .into(),
-                iced::advanced::widget::tree::State::None,
-                iced::Vector::ZERO,
-            )
+            let icon: Element<'static, ()> = widget::container(widget::text::body(label.clone()))
+                .padding(12)
+                .class(cosmic::theme::Container::Card)
+                .into();
+            // The runtime lays out the preview before reconciling its widget state.
+            let state = icon.as_widget().state();
+            (icon, state, iced::Vector::ZERO)
         })
         .on_start(Some(Message::DragStarted))
         .on_finish(Some(Message::DragFinished))
