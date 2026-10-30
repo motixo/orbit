@@ -256,9 +256,9 @@ impl cosmic::Application for Orbit {
             .start(self.new_orbit_button())
             .end(
                 widget::button::icon(widget::icon::from_name(if self.pin_collapsed {
-                    "view-fullscreen-symbolic"
+                    "insert-rectangle-symbolic"
                 } else {
-                    "view-restore-symbolic"
+                    "list-remove-symbolic"
                 }))
                 .name(if self.pin_collapsed {
                     fl!("expand-shelf")
