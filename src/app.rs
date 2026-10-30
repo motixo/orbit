@@ -76,7 +76,9 @@ impl cosmic::Application for Orbit {
         &mut self.core
     }
 
-    fn init(core: cosmic::Core, flags: Flags) -> (Self, Task<cosmic::Action<Message>>) {
+    fn init(mut core: cosmic::Core, flags: Flags) -> (Self, Task<cosmic::Action<Message>>) {
+        core.window.show_minimize = false;
+        core.window.show_maximize = false;
         let mut app = Self {
             core,
             shelf: Shelf::default(),
