@@ -390,11 +390,15 @@ impl cosmic::Application for Orbit {
                 self.pending_imports.push((id, Progress::default()));
                 self.status.clear();
                 return cosmic::task::stream(iced::stream::channel(4, async move |mut output| {
-                    let result = crate::import::receive(bytes, mime, |progress| {
+                    let size = bytes.len();
+                    let result = crate::import::receive(bytes, mime.clone(), |progress| {
                         let _ = output.try_send(Message::DropProgress(id, progress));
                     })
                     .await
-                    .map_err(|_| fl!("image-import-error"));
+                    .map_err(|error| {
+                        crate::import::record_error(&mime, size, error);
+                        fl!("image-import-error")
+                    });
                     let _ = output.send(Message::DropImported(id, result)).await;
                 }));
             }

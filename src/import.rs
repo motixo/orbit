@@ -179,6 +179,34 @@ fn image_name(url: &Url) -> Option<String> {
         })
 }
 
+pub fn record_error(mime: &str, size: usize, error: Box<dyn Error + Send + Sync>) {
+    // Keep diagnostics local and omit URLs, query tokens and dropped image data.
+    let error: Box<dyn Error + Send + Sync> = match error.downcast::<reqwest::Error>() {
+        Ok(error) => Box::new(error.without_url()),
+        Err(error) => error,
+    };
+    let mut detail = format!("MIME: {mime:?}\nBytes: {size}\n");
+    let mut cause: Option<&dyn Error> = Some(error.as_ref());
+    while let Some(error) = cause {
+        detail.push_str(&format!("{error}\n"));
+        cause = error.source();
+    }
+    eprintln!("Orbit image import failed:\n{detail}");
+    if let Ok(cache) = image_cache() {
+        let _ = std::fs::create_dir_all(&cache);
+        let _ = std::fs::write(cache.join("last-error.log"), detail);
+    }
+}
+
+fn image_cache() -> Result<PathBuf, Box<dyn Error + Send + Sync>> {
+    Ok(std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
+        .ok_or("Missing cache directory")?
+        .join("io.github.motixo.Orbit/images"))
+}
+
 fn save_image(
     bytes: &[u8],
     name: Option<&str>,
@@ -206,12 +234,7 @@ fn save_image(
         .and_then(|name| name.to_str())
         .filter(|name| !name.is_empty() && name.len() <= 120)
         .unwrap_or("Image");
-    let cache = std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
-        .ok_or("Missing cache directory")?
-        .join("io.github.motixo.Orbit/images");
+    let cache = image_cache()?;
     std::fs::create_dir_all(&cache)?;
     let directory = tempfile::Builder::new()
         .prefix("orbit-image-")
