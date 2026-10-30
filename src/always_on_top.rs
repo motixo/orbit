@@ -15,7 +15,8 @@ use cosmic::cctk::{
     toplevel_info::{ToplevelInfoHandler, ToplevelInfoState},
     toplevel_management::{ToplevelManagerHandler, ToplevelManagerState},
     wayland_client::{
-        Connection, QueueHandle, WEnum, globals::registry_queue_init, protocol::wl_output::WlOutput,
+        Connection, Proxy, QueueHandle, WEnum, globals::registry_queue_init,
+        protocol::wl_output::WlOutput,
     },
     wayland_protocols::ext::foreign_toplevel_list::v1::client::ext_foreign_toplevel_handle_v1::ExtForeignToplevelHandleV1,
 };
@@ -106,7 +107,9 @@ impl ToplevelManagerHandler for State {
         _: &QueueHandle<Self>,
         capabilities: Vec<WEnum<Capability>>,
     ) {
-        self.sticky_supported = capabilities.contains(&WEnum::Value(Capability::Sticky));
+        // COSMIC implements set_sticky since manager v3 but can omit its capability.
+        self.sticky_supported = capabilities.contains(&WEnum::Value(Capability::Sticky))
+            || self.manager.manager.version() >= 3;
         self.keep_above();
     }
 }
