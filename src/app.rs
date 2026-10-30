@@ -76,6 +76,7 @@ pub enum Message {
     DragStarted,
     DragFinished,
     Noop,
+    WindowOpened(window::Id),
     TogglePin,
     PinReady {
         area: Option<Area>,
@@ -313,7 +314,8 @@ impl cosmic::Application for Orbit {
         } else {
             Subscription::none()
         };
-        Subscription::batch([keyboard, layout, pointer, animation])
+        let opened = iced::window::open_events().map(Message::WindowOpened);
+        Subscription::batch([keyboard, layout, pointer, animation, opened])
     }
 
     fn update(&mut self, message: Message) -> Task<cosmic::Action<Message>> {
@@ -430,6 +432,16 @@ impl cosmic::Application for Orbit {
             }
             Message::DragFinished => self.status.clear(),
             Message::Noop => (),
+            Message::WindowOpened(id) => {
+                if Some(id) == self.pinned {
+                    self.pin_pending = false;
+                    if let Some(main) = self.core.main_window_id() {
+                        // Keep shelf state while removing its toplevel from the dock.
+                        self.core.set_main_window_id(None);
+                        return iced::window::close(main);
+                    }
+                }
+            }
             Message::PinReleased => self.pin_pending = false,
             Message::RefreshPins => {
                 if self.pin_drag_start.is_none()
@@ -600,6 +612,7 @@ impl cosmic::Application for Orbit {
                 self.pin_placement = Some(placement);
                 let id = window::Id::unique();
                 self.pinned = Some(id);
+                self.pin_pending = true;
                 let settings = SctkLayerSurfaceSettings {
                     id,
                     layer: Layer::Top,
@@ -621,11 +634,7 @@ impl cosmic::Application for Orbit {
                     move |_| settings.clone(),
                     None,
                 );
-                let mut tasks = vec![cosmic::task::message(cosmic::Action::Surface(surface))];
-                if let Some(main) = self.core.main_window_id() {
-                    tasks.push(iced::window::minimize(main, true));
-                }
-                return Task::batch(tasks);
+                return cosmic::task::message(cosmic::Action::Surface(surface));
             }
             Message::Quit => return iced::exit(),
         }
