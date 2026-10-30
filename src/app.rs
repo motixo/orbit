@@ -22,7 +22,7 @@ use iced::platform_specific::{
 };
 use std::path::PathBuf;
 
-pub const SHELF_SIZE: u32 = 360;
+pub const SHELF_SIZE: u32 = 320;
 
 pub struct Flags {
     pub uris: Vec<String>,
