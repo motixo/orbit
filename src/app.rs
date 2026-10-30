@@ -53,6 +53,7 @@ pub struct Orbit {
     pinned: Option<window::Id>,
     pin_placement: Option<Placement>,
     pin_pending: bool,
+    unpin_activation: Option<(window::Id, Option<String>)>,
     pin_anchor: Anchor,
     pin_drag_start: Option<iced::Point>,
     pin_cursor: iced::Point,
@@ -90,6 +91,8 @@ pub enum Message {
         near: Option<(u32, u32)>,
     },
     PinReleased,
+    UnpinReady(window::Id, Option<String>),
+    UnpinClosed,
     RefreshPins,
     AnimatePin,
     StartPinDrag,
@@ -126,6 +129,7 @@ impl cosmic::Application for Orbit {
             pinned: None,
             pin_placement: None,
             pin_pending: false,
+            unpin_activation: None,
             pin_anchor: flags
                 .startup
                 .as_ref()
@@ -182,6 +186,13 @@ impl cosmic::Application for Orbit {
         ])
         .height(Length::Fill)
         .into()
+    }
+
+    fn on_close_requested(&self, id: window::Id) -> Option<Message> {
+        self.unpin_activation
+            .as_ref()
+            .filter(|(layer, _)| *layer == id)
+            .map(|_| Message::UnpinClosed)
     }
 
     fn dbus_activation(
@@ -501,6 +512,34 @@ impl cosmic::Application for Orbit {
                 }
             }
             Message::PinReleased => self.pin_pending = false,
+            Message::UnpinReady(id, token) => {
+                if self.pinned == Some(id) && self.pin_pending {
+                    self.unpin_activation = Some((id, token));
+                    return destroy_layer_surface(id);
+                }
+            }
+            Message::UnpinClosed => {
+                if let Some((_, token)) = self.unpin_activation.take() {
+                    self.pinned = None;
+                    self.pin_collapsed = false;
+                    self.pin_placement = None;
+                    self.hovering = false;
+                    // Layer teardown disconnects DnD; open the new window only after it finishes.
+                    let open = self.ensure_floating();
+                    let focus = if let Some(main) = self.core.main_window_id() {
+                        if let Some(token) = token {
+                            activation::activate(main, token)
+                        } else {
+                            iced::window::gain_focus(main)
+                        }
+                    } else {
+                        Task::none()
+                    };
+                    return open
+                        .chain(focus)
+                        .chain(cosmic::task::message(Message::PinReleased));
+                }
+            }
             Message::ToggleCollapse => {
                 if !self.pin_pending && self.pin_drag_start.is_none() && self.pin_motion.is_none() {
                     return self.set_pin_collapsed(!self.pin_collapsed);
@@ -644,20 +683,13 @@ impl cosmic::Application for Orbit {
                 if self.pin_pending {
                     return close_preview;
                 }
-                if let Some(id) = self.pinned.take() {
-                    self.pin_collapsed = false;
+                if let Some(id) = self.pinned {
                     self.pin_pending = true;
-                    let placement = self.pin_placement.take();
-                    let open = self.ensure_floating();
-                    // Keep the focused layer alive until its activation token is issued.
-                    return close_preview
-                        .chain(open)
-                        .chain(self.restore_window(Some(id)))
-                        .chain(destroy_layer_surface(id))
-                        .chain(cosmic::task::future(async move {
-                            drop(placement);
-                            Message::PinReleased
-                        }));
+                    // Get activation while the source still exists, then wait for its close event.
+                    return close_preview.chain(
+                        activation::request_token(Some(Self::APP_ID.into()), Some(id))
+                            .map(move |token| cosmic::Action::App(Message::UnpinReady(id, token))),
+                    );
                 }
                 if let Some(main) = self.core.main_window_id() {
                     self.pin_pending = true;
