@@ -319,7 +319,7 @@ impl Orbit {
             fl!("pin-shelf")
         };
         widget::button::icon(widget::icon::from_name(if self.pinned.is_some() {
-            "view-restore-symbolic"
+            "window-pop-out-symbolic"
         } else {
             "pin-symbolic"
         }))
