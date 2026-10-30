@@ -5,6 +5,7 @@ empty-title = Drop files here
 drop-now = Drop to collect
 add-files = Add files
 add-folders = Add folders
+add-items = Add files or folders
 paste-files = Paste files (Ctrl+V)
 copy-files = Copy files (Ctrl+C)
 clear-shelf = Clear shelf

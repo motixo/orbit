@@ -47,11 +47,13 @@ pub struct Orbit {
     status: String,
     pinned: Option<window::Id>,
     drop_target: widget::Id,
+    show_add_menu: bool,
 }
 
 #[derive(Debug, Clone)]
 pub enum Message {
     Choose(bool),
+    ShowAddMenu(bool),
     Incoming(Result<FileList, String>),
     Hover(bool),
     Toggle(PathBuf),
@@ -90,6 +92,7 @@ impl cosmic::Application for Orbit {
             status: String::new(),
             pinned: None,
             drop_target: widget::Id::unique(),
+            show_add_menu: false,
         };
         app.set_header_title(fl!("app-title"));
         if !flags.uris.is_empty() {
@@ -163,6 +166,9 @@ impl cosmic::Application for Orbit {
             else {
                 return None;
             };
+            if key == keyboard::Key::Named(keyboard::key::Named::Escape) {
+                return Some(Message::ShowAddMenu(false));
+            }
             if modifiers.control() {
                 return match key
                     .to_latin(physical_key)
@@ -202,6 +208,7 @@ impl cosmic::Application for Orbit {
                 };
             }
             Message::Choose(folders) => {
+                self.show_add_menu = false;
                 return cosmic::task::future(async move {
                     use cosmic::dialog::file_chooser::{self, open::Dialog};
                     let dialog = Dialog::new().title(if folders {
@@ -230,6 +237,7 @@ impl cosmic::Application for Orbit {
                     }
                 });
             }
+            Message::ShowAddMenu(show) => self.show_add_menu = show,
             Message::Hover(value) => self.hovering = value,
             Message::Toggle(path) => self.shelf.toggle(&path),
             Message::SelectAll => self.shelf.select_all(),
@@ -262,6 +270,7 @@ impl cosmic::Application for Orbit {
             Message::DragFinished => self.status.clear(),
             Message::Noop => (),
             Message::TogglePin => {
+                self.show_add_menu = false;
                 if let Some(id) = self.pinned.take() {
                     // Keep the focused layer alive until its activation token is issued.
                     return self
@@ -298,6 +307,34 @@ impl cosmic::Application for Orbit {
 }
 
 impl Orbit {
+    fn add_button(&self) -> Element<'_, Message> {
+        let button = widget::button::icon(widget::icon::from_name("list-add-symbolic"))
+            .name(fl!("add-items"))
+            .tooltip(fl!("add-items"))
+            .on_press(Message::ShowAddMenu(!self.show_add_menu));
+        let mut popover = widget::popover(button)
+            .position(widget::popover::Position::Bottom)
+            .on_close(Message::ShowAddMenu(false));
+        if self.show_add_menu {
+            popover = popover.popup(
+                widget::container(widget::column::with_children(vec![
+                    widget::button::text(fl!("add-files"))
+                        .on_press(Message::Choose(false))
+                        .width(Length::Fill)
+                        .into(),
+                    widget::button::text(fl!("add-folders"))
+                        .on_press(Message::Choose(true))
+                        .width(Length::Fill)
+                        .into(),
+                ]))
+                .width(160)
+                .padding(cosmic::theme::spacing().space_xxs)
+                .class(cosmic::theme::Container::Dropdown),
+            );
+        }
+        popover.into()
+    }
+
     fn restore_window(&self, source: Option<window::Id>) -> Task<cosmic::Action<Message>> {
         let Some(main) = self.core.main_window_id() else {
             return Task::none();
@@ -332,16 +369,7 @@ impl Orbit {
     fn shelf_view(&self, window: window::Id) -> Element<'_, Message> {
         let spacing = cosmic::theme::spacing();
         let toolbar = widget::row::with_children(vec![
-            widget::button::icon(widget::icon::from_name("list-add-symbolic"))
-                .name(fl!("add-files"))
-                .tooltip(fl!("add-files"))
-                .on_press(Message::Choose(false))
-                .into(),
-            widget::button::icon(widget::icon::from_name("folder-new-symbolic"))
-                .name(fl!("add-folders"))
-                .tooltip(fl!("add-folders"))
-                .on_press(Message::Choose(true))
-                .into(),
+            self.add_button(),
             widget::space::horizontal().into(),
             widget::button::icon(widget::icon::from_name("edit-paste-symbolic"))
                 .name(fl!("paste-files"))
