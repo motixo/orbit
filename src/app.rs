@@ -86,7 +86,7 @@ pub enum Message {
     AnimatePin,
     StartPinDrag,
     PinPreviewReady(window::Id, window::Screenshot),
-    PinPointer(window::Id, mouse::Event),
+    PinPointer(window::Id, mouse::Event, iced::Point),
     Quit,
 }
 
@@ -301,20 +301,10 @@ impl cosmic::Application for Orbit {
         } else {
             Subscription::none()
         };
-        let pointer = if self.pinned.is_some() {
-            // The implicit Wayland grab keeps reporting motion and release outside the header.
-            iced::event::listen_with(|event, _, id| match event {
-                iced::Event::Mouse(
-                    event @ (mouse::Event::CursorMoved { .. }
-                    | mouse::Event::ButtonPressed(mouse::Button::Left)
-                    | mouse::Event::ButtonReleased(mouse::Button::Left)
-                    | mouse::Event::CursorLeft),
-                ) => Some(Message::PinPointer(id, event)),
-                iced::Event::Window(window::Event::Unfocused) => {
-                    Some(Message::PinPointer(id, mouse::Event::CursorLeft))
-                }
-                _ => None,
-            })
+        let pointer = if let Some(id) = self.pinned {
+            crate::pointer::events(id)
+                .with(id)
+                .map(|(id, (event, position))| Message::PinPointer(id, event, position))
         } else {
             Subscription::none()
         };
@@ -518,14 +508,12 @@ impl cosmic::Application for Orbit {
                     ));
                 }
             }
-            Message::PinPointer(id, event) => {
+            Message::PinPointer(id, event, position) => {
                 if Some(id) != self.pinned {
                     return Task::none();
                 }
+                self.pin_cursor = position;
                 match event {
-                    mouse::Event::CursorMoved { position } => {
-                        self.pin_cursor = position;
-                    }
                     mouse::Event::ButtonPressed(mouse::Button::Left) => {
                         self.pin_pointer_down = true
                     }

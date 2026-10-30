@@ -3,6 +3,7 @@
 mod app;
 mod i18n;
 mod pin;
+mod pointer;
 mod shelf;
 mod transfer;
 
