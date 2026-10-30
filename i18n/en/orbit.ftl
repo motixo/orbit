@@ -1,6 +1,4 @@
 app-title = Orbit
-pin-shelf = Pin
-unpin-shelf = Unpin
 collapse-shelf = Collapse
 expand-shelf = Expand
 empty-title = Drop files here

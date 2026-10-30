@@ -79,6 +79,7 @@ pub enum Message {
     DragFinished,
     Noop,
     WindowOpened(window::Id),
+    WindowAction(cosmic::app::Action),
     TogglePin,
     ToggleCollapse,
     PinHeaderHeight(f32),
@@ -109,6 +110,8 @@ impl cosmic::Application for Orbit {
     }
 
     fn init(mut core: cosmic::Core, flags: Flags) -> (Self, Task<cosmic::Action<Message>>) {
+        // Use a native header with pinning instead of the template's double-click maximize.
+        core.window.show_headerbar = false;
         core.window.show_minimize = false;
         core.window.show_maximize = false;
         core.window.border_padding = Some(0);
@@ -155,15 +158,27 @@ impl cosmic::Application for Orbit {
     }
 
     fn view(&self) -> Element<'_, Message> {
-        self.shelf_view(self.core.main_window_id().unwrap_or(window::Id::NONE))
-    }
-
-    fn header_start(&self) -> Vec<Element<'_, Message>> {
-        vec![self.new_orbit_button()]
-    }
-
-    fn header_end(&self) -> Vec<Element<'_, Message>> {
-        vec![self.pin_button()]
+        let header = widget::header_bar()
+            .title(fl!("app-title"))
+            .start(self.new_orbit_button())
+            .on_drag(Message::WindowAction(cosmic::app::Action::Drag))
+            .on_right_click(Message::WindowAction(cosmic::app::Action::ShowWindowMenu))
+            .on_double_click(Message::TogglePin)
+            .on_close(Message::WindowAction(cosmic::app::Action::Close))
+            .focused(
+                self.core
+                    .focus_chain()
+                    .iter()
+                    .any(|id| Some(*id) == self.core.main_window_id()),
+            )
+            .maximized(self.core.window.is_maximized)
+            .sharp_corners(self.core.window.sharp_corners);
+        widget::column::with_children(vec![
+            header.into(),
+            self.shelf_view(self.core.main_window_id().unwrap_or(window::Id::NONE)),
+        ])
+        .height(Length::Fill)
+        .into()
     }
 
     fn dbus_activation(
@@ -252,8 +267,8 @@ impl cosmic::Application for Orbit {
                 })
                 .on_press(Message::ToggleCollapse),
             )
-            .end(self.pin_button())
             .on_drag(Message::StartPinDrag)
+            .on_double_click(Message::TogglePin)
             .on_close(Message::Quit)
             .focused(true);
         let header = widget::mouse_area(header).interaction(if self.pin_drag_start.is_some() {
@@ -454,6 +469,9 @@ impl cosmic::Application for Orbit {
             }
             Message::DragFinished => self.status.clear(),
             Message::Noop => (),
+            Message::WindowAction(action) => {
+                return cosmic::task::message(cosmic::Action::Cosmic(action));
+            }
             Message::WindowOpened(id) => {
                 if Some(id) == self.pinned {
                     self.pin_pending = false;
@@ -770,22 +788,6 @@ impl Orbit {
                 iced::window::gain_focus(main)
             }
         })
-    }
-
-    fn pin_button(&self) -> Element<'_, Message> {
-        let label = if self.pinned.is_some() {
-            fl!("unpin-shelf")
-        } else {
-            fl!("pin-shelf")
-        };
-        widget::button::icon(widget::icon::from_name(if self.pinned.is_some() {
-            "window-pop-out-symbolic"
-        } else {
-            "pin-symbolic"
-        }))
-        .name(label)
-        .on_press(Message::TogglePin)
-        .into()
     }
 
     fn shelf_view(&self, window: window::Id) -> Element<'_, Message> {
