@@ -11,6 +11,7 @@ use cosmic::{
     Application,
     iced::{self, Alignment, Length, Subscription, keyboard, window},
     prelude::*,
+    surface::action::{LiveSettings, app_layer_shell},
     widget,
 };
 use iced::clipboard::dnd::DndAction;
@@ -18,7 +19,7 @@ use iced::platform_specific::{
     runtime::wayland::layer_surface::SctkLayerSurfaceSettings,
     shell::commands::{
         activation,
-        layer_surface::{destroy_layer_surface, get_layer_surface, set_anchor, set_margin},
+        layer_surface::{destroy_layer_surface, set_anchor, set_margin},
     },
 };
 use std::path::PathBuf;
@@ -437,7 +438,15 @@ impl cosmic::Application for Orbit {
                     exclusive_zone: 0,
                     ..Default::default()
                 };
-                let mut tasks = vec![get_layer_surface(settings)];
+                let surface = app_layer_shell::<Self>(
+                    |app| LiveSettings {
+                        blur: Some(app.core.frosted(cosmic::theme::active().cosmic())),
+                        ..Default::default()
+                    },
+                    move |_| settings.clone(),
+                    None,
+                );
+                let mut tasks = vec![cosmic::task::message(cosmic::Action::Surface(surface))];
                 if let Some(main) = self.core.main_window_id() {
                     tasks.push(iced::window::minimize(main, true));
                 }
