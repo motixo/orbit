@@ -40,6 +40,7 @@ pub struct Orbit {
     hovering: bool,
     status: String,
     pinned: Option<window::Id>,
+    drop_target: widget::Id,
 }
 
 #[derive(Debug, Clone)]
@@ -80,6 +81,7 @@ impl cosmic::Application for Orbit {
             hovering: false,
             status: String::new(),
             pinned: None,
+            drop_target: widget::Id::unique(),
         };
         app.set_header_title(fl!("app-title"));
         if !flags.uris.is_empty() {
@@ -389,7 +391,7 @@ impl Orbit {
             .padding(spacing.space_xs);
         let destination = widget::DndDestination::with_id(
             drop_area,
-            widget::Id::new(format!("orbit-destination-{window:?}")),
+            self.drop_target.clone(),
             vec![URI_LIST.into()],
         )
         .action(DndAction::Copy)
