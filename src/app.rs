@@ -146,20 +146,26 @@ impl cosmic::Application for Orbit {
             if status == iced::event::Status::Captured {
                 return None;
             }
-            let iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) = event
+            let iced::Event::Keyboard(keyboard::Event::KeyPressed {
+                key,
+                physical_key,
+                modifiers,
+                ..
+            }) = event
             else {
                 return None;
             };
-            if modifiers.control()
-                && let keyboard::Key::Character(key) = key
-            {
-                return match key.to_lowercase().as_str() {
-                    "o" => Some(Message::Choose(modifiers.shift())),
-                    "v" => Some(Message::Paste),
-                    "c" => Some(Message::Copy),
-                    "a" => Some(Message::SelectAll),
-                    "p" => Some(Message::TogglePin),
-                    "q" => Some(Message::Quit),
+            if modifiers.control() {
+                return match key
+                    .to_latin(physical_key)
+                    .map(|key| key.to_ascii_lowercase())
+                {
+                    Some('o') => Some(Message::Choose(modifiers.shift())),
+                    Some('v') => Some(Message::Paste),
+                    Some('c') => Some(Message::Copy),
+                    Some('a') => Some(Message::SelectAll),
+                    Some('p') => Some(Message::TogglePin),
+                    Some('q') => Some(Message::Quit),
                     _ => None,
                 };
             }
