@@ -18,9 +18,6 @@ use iced::platform_specific::{
 };
 use std::path::PathBuf;
 
-const APP_ICON: &[u8] =
-    include_bytes!("../resources/icons/hicolor/scalable/apps/io.github.motixo.Orbit.svg");
-
 pub struct Orbit {
     core: cosmic::Core,
     shelf: Shelf,
@@ -140,10 +137,8 @@ impl cosmic::Application for Orbit {
                                 added = report.added,
                                 skipped = report.rejected
                             )
-                        } else if report.added == 0 && report.duplicates > 0 {
-                            fl!("already-collected")
                         } else {
-                            fl!("items-added", count = report.added)
+                            String::new()
                         }
                     }
                     Err(message) => message,
@@ -183,16 +178,16 @@ impl cosmic::Application for Orbit {
             Message::SelectAll => self.shelf.select_all(),
             Message::Remove(path) => {
                 self.shelf.remove(&path);
-                self.status = fl!("removed-reference");
+                self.status.clear();
             }
             Message::Clear => {
                 self.shelf.clear();
-                self.status = fl!("cleared-shelf");
+                self.status.clear();
             }
             Message::Copy => {
                 let paths = self.shelf.export_paths();
                 if !paths.is_empty() {
-                    self.status = fl!("copied-items", count = paths.len());
+                    self.status.clear();
                     return iced::clipboard::write_data(FileList(paths));
                 }
             }
@@ -205,9 +200,9 @@ impl cosmic::Application for Orbit {
             }
             Message::DragStarted => {
                 self.hovering = false;
-                self.status = fl!("drag-hint");
+                self.status.clear();
             }
-            Message::DragFinished => self.status = fl!("drag-finished"),
+            Message::DragFinished => self.status.clear(),
             Message::Noop => (),
             Message::TogglePin => {
                 if let Some(id) = self.pinned.take() {
@@ -268,11 +263,14 @@ impl Orbit {
     fn shelf_view(&self, window: window::Id) -> Element<'_, Message> {
         let spacing = cosmic::theme::spacing();
         let toolbar = widget::row::with_children(vec![
-            widget::button::standard(fl!("add-files"))
-                .leading_icon(widget::icon::from_name("list-add-symbolic"))
+            widget::button::icon(widget::icon::from_name("list-add-symbolic"))
+                .name(fl!("add-files"))
+                .tooltip(fl!("add-files"))
                 .on_press(Message::Choose(false))
                 .into(),
-            widget::button::standard(fl!("add-folders"))
+            widget::button::icon(widget::icon::from_name("folder-new-symbolic"))
+                .name(fl!("add-folders"))
+                .tooltip(fl!("add-folders"))
                 .on_press(Message::Choose(true))
                 .into(),
             widget::space::horizontal().into(),
@@ -288,22 +286,16 @@ impl Orbit {
         let body: Element<_> = if self.shelf.items.is_empty() {
             widget::container(
                 widget::column::with_children(vec![
-                    widget::icon(widget::icon::from_svg_bytes(APP_ICON))
-                        .size(72)
+                    widget::icon::from_name("folder-download-symbolic")
+                        .size(40)
                         .into(),
-                    widget::text::title3(if self.hovering {
+                    widget::text::body(if self.hovering {
                         fl!("drop-now")
                     } else {
                         fl!("empty-title")
                     })
                     .align_x(iced::alignment::Horizontal::Center)
                     .into(),
-                    widget::text::body(fl!("empty-description"))
-                        .align_x(iced::alignment::Horizontal::Center)
-                        .into(),
-                    widget::text::caption(fl!("empty-hint"))
-                        .align_x(iced::alignment::Horizontal::Center)
-                        .into(),
                 ])
                 .spacing(spacing.space_m)
                 .align_x(Alignment::Center)
@@ -409,11 +401,9 @@ impl Orbit {
             .align_y(Alignment::Center);
             content = content.push(selection).push(footer);
         }
-        content = content.push(widget::text::caption(if self.status.is_empty() {
-            fl!("reference-hint")
-        } else {
-            self.status.clone()
-        }));
+        if !self.status.is_empty() {
+            content = content.push(widget::text::caption(&self.status));
+        }
         widget::container(content)
             .padding(spacing.space_m)
             .height(Length::Fill)
