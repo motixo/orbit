@@ -17,7 +17,7 @@ use iced::platform_specific::{
     runtime::wayland::layer_surface::{IcedMargin, SctkLayerSurfaceSettings},
     shell::commands::{
         activation,
-        layer_surface::{destroy_layer_surface, get_layer_surface},
+        layer_surface::{destroy_layer_surface, get_layer_surface, set_anchor},
     },
 };
 use std::path::PathBuf;
@@ -46,6 +46,7 @@ pub struct Orbit {
     hovering: bool,
     status: String,
     pinned: Option<window::Id>,
+    pin_anchor: Anchor,
     drop_target: widget::Id,
     show_add_menu: bool,
 }
@@ -66,6 +67,7 @@ pub enum Message {
     DragFinished,
     Noop,
     TogglePin,
+    NextCorner,
     Quit,
 }
 
@@ -91,6 +93,7 @@ impl cosmic::Application for Orbit {
             hovering: false,
             status: String::new(),
             pinned: None,
+            pin_anchor: Anchor::TOP | Anchor::RIGHT,
             drop_target: widget::Id::unique(),
             show_add_menu: false,
         };
@@ -139,6 +142,12 @@ impl cosmic::Application for Orbit {
     fn view_window(&self, id: window::Id) -> Element<'_, Message> {
         let header = widget::header_bar()
             .title(fl!("app-title"))
+            .end(
+                widget::button::icon(widget::icon::from_name("object-rotate-right-symbolic"))
+                    .name(fl!("next-corner"))
+                    .tooltip(fl!("next-corner"))
+                    .on_press(Message::NextCorner),
+            )
             .end(self.pin_button())
             .on_close(Message::Quit)
             .focused(true);
@@ -269,6 +278,21 @@ impl cosmic::Application for Orbit {
             }
             Message::DragFinished => self.status.clear(),
             Message::Noop => (),
+            Message::NextCorner => {
+                if let Some(id) = self.pinned {
+                    self.show_add_menu = false;
+                    self.pin_anchor = match (
+                        self.pin_anchor.contains(Anchor::TOP),
+                        self.pin_anchor.contains(Anchor::RIGHT),
+                    ) {
+                        (true, true) => Anchor::BOTTOM | Anchor::RIGHT,
+                        (false, true) => Anchor::BOTTOM | Anchor::LEFT,
+                        (false, false) => Anchor::TOP | Anchor::LEFT,
+                        (true, false) => Anchor::TOP | Anchor::RIGHT,
+                    };
+                    return set_anchor(id, self.pin_anchor);
+                }
+            }
             Message::TogglePin => {
                 self.show_add_menu = false;
                 if let Some(id) = self.pinned.take() {
@@ -282,13 +306,14 @@ impl cosmic::Application for Orbit {
                 let settings = SctkLayerSurfaceSettings {
                     id,
                     layer: Layer::Top,
-                    anchor: Anchor::TOP | Anchor::RIGHT,
+                    anchor: self.pin_anchor,
                     namespace: Self::APP_ID.into(),
                     keyboard_interactivity: KeyboardInteractivity::OnDemand,
                     margin: IcedMargin {
                         top: 12,
                         right: 12,
-                        ..Default::default()
+                        bottom: 12,
+                        left: 12,
                     },
                     size: Some((Some(SHELF_SIZE), Some(SHELF_SIZE))),
                     exclusive_zone: 0,

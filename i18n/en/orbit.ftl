@@ -1,6 +1,7 @@
 app-title = Orbit
 pin-shelf = Pin
 unpin-shelf = Unpin
+next-corner = Next corner
 empty-title = Drop files here
 drop-now = Drop to collect
 add-files = Add files
