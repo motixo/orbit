@@ -1,4 +1,6 @@
 app-title = Orbit
+pin-shelf = سنجاق بالای پنجره‌ها (Ctrl+P)
+unpin-shelf = بازگشت به پنجره‌ی شناور (Ctrl+P)
 empty-title = فایل‌هایت را دم دست نگه دار
 empty-description = فایل‌ها و پوشه‌ها را اینجا رها کن، بعد با هم به مقصد بکش.
 empty-hint = از هر چند پوشه که خواستی فایل جمع کن.

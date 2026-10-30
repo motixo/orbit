@@ -1,4 +1,6 @@
 app-title = Orbit
+pin-shelf = Pin above windows (Ctrl+P)
+unpin-shelf = Return to floating window (Ctrl+P)
 empty-title = Keep your files within reach
 empty-description = Drop files and folders here, then drag them together to their destination.
 empty-hint = Collect from as many folders as you like.

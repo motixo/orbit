@@ -5,12 +5,17 @@ use crate::{
     shelf::{Item, Shelf},
     transfer::{FileList, URI_LIST},
 };
+use cosmic::cctk::sctk::shell::wlr_layer::{Anchor, KeyboardInteractivity, Layer};
 use cosmic::{
     iced::{self, Alignment, Length, Subscription, keyboard, window},
     prelude::*,
     widget,
 };
 use iced::clipboard::dnd::DndAction;
+use iced::platform_specific::{
+    runtime::wayland::layer_surface::{IcedMargin, SctkLayerSurfaceSettings},
+    shell::commands::layer_surface::{destroy_layer_surface, get_layer_surface},
+};
 use std::path::PathBuf;
 
 const APP_ICON: &[u8] =
@@ -21,6 +26,7 @@ pub struct Orbit {
     shelf: Shelf,
     hovering: bool,
     status: String,
+    pinned: Option<window::Id>,
 }
 
 #[derive(Debug, Clone)]
@@ -37,6 +43,8 @@ pub enum Message {
     DragStarted,
     DragFinished,
     Noop,
+    TogglePin,
+    Quit,
 }
 
 impl cosmic::Application for Orbit {
@@ -58,6 +66,7 @@ impl cosmic::Application for Orbit {
             shelf: Shelf::default(),
             hovering: false,
             status: String::new(),
+            pinned: None,
         };
         app.set_header_title(fl!("app-title"));
         let title = app
@@ -70,6 +79,26 @@ impl cosmic::Application for Orbit {
 
     fn view(&self) -> Element<'_, Message> {
         self.shelf_view(self.core.main_window_id().unwrap_or(window::Id::NONE))
+    }
+
+    fn header_end(&self) -> Vec<Element<'_, Message>> {
+        vec![self.pin_button()]
+    }
+
+    fn view_window(&self, id: window::Id) -> Element<'_, Message> {
+        let header = widget::header_bar()
+            .title(fl!("app-title"))
+            .end(self.pin_button())
+            .on_close(Message::Quit)
+            .focused(true);
+        widget::container(
+            widget::column::with_children(vec![header.into(), self.shelf_view(id)])
+                .height(Length::Fill),
+        )
+        .class(cosmic::theme::Container::Background)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
     }
 
     fn subscription(&self) -> Subscription<Message> {
@@ -89,6 +118,8 @@ impl cosmic::Application for Orbit {
                     "v" => Some(Message::Paste),
                     "c" => Some(Message::Copy),
                     "a" => Some(Message::SelectAll),
+                    "p" => Some(Message::TogglePin),
+                    "q" => Some(Message::Quit),
                     _ => None,
                 };
             }
@@ -178,12 +209,62 @@ impl cosmic::Application for Orbit {
             }
             Message::DragFinished => self.status = fl!("drag-finished"),
             Message::Noop => (),
+            Message::TogglePin => {
+                if let Some(id) = self.pinned.take() {
+                    let mut tasks = vec![destroy_layer_surface(id)];
+                    if let Some(main) = self.core.main_window_id() {
+                        tasks.push(iced::window::minimize(main, false));
+                        tasks.push(iced::window::gain_focus(main));
+                    }
+                    return Task::batch(tasks);
+                }
+                let id = window::Id::unique();
+                self.pinned = Some(id);
+                let settings = SctkLayerSurfaceSettings {
+                    id,
+                    layer: Layer::Top,
+                    anchor: Anchor::TOP | Anchor::RIGHT,
+                    namespace: Self::APP_ID.into(),
+                    keyboard_interactivity: KeyboardInteractivity::OnDemand,
+                    margin: IcedMargin {
+                        top: 12,
+                        right: 12,
+                        ..Default::default()
+                    },
+                    size: Some((Some(440), Some(540))),
+                    exclusive_zone: 0,
+                    ..Default::default()
+                };
+                let mut tasks = vec![get_layer_surface(settings)];
+                if let Some(main) = self.core.main_window_id() {
+                    tasks.push(iced::window::minimize(main, true));
+                }
+                return Task::batch(tasks);
+            }
+            Message::Quit => return iced::exit(),
         }
         Task::none()
     }
 }
 
 impl Orbit {
+    fn pin_button(&self) -> Element<'_, Message> {
+        let label = if self.pinned.is_some() {
+            fl!("unpin-shelf")
+        } else {
+            fl!("pin-shelf")
+        };
+        widget::button::icon(widget::icon::from_name(if self.pinned.is_some() {
+            "view-restore-symbolic"
+        } else {
+            "view-pin-symbolic"
+        }))
+        .name(label.clone())
+        .tooltip(label)
+        .on_press(Message::TogglePin)
+        .into()
+    }
+
     fn shelf_view(&self, window: window::Id) -> Element<'_, Message> {
         let spacing = cosmic::theme::spacing();
         let toolbar = widget::row::with_children(vec![
@@ -215,6 +296,7 @@ impl Orbit {
                     } else {
                         fl!("empty-title")
                     })
+                    .align_x(iced::alignment::Horizontal::Center)
                     .into(),
                     widget::text::body(fl!("empty-description"))
                         .align_x(iced::alignment::Horizontal::Center)
