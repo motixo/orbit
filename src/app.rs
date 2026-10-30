@@ -303,7 +303,7 @@ impl Orbit {
         widget::button::icon(widget::icon::from_name(if self.pinned.is_some() {
             "view-restore-symbolic"
         } else {
-            "view-pin-symbolic"
+            "pin-symbolic"
         }))
         .name(label.clone())
         .tooltip(label)
