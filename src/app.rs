@@ -464,7 +464,10 @@ impl Orbit {
     }
 
     fn item_view<'a>(&'a self, item: &'a Item, window: window::Id) -> Element<'a, Message> {
+        use iced::advanced::text::{Ellipsize, EllipsizeHeightLimit};
+
         let spacing = cosmic::theme::spacing();
+        let ellipsize = Ellipsize::Middle(EllipsizeHeightLimit::Lines(1));
         let path = item.path.clone();
         let checkbox = widget::checkbox(item.selected)
             .name(fl!("select-item", name = item.name.as_str()))
@@ -472,10 +475,14 @@ impl Orbit {
         let parent = item.path.parent().unwrap_or(&item.path).to_string_lossy();
         let label = widget::column::with_children(vec![
             widget::text::body(&item.name)
+                .width(Length::Fill)
                 .wrapping(iced::widget::text::Wrapping::None)
+                .ellipsize(ellipsize)
                 .into(),
             widget::text::caption(parent.into_owned())
+                .width(Length::Fill)
                 .wrapping(iced::widget::text::Wrapping::None)
+                .ellipsize(ellipsize)
                 .into(),
         ])
         .width(Length::Fill);
@@ -487,26 +494,45 @@ impl Orbit {
             })
             .size(32)
             .into(),
-            label.into(),
+            widget::container(label)
+                .width(Length::Fill)
+                .clip(true)
+                .into(),
         ])
         .spacing(spacing.space_s)
         .align_y(Alignment::Center)
         .width(Length::Fill);
+        let draggable = widget::tooltip(
+            draggable,
+            widget::container(
+                widget::text::body(item.path.to_string_lossy().into_owned())
+                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+            )
+            .max_width(320),
+            widget::tooltip::Position::Top,
+        )
+        .delay(std::time::Duration::from_millis(600));
         let path = item.path.clone();
         let row = widget::row::with_children(vec![
             checkbox.into(),
-            self.drag_source(
+            widget::container(self.drag_source(
                 draggable.into(),
                 self.shelf.drag_paths(&item.path),
                 item.path.to_string_lossy().into_owned(),
                 window,
-            ),
+            ))
+            .width(Length::Fill)
+            .clip(true)
+            .into(),
             widget::button::icon(widget::icon::from_name("list-remove-symbolic"))
                 .name(fl!("remove-item", name = item.name.as_str()))
                 .tooltip(fl!("remove-from-shelf"))
+                .width(32)
+                .height(32)
                 .on_press(Message::Remove(path))
                 .into(),
         ])
+        .width(Length::Fill)
         .spacing(spacing.space_xs)
         .align_y(Alignment::Center);
         widget::container(row)
