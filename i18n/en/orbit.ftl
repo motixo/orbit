@@ -7,7 +7,6 @@ drop-now = Drop to collect
 add-files = Add files
 add-folders = Add folders
 add-items = Add
-paste-files = Paste
 copy-files = Copy
 clear-shelf = Clear
 select-all = Select all

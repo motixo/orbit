@@ -116,6 +116,10 @@ impl cosmic::Application for Orbit {
         self.shelf_view(self.core.main_window_id().unwrap_or(window::Id::NONE))
     }
 
+    fn header_start(&self) -> Vec<Element<'_, Message>> {
+        vec![self.add_button()]
+    }
+
     fn header_end(&self) -> Vec<Element<'_, Message>> {
         vec![self.pin_button()]
     }
@@ -146,6 +150,7 @@ impl cosmic::Application for Orbit {
         let border_padding = self.core.window.border_padding.unwrap_or(7);
         let header = widget::header_bar()
             .title(fl!("app-title"))
+            .start(self.add_button())
             .end(
                 widget::mouse_area(
                     widget::button::icon(widget::icon::from_name("object-rotate-right-symbolic"))
@@ -427,18 +432,6 @@ impl Orbit {
 
     fn shelf_view(&self, window: window::Id) -> Element<'_, Message> {
         let spacing = cosmic::theme::spacing();
-        let toolbar = widget::row::with_children(vec![
-            self.add_button(),
-            widget::space::horizontal().into(),
-            widget::button::icon(widget::icon::from_name("edit-paste-symbolic"))
-                .name(fl!("paste-files"))
-                .tooltip(fl!("paste-files"))
-                .on_press(Message::Paste)
-                .into(),
-        ])
-        .align_y(Alignment::Center)
-        .spacing(spacing.space_xs);
-
         let body: Element<_> = if self.shelf.items.is_empty() {
             widget::container(
                 widget::column::with_children(vec![
@@ -521,7 +514,7 @@ impl Orbit {
             )
         });
 
-        let mut content = widget::column::with_children(vec![toolbar.into(), destination.into()])
+        let mut content = widget::column::with_children(vec![destination.into()])
             .spacing(spacing.space_xs)
             .height(Length::Fill);
         if !self.shelf.items.is_empty() {
@@ -573,7 +566,7 @@ impl Orbit {
             content = content.push(widget::text::caption(&self.status));
         }
         widget::container(content)
-            .padding(spacing.space_xs)
+            .padding([0, spacing.space_xs, spacing.space_xs, spacing.space_xs])
             .height(Length::Fill)
             .into()
     }
