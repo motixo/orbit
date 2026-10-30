@@ -118,6 +118,7 @@ pub struct Placement {
     output: u64,
     lease: File,
     pub margin: IcedMargin,
+    pub height: u32,
 }
 
 impl Placement {
@@ -144,6 +145,7 @@ impl Placement {
             output: hasher.finish(),
             lease,
             margin: IcedMargin::default(),
+            height: SHELF_SIZE,
         };
         placement.place(anchor, near)?;
         Ok(placement)
@@ -182,6 +184,23 @@ impl Placement {
         let registry = open(self.directory.join("layout.lock"))?;
         registry.lock()?;
         self.place(anchor, None)
+    }
+
+    pub fn resize(&mut self, height: u32, anchor: Anchor) -> io::Result<IcedMargin> {
+        if !(1..=SHELF_SIZE).contains(&height) {
+            return Err(io::Error::other("Invalid shelf height"));
+        }
+        let registry = open(self.directory.join("layout.lock"))?;
+        registry.lock()?;
+        let previous_height = self.height;
+        self.height = height;
+        match self.place(anchor, None) {
+            Ok(margin) => Ok(margin),
+            Err(error) => {
+                self.height = previous_height;
+                Err(error)
+            }
+        }
     }
 
     pub fn refresh(&mut self, anchor: Anchor) -> io::Result<Option<IcedMargin>> {
@@ -236,19 +255,19 @@ impl Placement {
             }
         }
         let columns = self.area.width.saturating_sub(GAP) / (SHELF_SIZE + GAP);
-        let rows = self.area.height.saturating_sub(GAP) / (SHELF_SIZE + GAP);
+        let rows = self.area.height.saturating_sub(GAP) / (self.height + GAP);
         let mut candidates = Vec::new();
         for row in 0..rows {
             for column in 0..columns {
                 let offset_x = GAP + column * (SHELF_SIZE + GAP);
-                let offset_y = GAP + row * (SHELF_SIZE + GAP);
+                let offset_y = GAP + row * (self.height + GAP);
                 let x = if anchor.contains(Anchor::RIGHT) {
                     self.area.width - SHELF_SIZE - offset_x
                 } else {
                     offset_x
                 };
                 let y = if anchor.contains(Anchor::BOTTOM) {
-                    self.area.height - SHELF_SIZE - offset_y
+                    self.area.height - self.height - offset_y
                 } else {
                     offset_y
                 };
@@ -271,23 +290,26 @@ impl Placement {
                         < other_y
                             .saturating_add(height)
                             .saturating_add(u64::from(GAP))
-                    && other_y < u64::from(y) + size
+                    && other_y < u64::from(y) + u64::from(self.height + GAP)
             }) {
                 continue;
             }
             let margin = IcedMargin {
                 top: y as i32,
                 right: (self.area.width - x - SHELF_SIZE) as i32,
-                bottom: (self.area.height - y - SHELF_SIZE) as i32,
+                bottom: (self.area.height - y - self.height) as i32,
                 left: x as i32,
             };
-            if margin.left != self.margin.left || margin.top != self.margin.top {
+            if margin.left != self.margin.left
+                || margin.top != self.margin.top
+                || margin.bottom != self.margin.bottom
+            {
                 self.lease.rewind()?;
                 self.lease.set_len(0)?;
                 writeln!(
                     self.lease,
-                    "{} {x} {y} {SHELF_SIZE} {SHELF_SIZE}",
-                    self.output
+                    "{} {x} {y} {SHELF_SIZE} {}",
+                    self.output, self.height
                 )?;
                 self.margin = margin;
             }

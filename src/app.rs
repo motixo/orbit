@@ -19,7 +19,7 @@ use iced::platform_specific::{
     runtime::wayland::layer_surface::{IcedMargin, SctkLayerSurfaceSettings},
     shell::commands::{
         activation,
-        layer_surface::{destroy_layer_surface, set_anchor, set_margin},
+        layer_surface::{destroy_layer_surface, set_anchor, set_margin, set_size},
     },
 };
 use std::path::PathBuf;
@@ -58,6 +58,8 @@ pub struct Orbit {
     pin_pointer_down: bool,
     pin_preview: Option<(window::Id, Option<widget::image::Handle>)>,
     pin_motion: Option<Motion>,
+    pin_collapsed: bool,
+    pin_header_height: u32,
     drop_target: widget::Id,
 }
 
@@ -78,6 +80,8 @@ pub enum Message {
     Noop,
     WindowOpened(window::Id),
     TogglePin,
+    ToggleCollapse,
+    PinHeaderHeight(f32),
     PinReady {
         area: Option<Area>,
         near: Option<(u32, u32)>,
@@ -126,6 +130,8 @@ impl cosmic::Application for Orbit {
             pin_pointer_down: false,
             pin_preview: None,
             pin_motion: None,
+            pin_collapsed: false,
+            pin_header_height: 49,
             drop_target: widget::Id::unique(),
         };
         app.set_header_title(fl!("app-title"));
@@ -193,7 +199,7 @@ impl cosmic::Application for Orbit {
                 widget::container(
                     widget::image(image.clone())
                         .width(SHELF_SIZE as f32)
-                        .height(SHELF_SIZE as f32)
+                        .height(placement.height as f32)
                         .opacity(0.7_f32),
                 )
                 .class(cosmic::theme::Container::custom(|theme| {
@@ -233,6 +239,19 @@ impl cosmic::Application for Orbit {
         let header = widget::header_bar()
             .title(fl!("app-title"))
             .start(self.new_orbit_button())
+            .end(
+                widget::button::icon(widget::icon::from_name(if self.pin_collapsed {
+                    "pan-down-symbolic"
+                } else {
+                    "pan-up-symbolic"
+                }))
+                .name(if self.pin_collapsed {
+                    fl!("expand-shelf")
+                } else {
+                    fl!("collapse-shelf")
+                })
+                .on_press(Message::ToggleCollapse),
+            )
             .end(self.pin_button())
             .on_drag(Message::StartPinDrag)
             .on_close(Message::Quit)
@@ -242,29 +261,32 @@ impl cosmic::Application for Orbit {
         } else {
             mouse::Interaction::Grab
         });
-        widget::container(
-            widget::column::with_children(vec![header.into(), self.shelf_view(id)])
-                .height(Length::Fill),
-        )
-        .padding(1)
-        .class(cosmic::theme::Container::custom(|theme| {
-            let cosmic = theme.cosmic();
-            widget::container::Style {
-                background: Some(cosmic.background(theme.transparent).base.into()),
-                border: iced::Border {
-                    color: cosmic.bg_divider().into(),
-                    width: 1.0,
-                    radius: cosmic
-                        .radius_s()
-                        .map(|radius| if radius < 4.0 { radius } else { radius + 4.0 })
-                        .into(),
-                },
-                ..Default::default()
-            }
-        }))
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
+        let header =
+            iced::widget::sensor(header).on_resize(|size| Message::PinHeaderHeight(size.height));
+        let mut children = vec![header.into()];
+        if !self.pin_collapsed {
+            children.push(self.shelf_view(id));
+        }
+        widget::container(widget::column::with_children(children).height(Length::Fill))
+            .padding(1)
+            .class(cosmic::theme::Container::custom(|theme| {
+                let cosmic = theme.cosmic();
+                widget::container::Style {
+                    background: Some(cosmic.background(theme.transparent).base.into()),
+                    border: iced::Border {
+                        color: cosmic.bg_divider().into(),
+                        width: 1.0,
+                        radius: cosmic
+                            .radius_s()
+                            .map(|radius| if radius < 4.0 { radius } else { radius + 4.0 })
+                            .into(),
+                    },
+                    ..Default::default()
+                }
+            }))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
     }
 
     fn subscription(&self) -> Subscription<Message> {
@@ -443,6 +465,22 @@ impl cosmic::Application for Orbit {
                 }
             }
             Message::PinReleased => self.pin_pending = false,
+            Message::ToggleCollapse => {
+                if !self.pin_pending && self.pin_drag_start.is_none() && self.pin_motion.is_none() {
+                    return self.set_pin_collapsed(!self.pin_collapsed);
+                }
+            }
+            Message::PinHeaderHeight(height) => {
+                let height = ((height + 2.0) * self.core.scale_factor())
+                    .ceil()
+                    .clamp(1.0, SHELF_SIZE as f32) as u32;
+                if self.pin_header_height != height {
+                    self.pin_header_height = height;
+                    if self.pin_collapsed {
+                        return self.set_pin_collapsed(true);
+                    }
+                }
+            }
             Message::RefreshPins => {
                 if self.pin_drag_start.is_none()
                     && self.pin_motion.is_none()
@@ -571,6 +609,7 @@ impl cosmic::Application for Orbit {
                     return close_preview;
                 }
                 if let Some(id) = self.pinned.take() {
+                    self.pin_collapsed = false;
                     self.pin_pending = true;
                     let placement = self.pin_placement.take();
                     let open = self.ensure_floating();
@@ -643,6 +682,31 @@ impl cosmic::Application for Orbit {
 }
 
 impl Orbit {
+    fn set_pin_collapsed(&mut self, collapsed: bool) -> Task<cosmic::Action<Message>> {
+        if let Some(id) = self.pinned
+            && let Some(placement) = self.pin_placement.as_mut()
+        {
+            let height = if collapsed {
+                self.pin_header_height
+            } else {
+                SHELF_SIZE
+            };
+            match placement.resize(height, self.pin_anchor) {
+                Ok(margin) => {
+                    self.pin_collapsed = collapsed;
+                    self.pin_motion = None;
+                    self.status.clear();
+                    return Task::batch([
+                        set_size(id, Some(SHELF_SIZE), Some(height)),
+                        set_margin(id, margin.top, margin.right, margin.bottom, margin.left),
+                    ]);
+                }
+                Err(_) => self.status = fl!("pin-error"),
+            }
+        }
+        Task::none()
+    }
+
     fn animate_pin(
         &mut self,
         id: window::Id,
