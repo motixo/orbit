@@ -128,29 +128,12 @@ pub enum Message {
     Quit,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Tool {
-    Copy,
-    Compress,
-}
-
 struct CompressionDialog {
     name: String,
     format: Format,
     sources: Vec<(PathBuf, u64)>,
     transfer: Transfer,
     input: widget::Id,
-}
-
-impl widget::menu::Action for Tool {
-    type Message = Message;
-
-    fn message(&self) -> Message {
-        match self {
-            Self::Copy => Message::ToggleCopyMode,
-            Self::Compress => Message::Compress,
-        }
-    }
 }
 
 impl cosmic::Application for Orbit {
@@ -987,6 +970,49 @@ impl Orbit {
     fn header_tools(&self, window: window::Id) -> Element<'_, Message> {
         let mut buttons = vec![self.new_orbit_button()];
         if !self.shelf.items.is_empty() || !self.pending_imports.is_empty() {
+            let items = [
+                (
+                    fl!("copy"),
+                    "edit-copy-symbolic",
+                    Some(Message::ToggleCopyMode),
+                    self.copy_mode,
+                ),
+                (
+                    fl!("compress"),
+                    "mail-archive-symbolic",
+                    (self.shelf.selected_count() > 0).then_some(Message::Compress),
+                    false,
+                ),
+            ]
+            .into_iter()
+            .map(|(label, icon, message, checked)| {
+                let check: Element<'static, Message> = if checked {
+                    widget::icon::from_name("object-select-symbolic")
+                        .size(16)
+                        .icon()
+                        .class(cosmic::theme::Svg::Custom(std::rc::Rc::new(|theme| {
+                            widget::svg::Style {
+                                color: Some(theme.cosmic().accent_text_color().into()),
+                            }
+                        })))
+                        .into()
+                } else {
+                    widget::space::horizontal().width(16).into()
+                };
+                let button: Element<'static, Message> = widget::menu::menu_button(vec![
+                    widget::icon::from_name(icon).size(14).icon().into(),
+                    widget::space::horizontal()
+                        .width(cosmic::theme::spacing().space_xxs)
+                        .into(),
+                    widget::text(label).into(),
+                    widget::space::horizontal().into(),
+                    check,
+                ])
+                .on_press_maybe(message)
+                .into();
+                widget::menu::Tree::from(button)
+            })
+            .collect::<Vec<_>>();
             let root: Element<'static, Message> = widget::button::custom(
                 widget::icon::from_name("view-more-horizontal-symbolic")
                     .size(16)
@@ -999,22 +1025,7 @@ impl Orbit {
             .into();
             let menu = widget::menu::bar(vec![widget::menu::Tree::with_children(
                 widget::RcElementWrapper::new(root),
-                widget::menu::items(
-                    &HashMap::new(),
-                    vec![
-                        widget::menu::Item::Entry(
-                            widget::menu::Entry::new(fl!("copy"), Tool::Copy)
-                                .icon(widget::icon::from_name("edit-copy-symbolic").into())
-                                .checked(self.copy_mode),
-                        ),
-                        widget::menu::Item::Entry(
-                            widget::menu::Entry::new(fl!("compress"), Tool::Compress)
-                                .icon(widget::icon::from_name("mail-archive-symbolic").into())
-                                .checked(false)
-                                .enabled(self.shelf.selected_count() > 0),
-                        ),
-                    ],
-                ),
+                items,
             )])
             .item_width(widget::menu::ItemWidth::Uniform(160))
             .item_height(widget::menu::ItemHeight::Uniform(36))
