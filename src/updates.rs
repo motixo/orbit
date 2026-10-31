@@ -22,7 +22,7 @@ pub enum Outcome {
 }
 
 fn timestamp(state: &Config, key: &str) -> Result<u64, String> {
-    match state.get(key) {
+    match state.get_local(key) {
         Ok(value) => Ok(value),
         Err(cosmic_config::Error::NotFound) => Ok(0),
         Err(cosmic_config::Error::GetKey(_, error))
@@ -153,4 +153,20 @@ async fn notify(version: &str) -> Result<(), zbus::Error> {
         )
         .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_update_timestamps_start_at_zero_without_system_defaults() {
+        let fixture = tempfile::tempdir().unwrap();
+        let state = Config::with_custom_path(ID, 1, fixture.path().to_path_buf()).unwrap();
+        for key in ["update_success", "update_attempt"] {
+            assert_eq!(timestamp(&state, key).unwrap(), 0);
+            state.set(key, 1_700_000_000_u64).unwrap();
+            assert_eq!(timestamp(&state, key).unwrap(), 1_700_000_000);
+        }
+    }
 }
