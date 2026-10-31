@@ -138,86 +138,113 @@ impl cosmic::Application for OrbitApplet {
     }
 
     fn view_window(&self, _: window::Id) -> Element<'_, Message> {
-        let mut content = widget::column::with_capacity(6).spacing(12).padding(12);
+        let spacing = cosmic::theme::spacing();
+        let row_height = spacing.space_l + 2 * spacing.space_xxxs;
         let title = match self.page {
             Page::Menu => fl!("app-title"),
             Page::Settings => fl!("settings"),
             Page::Shortcuts => fl!("shortcuts"),
             Page::About => fl!("about"),
         };
-        let mut header = widget::row::with_capacity(2)
-            .spacing(8)
-            .align_y(iced::Alignment::Center);
-        if !matches!(self.page, Page::Menu) {
-            header = header.push(
-                widget::button::icon(widget::icon::from_name("go-previous-symbolic"))
-                    .name(fl!("back"))
-                    .on_press(Message::Page(Page::Menu)),
-            );
-        }
-        content = content.push(header.push(widget::text::heading(title)));
-        content = match self.page {
-            Page::Menu => content
-                .push(
-                    cosmic::applet::menu_button(widget::text::body(fl!("new-orbit")))
-                        .on_press(Message::NewOrbit),
-                )
-                .push(
-                    cosmic::applet::menu_button(widget::text::body(fl!("settings")))
-                        .on_press(Message::Page(Page::Settings)),
-                )
-                .push(
-                    cosmic::applet::menu_button(widget::text::body(fl!("shortcuts")))
-                        .on_press(Message::Page(Page::Shortcuts)),
-                )
-                .push(
-                    cosmic::applet::menu_button(widget::text::body(fl!("about")))
-                        .on_press(Message::Page(Page::About)),
-                ),
-            Page::Settings => content
-                .push(widget::settings::item(
-                    fl!("open-as"),
-                    widget::dropdown(
-                        &self.modes,
-                        Some(usize::from(self.preferences.pinned)),
-                        Message::Mode,
-                    ),
-                ))
-                .push(widget::settings::item(
-                    fl!("default-corner"),
-                    widget::dropdown(
-                        &self.corners,
-                        Some(self.preferences.corner.index()),
-                        Message::Corner,
-                    ),
-                ))
-                .push(widget::settings::item(
-                    fl!("update-reminder"),
-                    widget::dropdown(
-                        &self.reminders,
-                        Some(self.preferences.update_reminder.index()),
-                        Message::Reminder,
-                    ),
-                ))
-                .push(
-                    widget::button::standard(fl!("check-updates")).on_press_maybe(
-                        (!self.checking_update).then_some(Message::CheckUpdates(true)),
-                    ),
-                )
-                .push_maybe(self.available_update.as_ref().map(|version| {
-                    widget::button::link(fl!("update-available", version = version.as_str()))
-                        .on_press(Message::OpenLink(UPDATES_URL))
-                })),
+        let back: Element<'_, Message> = if matches!(self.page, Page::Menu) {
+            widget::Space::new().into()
+        } else {
+            widget::button::icon(widget::icon::from_name("go-previous-symbolic"))
+                .name(fl!("back"))
+                .on_press(Message::Page(Page::Menu))
+                .into()
+        };
+        let header = widget::row::with_children(vec![
+            widget::container(back)
+                .width(spacing.space_l)
+                .height(spacing.space_l)
+                .into(),
+            widget::text::heading(title)
+                .width(Length::Fill)
+                .align_x(iced::Alignment::Center)
+                .into(),
+            widget::Space::new().width(spacing.space_l).into(),
+        ])
+        .height(spacing.space_l)
+        .align_y(iced::Alignment::Center);
+        let mut body = widget::column::with_capacity(15).spacing(spacing.space_xxs);
+        match self.page {
+            Page::Menu => {
+                for (label, message) in [
+                    (fl!("new-orbit"), Message::NewOrbit),
+                    (fl!("settings"), Message::Page(Page::Settings)),
+                    (fl!("shortcuts"), Message::Page(Page::Shortcuts)),
+                    (fl!("about"), Message::Page(Page::About)),
+                ] {
+                    body = body.push(
+                        cosmic::applet::menu_button(widget::text::body(label))
+                            .padding([spacing.space_xxxs, spacing.space_xxs])
+                            .height(row_height)
+                            .on_press(message),
+                    );
+                }
+            }
+            Page::Settings => {
+                body = body
+                    .push(Self::popup_row(widget::settings::item(
+                        fl!("open-as"),
+                        widget::dropdown(
+                            &self.modes,
+                            Some(usize::from(self.preferences.pinned)),
+                            Message::Mode,
+                        )
+                        .width(Length::Fixed(144.0)),
+                    )))
+                    .push(Self::popup_row(widget::settings::item(
+                        fl!("default-corner"),
+                        widget::dropdown(
+                            &self.corners,
+                            Some(self.preferences.corner.index()),
+                            Message::Corner,
+                        )
+                        .width(Length::Fixed(144.0)),
+                    )))
+                    .push(Self::popup_row(widget::settings::item(
+                        fl!("update-reminder"),
+                        widget::dropdown(
+                            &self.reminders,
+                            Some(self.preferences.update_reminder.index()),
+                            Message::Reminder,
+                        )
+                        .width(Length::Fixed(144.0)),
+                    )))
+                    .push(Self::popup_row(
+                        widget::button::standard(fl!("check-updates")).on_press_maybe(
+                            (!self.checking_update).then_some(Message::CheckUpdates(true)),
+                        ),
+                    ))
+                    .push_maybe(self.available_update.as_ref().map(|version| {
+                        Self::popup_row(
+                            widget::button::link(fl!(
+                                "update-available",
+                                version = version.as_str()
+                            ))
+                            .padding(0)
+                            .on_press(Message::OpenLink(UPDATES_URL)),
+                        )
+                    }));
+            }
             Page::Shortcuts => {
                 let mut shortcuts = widget::column::with_capacity(15)
-                    .spacing(8)
-                    .push(widget::text::caption(fl!("global-shortcuts")))
+                    .spacing(spacing.space_xxs)
+                    .push(
+                        widget::container(widget::text::caption(fl!("global-shortcuts")))
+                            .padding([0, spacing.space_xxs]),
+                    )
                     .push(self.shortcut_row(
                         fl!("new-orbit"),
                         EditTarget::Global,
                         self.global_shortcut.as_ref(),
                     ))
-                    .push(widget::text::caption(fl!("orbit-shortcuts")));
+                    .push(
+                        widget::container(widget::text::caption(fl!("orbit-shortcuts")))
+                            .padding([0, spacing.space_xxs]),
+                    );
                 for action in Action::ALL {
                     let binding = self
                         .preferences
@@ -231,19 +258,34 @@ impl cosmic::Application for OrbitApplet {
                         binding,
                     ));
                 }
-                content
-                    .push(widget::scrollable(shortcuts).height(420))
-                    .push(widget::text::caption(fl!("shortcut-hint")))
+                body = body.push(widget::scrollable(shortcuts).height(420)).push(
+                    widget::container(widget::text::caption(fl!("shortcut-hint")))
+                        .padding([0, spacing.space_xxs]),
+                );
             }
-            Page::About => content
-                .push(widget::text::body(format!(
-                    "Orbit {}",
-                    env!("CARGO_PKG_VERSION")
-                )))
-                .push(widget::button::link(REPOSITORY).on_press(Message::OpenLink(REPOSITORY))),
-        };
+            Page::About => {
+                body = body
+                    .push(Self::popup_row(widget::text::body(format!(
+                        "Orbit {}",
+                        env!("CARGO_PKG_VERSION")
+                    ))))
+                    .push(Self::popup_row(
+                        widget::button::link(REPOSITORY)
+                            .padding(0)
+                            .on_press(Message::OpenLink(REPOSITORY)),
+                    ));
+            }
+        }
+        let mut content = widget::column::with_capacity(3)
+            .spacing(spacing.space_xxs)
+            .padding(spacing.space_xs)
+            .push(header)
+            .push(body);
         if !self.status.is_empty() {
-            content = content.push(widget::text::caption(&self.status));
+            content = content.push(
+                widget::container(widget::text::caption(&self.status))
+                    .padding([0, spacing.space_xxs]),
+            );
         }
         self.core
             .applet
@@ -402,6 +444,16 @@ impl cosmic::Application for OrbitApplet {
 }
 
 impl OrbitApplet {
+    fn popup_row<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+        let spacing = cosmic::theme::spacing();
+        widget::container(content)
+            .width(Length::Fill)
+            .height(spacing.space_l + 2 * spacing.space_xxxs)
+            .padding([0, spacing.space_xxs])
+            .align_y(iced::Alignment::Center)
+            .into()
+    }
+
     fn shortcut_row<'a>(
         &self,
         label: String,
@@ -415,11 +467,12 @@ impl OrbitApplet {
                 .map(Shortcut::label)
                 .unwrap_or_else(|| fl!("disabled"))
         };
-        widget::settings::item(
+        Self::popup_row(widget::settings::item(
             label,
-            widget::button::standard(label_shortcut).on_press(Message::Edit(target)),
-        )
-        .into()
+            widget::button::standard(label_shortcut)
+                .width(Length::Fixed(144.0))
+                .on_press(Message::Edit(target)),
+        ))
     }
 
     fn record_shortcut(&mut self, event: iced::keyboard::Event) {
