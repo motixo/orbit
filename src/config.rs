@@ -82,9 +82,11 @@ pub struct Preferences {
 
 impl Preferences {
     pub fn load() -> Self {
-        Config::new(ID, Self::VERSION)
+        let mut preferences = Config::new(ID, Self::VERSION)
             .map(|config| Self::get_entry(&config).unwrap_or_else(|(_, config)| config))
-            .unwrap_or_default()
+            .unwrap_or_default();
+        preferences.shortcuts.complete();
+        preferences
     }
 
     pub fn save(&self) -> Result<(), cosmic_config::Error> {

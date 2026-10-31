@@ -22,10 +22,11 @@ pub enum Action {
     SelectAll,
     Clear,
     Close,
+    Undo,
 }
 
 impl Action {
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::New,
         Self::Pin,
         Self::Corner,
@@ -37,6 +38,7 @@ impl Action {
         Self::SelectAll,
         Self::Clear,
         Self::Close,
+        Self::Undo,
     ];
 
     pub fn label(self) -> String {
@@ -52,6 +54,7 @@ impl Action {
             Self::SelectAll => fl!("select-all"),
             Self::Clear => fl!("clear-shelf"),
             Self::Close => fl!("close"),
+            Self::Undo => fl!("undo"),
         }
     }
 }
@@ -148,6 +151,7 @@ impl Default for Bindings {
                     (1, "a"),
                     (0, "Delete"),
                     (1, "q"),
+                    (1, "z"),
                 ])
                 .map(|(action, (modifiers, key))| {
                     (
@@ -164,6 +168,15 @@ impl Default for Bindings {
 }
 
 impl Bindings {
+    pub fn complete(&mut self) {
+        for (action, binding) in Self::default().0 {
+            if !self.0.contains_key(&action) {
+                let binding = binding.filter(|shortcut| self.action(shortcut).is_none());
+                self.0.insert(action, binding);
+            }
+        }
+    }
+
     pub fn action(&self, shortcut: &Shortcut) -> Option<Action> {
         self.0
             .iter()
@@ -319,6 +332,32 @@ pub fn set_global(shortcut: Option<&Shortcut>) -> Result<(), String> {
 mod tests {
     use super::*;
     use iced_winit::{conversion, platform_specific::wayland::keymap};
+
+    #[test]
+    fn new_shortcuts_preserve_existing_assignments_and_disabled_keys() {
+        let mut bindings = Bindings::default();
+        bindings.0.remove(&Action::Undo);
+        bindings.complete();
+        assert_eq!(
+            bindings.action(&Shortcut {
+                modifiers: 1,
+                key: "z".into()
+            }),
+            Some(Action::Undo)
+        );
+        bindings.0.remove(&Action::Undo);
+        bindings.0.insert(
+            Action::Copy,
+            Some(Shortcut {
+                modifiers: 1,
+                key: "z".into(),
+            }),
+        );
+        bindings.complete();
+        assert_eq!(bindings.0[&Action::Undo], None);
+        bindings.complete();
+        assert_eq!(bindings.0[&Action::Undo], None);
+    }
 
     #[test]
     fn non_latin_shortcuts_match_on_floating_and_layer_surfaces() {

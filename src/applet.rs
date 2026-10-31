@@ -420,7 +420,10 @@ impl cosmic::Application for OrbitApplet {
                     }
                 }
             }
-            Message::Config(preferences) => self.preferences = preferences,
+            Message::Config(mut preferences) => {
+                preferences.shortcuts.complete();
+                self.preferences = preferences;
+            }
             Message::Edit(target) => {
                 self.editing = Some(target);
                 self.status.clear();

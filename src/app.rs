@@ -93,6 +93,7 @@ pub enum Message {
     SelectAll,
     Remove(PathBuf),
     Clear,
+    Undo,
     Copy,
     ToggleCopyMode,
     Compress,
@@ -431,6 +432,7 @@ impl cosmic::Application for Orbit {
                     Some(Action::SelectAll) => Message::SelectAll,
                     Some(Action::Clear) => Message::Clear,
                     Some(Action::Close) => Message::Quit,
+                    Some(Action::Undo) => Message::Undo,
                     None => return Task::none(),
                 };
                 return self.update(message);
@@ -460,7 +462,10 @@ impl cosmic::Application for Orbit {
                     }
                 }
             }
-            Message::Config(preferences) => self.preferences = preferences,
+            Message::Config(mut preferences) => {
+                preferences.shortcuts.complete();
+                self.preferences = preferences;
+            }
             Message::DropData(bytes, mime) => {
                 return self.begin_import(bytes, mime, Source::Drop);
             }
@@ -584,7 +589,7 @@ impl cosmic::Application for Orbit {
             Message::Toggle(path) => self.shelf.toggle(&path),
             Message::SelectAll => self.shelf.select_all(),
             Message::Remove(path) => {
-                self.shelf.remove(&path);
+                self.shelf.remove_with_undo(&path);
                 self.release_imports();
                 self.status.clear();
             }
@@ -592,9 +597,14 @@ impl cosmic::Application for Orbit {
                 if self.shelf.selected_count() == 0 {
                     self.pending_imports.clear();
                 }
-                self.shelf.clear();
+                self.shelf.clear_with_undo();
                 self.release_imports();
                 self.status.clear();
+            }
+            Message::Undo => {
+                self.shelf.undo();
+                self.status.clear();
+                return self.load_thumbnails();
             }
             Message::Copy => {
                 let paths = self.shelf.export_paths();

@@ -7,6 +7,7 @@ add-files = Add files
 add-folders = Add folders
 new-orbit = New Orbit
 clear-shelf = Clear
+undo = Undo
 select-all = Select all
 deselect-all = Deselect all
 select-item = Select { $name }

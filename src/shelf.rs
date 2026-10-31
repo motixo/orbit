@@ -6,7 +6,7 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Item {
     pub path: PathBuf,
     pub name: String,
@@ -28,6 +28,7 @@ pub struct Shelf {
     pub items: Vec<Item>,
     next_order: u64,
     selection_drag: OnceLock<Arc<Transfer>>,
+    undo: Vec<Vec<Item>>,
 }
 
 #[derive(Default, Debug, PartialEq)]
@@ -216,6 +217,51 @@ impl Shelf {
         self.items.retain(|item| has_selection && !item.selected);
     }
 
+    pub fn remove_with_undo(&mut self, path: &Path) {
+        self.remember(
+            self.items
+                .iter()
+                .filter(|item| item.path == path)
+                .cloned()
+                .collect(),
+        );
+        self.remove(path);
+    }
+
+    pub fn clear_with_undo(&mut self) {
+        let selected = self.selected_count() > 0;
+        self.remember(
+            self.items
+                .iter()
+                .filter(|item| !selected || item.selected)
+                .cloned()
+                .collect(),
+        );
+        self.clear();
+    }
+
+    fn remember(&mut self, items: Vec<Item>) {
+        if !items.is_empty() {
+            if self.undo.len() == 20 {
+                self.undo.remove(0);
+            }
+            self.undo.push(items);
+        }
+    }
+
+    pub fn undo(&mut self) {
+        if let Some(items) = self.undo.pop() {
+            self.invalidate_transfers();
+            for item in items {
+                if item.path.exists()
+                    && !self.items.iter().any(|existing| existing.path == item.path)
+                {
+                    self.items.push(item);
+                }
+            }
+        }
+    }
+
     fn invalidate_transfers(&mut self) {
         self.selection_drag.take();
     }
@@ -225,6 +271,28 @@ impl Shelf {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn undo_restores_removed_items_without_removing_new_items_or_duplicating_paths() {
+        let fixture = Fixture::new();
+        let a = fixture.file("a");
+        let b = fixture.file("b");
+        let c = fixture.file("c");
+        let mut shelf = Shelf::default();
+        shelf.add([a.clone(), b.clone()]);
+        shelf.toggle(&b);
+        shelf.clear_with_undo();
+        shelf.add([a.clone(), c.clone()]);
+        shelf.undo();
+        assert_eq!(shelf.items.len(), 3);
+        shelf.remove_with_undo(&c);
+        fs::remove_file(&c).unwrap();
+        shelf.undo();
+        assert_eq!(shelf.items.len(), 2);
+        shelf.clear_with_undo();
+        shelf.undo();
+        assert!(shelf.items.iter().any(|item| item.path == a));
+    }
 
     struct Fixture(tempfile::TempDir);
 
