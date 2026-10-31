@@ -206,36 +206,19 @@ impl Shelf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{
-        fs,
-        sync::atomic::{AtomicUsize, Ordering},
-    };
+    use std::fs;
 
-    static NEXT: AtomicUsize = AtomicUsize::new(0);
-
-    struct Fixture(PathBuf);
+    struct Fixture(tempfile::TempDir);
 
     impl Fixture {
         fn new() -> Self {
-            let path = std::env::temp_dir().join(format!(
-                "orbit-test-{}-{}",
-                std::process::id(),
-                NEXT.fetch_add(1, Ordering::Relaxed)
-            ));
-            fs::create_dir(&path).unwrap();
-            Self(path)
+            Self(tempfile::tempdir().unwrap())
         }
 
         fn file(&self, name: &str) -> PathBuf {
-            let path = self.0.join(name);
+            let path = self.0.path().join(name);
             fs::write(&path, b"original contents").unwrap();
             path
-        }
-    }
-
-    impl Drop for Fixture {
-        fn drop(&mut self) {
-            fs::remove_dir_all(&self.0).unwrap();
         }
     }
 
@@ -243,13 +226,13 @@ mod tests {
     fn collect_deduplicates_full_paths_and_rejects_missing_files() {
         let fixture = Fixture::new();
         let a = fixture.file("report.txt");
-        let directory = fixture.0.join("folder");
+        let directory = fixture.0.path().join("folder");
         fs::create_dir(&directory).unwrap();
         let b = directory.join("report.txt");
         fs::write(&b, "different file").unwrap();
         let mut shelf = Shelf::default();
         assert_eq!(
-            shelf.add([a.clone(), a, b, directory, fixture.0.join("missing")]),
+            shelf.add([a.clone(), a, b, directory, fixture.0.path().join("missing")]),
             AddReport {
                 added: 3,
                 duplicates: 1,
@@ -329,7 +312,7 @@ mod tests {
     fn reject_special_files_and_keep_symlink_identity() {
         let fixture = Fixture::new();
         let path = fixture.file("target");
-        let link = fixture.0.join("link");
+        let link = fixture.0.path().join("link");
         std::os::unix::fs::symlink(&path, &link).unwrap();
         let mut shelf = Shelf::default();
         assert_eq!(
