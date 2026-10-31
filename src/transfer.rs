@@ -1,14 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use cosmic::iced::clipboard::mime::{AllowedMimeTypes, AsMimeTypes};
-use std::{
-    borrow::Cow,
-    path::PathBuf,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-};
+use std::{borrow::Cow, path::PathBuf, sync::Arc};
 use url::Url;
 
 pub const URI_LIST: &str = "text/uri-list";
@@ -129,7 +122,17 @@ pub struct Transfer {
     pub text_only: bool,
     pub links: bool,
     pub clipboard: bool,
-    pub files_requested: Arc<AtomicBool>,
+    pub cached: Vec<Arc<crate::cache::Directory>>,
+}
+
+impl Transfer {
+    fn file_bytes(&self, mime: &str) -> Option<Cow<'static, [u8]>> {
+        let bytes = self.files.as_bytes(mime)?;
+        for directory in &self.cached {
+            directory.hand_off();
+        }
+        Some(bytes)
+    }
 }
 
 impl AsMimeTypes for Transfer {
@@ -181,14 +184,8 @@ impl AsMimeTypes for Transfer {
                         .into_bytes(),
                 )
             }),
-            URI_LIST => {
-                self.files_requested.store(true, Ordering::Relaxed);
-                self.files.as_bytes(mime)
-            }
-            GNOME_FILES if self.clipboard && !self.links => {
-                self.files_requested.store(true, Ordering::Relaxed);
-                self.files.as_bytes(mime)
-            }
+            URI_LIST => self.file_bytes(mime),
+            GNOME_FILES if self.clipboard && !self.links => self.file_bytes(mime),
             _ => None,
         }
     }
@@ -206,13 +203,12 @@ mod tests {
             text_only: true,
             links: false,
             clipboard: false,
-            files_requested: Default::default(),
+            cached: Vec::new(),
         };
         assert_eq!(
             data.as_bytes(TEXT).unwrap().as_ref(),
             "First line\nسلام\nLast line".as_bytes()
         );
-        assert!(!data.files_requested.load(Ordering::Relaxed));
         assert!(!data.available().iter().any(|mime| mime == GNOME_FILES));
         assert_eq!(
             FileList::try_from((
@@ -223,7 +219,6 @@ mod tests {
             .0,
             data.files.0
         );
-        assert!(data.files_requested.load(Ordering::Relaxed));
     }
 
     #[test]
@@ -234,7 +229,7 @@ mod tests {
             text_only: true,
             links: true,
             clipboard: false,
-            files_requested: Default::default(),
+            cached: Vec::new(),
         };
         assert_eq!(
             FileList::try_from((
@@ -245,7 +240,6 @@ mod tests {
             .0,
             data.files.0
         );
-        assert!(data.files_requested.load(Ordering::Relaxed));
         let bytes = data.as_bytes(MOZ_URL).unwrap();
         let units = bytes
             .chunks_exact(2)

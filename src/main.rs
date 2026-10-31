@@ -2,6 +2,7 @@
 
 mod always_on_top;
 mod app;
+mod cache;
 mod file_icon;
 mod i18n;
 mod import;
@@ -52,6 +53,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .min_height(size)
                 .max_height(size),
         );
+    cache::start_cleanup()?;
     always_on_top::start()?;
     cosmic::app::run_single_instance::<app::Orbit>(
         settings,

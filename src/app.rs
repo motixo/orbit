@@ -24,14 +24,7 @@ use iced::platform_specific::{
         layer_surface::{destroy_layer_surface, set_anchor, set_margin, set_size},
     },
 };
-use std::{
-    collections::HashMap,
-    path::PathBuf,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 pub const SHELF_SIZE: u32 = 320;
 const PREVIEW_PADDING: u32 = 20;
@@ -57,10 +50,8 @@ pub struct Orbit {
     core: cosmic::Core,
     shelf: Shelf,
     thumbnails: HashMap<PathBuf, Option<widget::image::Handle>>,
-    imported_items: Vec<PathBuf>,
     pending_imports: Vec<(u64, Progress, iced::task::Handle)>,
     dragged_paths: Vec<PathBuf>,
-    drag_files_requested: Option<Arc<AtomicBool>>,
     hovering: bool,
     status: String,
     pinned: Option<window::Id>,
@@ -96,7 +87,7 @@ pub enum Message {
     Copy,
     Paste,
     PasteData(Option<ClipboardData>),
-    DragStarted(Arc<Transfer>, Arc<AtomicBool>),
+    DragStarted(Arc<Transfer>),
     DragFinished,
     DragCancelled,
     Noop,
@@ -143,10 +134,8 @@ impl cosmic::Application for Orbit {
             core,
             shelf: Shelf::default(),
             thumbnails: HashMap::new(),
-            imported_items: Vec::new(),
             pending_imports: Vec::new(),
             dragged_paths: Vec::new(),
-            drag_files_requested: None,
             hovering: false,
             status: String::new(),
             pinned: None,
@@ -414,32 +403,26 @@ impl cosmic::Application for Orbit {
             }
             Message::DropImported(id, result) => {
                 if !self.pending_imports.iter().any(|(key, ..)| *key == id) {
-                    if let Ok(ImportedFiles {
-                        directory: Some(directory),
-                        ..
-                    }) = result
-                    {
-                        let _ = std::fs::remove_dir_all(directory);
-                    }
                     return Task::none();
                 }
                 self.pending_imports.retain(|(key, ..)| *key != id);
-                let mut text = None;
+                let mut metadata = None;
                 let files = result.map(|imported| {
                     if imported
                         .text
                         .as_deref()
                         .is_some_and(|text| self.shelf.contains_link(text))
                     {
-                        if let Some(directory) = imported.directory {
-                            let _ = std::fs::remove_dir_all(directory);
-                        }
                         return FileList(Vec::new());
                     }
-                    if let Some(directory) = imported.directory {
-                        self.imported_items.push(directory);
+                    if imported.directory.is_some() || imported.text.is_some() {
+                        metadata = imported
+                            .files
+                            .0
+                            .first()
+                            .cloned()
+                            .map(|path| (path, imported.text, imported.directory));
                     }
-                    text = imported.files.0.first().cloned().zip(imported.text);
                     imported.files
                 });
                 let first_added = self.shelf.items.len();
@@ -447,8 +430,8 @@ impl cosmic::Application for Orbit {
                 for item in &mut self.shelf.items[first_added..] {
                     item.order = id;
                 }
-                if let Some((path, text)) = text {
-                    self.shelf.set_text(&path, text);
+                if let Some((path, text, cache)) = metadata {
+                    self.shelf.set_import(&path, text, cache);
                 }
                 return task;
             }
@@ -557,7 +540,11 @@ impl cosmic::Application for Orbit {
                 let paths = self.shelf.export_paths();
                 if !paths.is_empty() {
                     self.status.clear();
-                    return iced::clipboard::write_data(self.shelf.transfer(paths, true));
+                    let data = self.shelf.transfer(paths, true);
+                    if let Err(error) = crate::cache::protect_clipboard(&data.cached) {
+                        eprintln!("Could not protect clipboard cache: {error}");
+                    }
+                    return iced::clipboard::write_data(data);
                 }
             }
             Message::Paste => {
@@ -570,28 +557,14 @@ impl cosmic::Application for Orbit {
                 }
                 self.status = fl!("unsupported-content");
             }
-            Message::DragStarted(data, files_requested) => {
+            Message::DragStarted(data) => {
                 self.dragged_paths = data.files.0.clone();
-                self.drag_files_requested = Some(files_requested);
                 self.hovering = false;
                 self.status.clear();
             }
             Message::DragFinished => {
                 self.status.clear();
                 if !self.dragged_paths.is_empty() {
-                    // The receiver may still be moving files after acknowledging their URIs.
-                    if self
-                        .drag_files_requested
-                        .take()
-                        .is_some_and(|requested| requested.load(Ordering::Relaxed))
-                    {
-                        self.imported_items.retain(|directory| {
-                            !self
-                                .dragged_paths
-                                .iter()
-                                .any(|path| path.starts_with(directory))
-                        });
-                    }
                     for path in self.dragged_paths.drain(..) {
                         self.shelf.remove(&path);
                     }
@@ -603,7 +576,6 @@ impl cosmic::Application for Orbit {
             }
             Message::DragCancelled => {
                 self.dragged_paths.clear();
-                self.drag_files_requested = None;
                 self.status.clear();
             }
             Message::Noop => (),
@@ -858,14 +830,6 @@ impl cosmic::Application for Orbit {
     }
 }
 
-impl Drop for Orbit {
-    fn drop(&mut self) {
-        for directory in &self.imported_items {
-            let _ = std::fs::remove_dir_all(directory);
-        }
-    }
-}
-
 impl Orbit {
     fn load_thumbnails(&mut self) -> Task<cosmic::Action<Message>> {
         let mut paths = Vec::new();
@@ -930,17 +894,6 @@ impl Orbit {
     fn release_imports(&mut self) {
         self.thumbnails
             .retain(|path, _| self.shelf.items.iter().any(|item| &item.path == path));
-        self.imported_items.retain(|directory| {
-            let referenced = self
-                .shelf
-                .items
-                .iter()
-                .any(|item| item.path.starts_with(directory));
-            if !referenced {
-                let _ = std::fs::remove_dir_all(directory);
-            }
-            referenced
-        });
     }
 
     fn set_pin_collapsed(&mut self, collapsed: bool) -> Task<cosmic::Action<Message>> {
@@ -1352,7 +1305,6 @@ impl Orbit {
     ) -> Element<'a, Message> {
         let data = self.shelf.drag_transfer(path);
         let label = fl!("drag-items", count = data.files.0.len());
-        let files_requested = Arc::new(AtomicBool::new(false));
         let action = if data.text_only {
             DndAction::Copy | DndAction::Move
         } else {
@@ -1367,14 +1319,8 @@ impl Orbit {
         )
         .window(window)
         .action(action)
-        .on_start(Some(Message::DragStarted(
-            data.clone(),
-            files_requested.clone(),
-        )))
-        .drag_content(move || Transfer {
-            files_requested: files_requested.clone(),
-            ..data.as_ref().clone()
-        })
+        .on_start(Some(Message::DragStarted(data.clone())))
+        .drag_content(move || data.as_ref().clone())
         .drag_icon(move |_| {
             let icon: Element<'static, ()> = widget::container(widget::text::body(label.clone()))
                 .padding(12)

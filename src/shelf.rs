@@ -14,6 +14,7 @@ pub struct Item {
     pub selected: bool,
     pub text: Option<String>,
     pub order: u64,
+    cache: Option<Arc<crate::cache::Directory>>,
 }
 
 #[derive(Default)]
@@ -57,6 +58,7 @@ impl Shelf {
                 .to_string_lossy()
                 .into();
             let order = self.reserve_order();
+            let cache = crate::cache::Directory::for_file(&path);
             self.items.push(Item {
                 path,
                 name,
@@ -64,6 +66,7 @@ impl Shelf {
                 selected: false,
                 text: None,
                 order,
+                cache,
             });
             report.added += 1;
         }
@@ -76,18 +79,26 @@ impl Shelf {
         order
     }
 
-    pub fn set_text(&mut self, path: &Path, text: String) {
+    pub fn set_import(
+        &mut self,
+        path: &Path,
+        text: Option<String>,
+        cache: Option<Arc<crate::cache::Directory>>,
+    ) {
         self.selection_drag.take();
         if let Some(item) = self.items.iter_mut().find(|item| item.path == path) {
-            item.name = text
-                .lines()
-                .map(str::trim)
-                .find(|line| !line.is_empty())
-                .unwrap_or("Text")
-                .chars()
-                .take(160)
-                .collect();
-            item.text = Some(text);
+            item.cache = cache;
+            if let Some(text) = text {
+                item.name = text
+                    .lines()
+                    .map(str::trim)
+                    .find(|line| !line.is_empty())
+                    .unwrap_or("Text")
+                    .chars()
+                    .take(160)
+                    .collect();
+                item.text = Some(text);
+            }
         }
     }
 
@@ -129,12 +140,12 @@ impl Shelf {
                 .join("\n\n")
         });
         Transfer {
+            cached: items.iter().filter_map(|item| item.cache.clone()).collect(),
             files: FileList(paths),
             text,
             text_only,
             links,
             clipboard,
-            files_requested: Default::default(),
         }
     }
 
@@ -276,7 +287,11 @@ mod tests {
         let path = fixture.file("link.txt");
         let mut shelf = Shelf::default();
         shelf.add([path.clone()]);
-        shelf.set_text(&path, "https://example.com/article?a=1#section".into());
+        shelf.set_import(
+            &path,
+            Some("https://example.com/article?a=1#section".into()),
+            None,
+        );
         assert!(shelf.contains_link(" https://EXAMPLE.com:443/article?a=1#section "));
         assert!(!shelf.contains_link("https://example.com/article?a=2#section"));
         assert!(!shelf.contains_link("https://example.com/article?a=1#other"));

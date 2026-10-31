@@ -4,7 +4,8 @@ use crate::transfer::{FileList, GNOME_FILES, ORBIT_TEXT, TEXT, URI_LIST, UTF8_TE
 use base64::{Engine, engine::general_purpose::STANDARD};
 use std::{
     error::Error,
-    path::{Path, PathBuf},
+    path::Path,
+    sync::Arc,
     time::{Duration, Instant},
 };
 use url::Url;
@@ -44,7 +45,7 @@ pub enum Source {
 #[derive(Clone, Debug)]
 pub struct ImportedFiles {
     pub files: FileList,
-    pub directory: Option<PathBuf>,
+    pub directory: Option<Arc<crate::cache::Directory>>,
     pub text: Option<String>,
 }
 
@@ -348,19 +349,10 @@ pub fn record_error(mime: &str, size: usize, error: Box<dyn Error + Send + Sync>
         cause = error.source();
     }
     eprintln!("Orbit import failed:\n{detail}");
-    if let Ok(cache) = import_cache() {
+    if let Ok(cache) = crate::cache::root() {
         let _ = std::fs::create_dir_all(&cache);
         let _ = std::fs::write(cache.join("last-error.log"), detail);
     }
-}
-
-fn import_cache() -> Result<PathBuf, Box<dyn Error + Send + Sync>> {
-    Ok(std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
-        .ok_or("Missing cache directory")?
-        .join("io.github.motixo.Orbit/items"))
 }
 
 fn save_text(text: String) -> Result<ImportedFiles, Box<dyn Error + Send + Sync>> {
@@ -379,11 +371,7 @@ fn save_text(text: String) -> Result<ImportedFiles, Box<dyn Error + Send + Sync>
     } else {
         ("txt", text.clone())
     };
-    let cache = import_cache()?;
-    std::fs::create_dir_all(&cache)?;
-    let directory = tempfile::Builder::new()
-        .prefix("orbit-text-")
-        .tempdir_in(cache)?;
+    let directory = crate::cache::Directory::new("orbit-text-")?;
     // File managers need a local file fallback for collected text.
     let path = directory
         .path()
@@ -391,7 +379,7 @@ fn save_text(text: String) -> Result<ImportedFiles, Box<dyn Error + Send + Sync>
     std::fs::write(&path, contents.as_bytes())?;
     Ok(ImportedFiles {
         files: FileList(vec![path]),
-        directory: Some(directory.keep()),
+        directory: Some(directory),
         text: Some(text),
     })
 }
@@ -423,16 +411,12 @@ fn save_image(
         .and_then(|name| name.to_str())
         .filter(|name| !name.is_empty() && name.len() <= 120)
         .unwrap_or("Image");
-    let cache = import_cache()?;
-    std::fs::create_dir_all(&cache)?;
-    let directory = tempfile::Builder::new()
-        .prefix("orbit-image-")
-        .tempdir_in(cache)?;
+    let directory = crate::cache::Directory::new("orbit-image-")?;
     let path = directory.path().join(format!("{stem}.{extension}"));
     std::fs::write(&path, bytes)?;
     Ok(ImportedFiles {
         files: FileList(vec![path]),
-        directory: Some(directory.keep()),
+        directory: Some(directory),
         text: None,
     })
 }
@@ -447,7 +431,6 @@ mod tests {
         let imported = save_text(text.into()).unwrap();
         let path = &imported.files.0[0];
         let html = std::fs::read_to_string(path).unwrap();
-        std::fs::remove_dir_all(imported.directory.as_ref().unwrap()).unwrap();
 
         assert_eq!(path.extension().unwrap(), "html");
         assert_eq!(imported.text.as_deref(), Some(text));
