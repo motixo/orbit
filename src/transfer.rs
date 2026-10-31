@@ -49,7 +49,7 @@ pub enum Text {
 }
 
 impl Text {
-    fn contents(&self) -> Option<Cow<'_, str>> {
+    pub(crate) fn contents(&self) -> Option<Cow<'_, str>> {
         match self {
             Self::Inline(text) => Some(Cow::Borrowed(text)),
             Self::File(path) => {

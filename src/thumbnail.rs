@@ -20,7 +20,7 @@ pub fn kind(path: &Path) -> Option<Kind> {
     }
 }
 
-pub fn generate(path: &Path) -> Option<Handle> {
+pub fn generate(path: &Path, size: u32) -> Option<Handle> {
     let kind = kind(path)?;
     let directory = tempfile::tempdir().ok()?;
     let output = directory.path().join("thumbnail.png");
@@ -35,14 +35,16 @@ pub fn generate(path: &Path) -> Option<Handle> {
                 .arg(uri.as_str())
                 .arg("--output")
                 .arg(&output)
-                .args(["--size", "64"]);
+                .arg("--size")
+                .arg(size.to_string());
         }
         Kind::Video => {
             command
                 .arg("cosmic-player")
                 .arg("--thumbnail")
                 .arg(&output)
-                .args(["--size", "64x64"])
+                .arg("--size")
+                .arg(format!("{size}x{size}"))
                 .arg(uri.as_str());
         }
     }
@@ -53,7 +55,7 @@ pub fn generate(path: &Path) -> Option<Handle> {
         .status()
         .ok()?
         .success()
-        || output.metadata().ok()?.len() > 1024 * 1024
+        || output.metadata().ok()?.len() > (u64::from(size) * u64::from(size) * 8).max(1024 * 1024)
     {
         return None;
     }

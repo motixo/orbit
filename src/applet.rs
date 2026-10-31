@@ -542,6 +542,7 @@ impl OrbitApplet {
         } else {
             if shortcut.modifiers & 13 == 0
                 && !(matches!(target, EditTarget::Local(_)) && shortcut.key == "Delete")
+                && !(target == EditTarget::Local(Action::Preview) && shortcut.key == "Space")
             {
                 self.status = fl!("shortcut-modifier");
                 return;

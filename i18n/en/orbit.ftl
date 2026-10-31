@@ -77,3 +77,6 @@ update-available = Orbit { $version } is available.
 update-check-error = Could not check for updates.
 update-notify-error = Could not show update reminder.
 update-busy = Check already running.
+
+preview = Preview
+preview-unavailable = No preview

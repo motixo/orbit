@@ -23,10 +23,11 @@ pub enum Action {
     Clear,
     Close,
     Undo,
+    Preview,
 }
 
 impl Action {
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::New,
         Self::Pin,
         Self::Corner,
@@ -39,6 +40,7 @@ impl Action {
         Self::Clear,
         Self::Close,
         Self::Undo,
+        Self::Preview,
     ];
 
     pub fn label(self) -> String {
@@ -55,6 +57,7 @@ impl Action {
             Self::Clear => fl!("clear-shelf"),
             Self::Close => fl!("close"),
             Self::Undo => fl!("undo"),
+            Self::Preview => fl!("preview"),
         }
     }
 }
@@ -152,6 +155,7 @@ impl Default for Bindings {
                     (0, "Delete"),
                     (1, "q"),
                     (1, "z"),
+                    (0, "Space"),
                 ])
                 .map(|(action, (modifiers, key))| {
                     (

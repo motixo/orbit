@@ -56,6 +56,8 @@ pub struct Orbit {
     shelf: Shelf,
     copy_mode: bool,
     compression_dialog: Option<CompressionDialog>,
+    preview: Option<crate::preview::Preview>,
+    focused_item: Option<PathBuf>,
     thumbnails: HashMap<PathBuf, Option<widget::image::Handle>>,
     pending_imports: Vec<(u64, Progress, iced::task::Handle)>,
     dragged_paths: Vec<PathBuf>,
@@ -95,6 +97,11 @@ pub enum Message {
     Remove(PathBuf),
     Clear,
     Undo,
+    Preview(Option<PathBuf>),
+    PreviewLoaded(window::Id, crate::preview::Content),
+    ClosePreview,
+    DragPreview,
+    FocusItem(PathBuf),
     Copy,
     ToggleCopyMode,
     Compress,
@@ -162,6 +169,8 @@ impl cosmic::Application for Orbit {
             shelf: Shelf::default(),
             copy_mode: false,
             compression_dialog: None,
+            preview: None,
+            focused_item: None,
             thumbnails: HashMap::new(),
             pending_imports: Vec::new(),
             dragged_paths: Vec::new(),
@@ -244,6 +253,13 @@ impl cosmic::Application for Orbit {
     }
 
     fn on_close_requested(&self, id: window::Id) -> Option<Message> {
+        if self
+            .preview
+            .as_ref()
+            .is_some_and(|preview| preview.id == id)
+        {
+            return Some(Message::ClosePreview);
+        }
         self.unpin_activation
             .as_ref()
             .filter(|(layer, _)| *layer == id)
@@ -274,6 +290,11 @@ impl cosmic::Application for Orbit {
     }
 
     fn view_window(&self, id: window::Id) -> Element<'_, Message> {
+        if let Some(preview) = &self.preview
+            && preview.id == id
+        {
+            return preview.view();
+        }
         if let Some((preview, Some(image))) = &self.pin_preview
             && *preview == id
             && let Some(start) = self.pin_drag_start
@@ -417,12 +438,27 @@ impl cosmic::Application for Orbit {
                 if self.compression_dialog.is_some() {
                     return Task::none();
                 }
-                let layer_surface = self.core.main_window_id() != Some(window);
+                let preview_window = self
+                    .preview
+                    .as_ref()
+                    .is_some_and(|preview| preview.id == window);
+                let layer_surface = self.pinned == Some(window);
                 let Some(shortcut) = crate::shortcuts::Shortcut::from_event(&event, layer_surface)
                 else {
                     return Task::none();
                 };
                 use crate::shortcuts::Action;
+                if preview_window {
+                    return if shortcut.key == "Escape"
+                        || matches!(
+                            self.preferences.shortcuts.action(&shortcut),
+                            Some(Action::Preview | Action::Close)
+                        ) {
+                        self.update(Message::ClosePreview)
+                    } else {
+                        Task::none()
+                    };
+                }
                 let message = match self.preferences.shortcuts.action(&shortcut) {
                     Some(Action::New) => Message::NewOrbit,
                     Some(Action::Pin) => Message::TogglePin,
@@ -436,6 +472,7 @@ impl cosmic::Application for Orbit {
                     Some(Action::Clear) => Message::Clear,
                     Some(Action::Close) => Message::Quit,
                     Some(Action::Undo) => Message::Undo,
+                    Some(Action::Preview) => Message::Preview(None),
                     None => return Task::none(),
                 };
                 return self.update(message);
@@ -589,7 +626,66 @@ impl cosmic::Application for Orbit {
                 );
             }
             Message::Hover(value) => self.hovering = value,
-            Message::Toggle(path) => self.shelf.toggle(&path),
+            Message::Toggle(path) => {
+                self.shelf.toggle(&path);
+                self.focused_item = Some(path);
+            }
+            Message::FocusItem(path) => self.focused_item = Some(path),
+            Message::Preview(path) => {
+                if path.is_none() && self.preview.is_some() {
+                    return self.update(Message::ClosePreview);
+                }
+                let item = path
+                    .as_ref()
+                    .or(self.focused_item.as_ref())
+                    .and_then(|path| self.shelf.items.iter().find(|item| &item.path == path))
+                    .or_else(|| {
+                        self.shelf
+                            .items
+                            .iter()
+                            .filter(|item| item.selected)
+                            .max_by_key(|item| item.order)
+                    });
+                if let Some(item) = item {
+                    let path = item.path.clone();
+                    let text = item.text.clone();
+                    let lease = self.shelf.drag_transfer(&path);
+                    let previous = self
+                        .preview
+                        .take()
+                        .map(|preview| window::close(preview.id))
+                        .unwrap_or_else(Task::none);
+                    let (preview, open) = crate::preview::Preview::open(path.clone(), lease);
+                    let id = preview.id;
+                    self.preview = Some(preview);
+                    let title = self.set_window_title(fl!("preview"), id);
+                    let (output, input) = iced::futures::channel::mpsc::unbounded();
+                    let _ = std::thread::Builder::new()
+                        .name("orbit-preview".into())
+                        .spawn(move || {
+                            let content = crate::preview::load(&path, text);
+                            let _ = output.unbounded_send(Message::PreviewLoaded(id, content));
+                        });
+                    return Task::batch([previous, open, title, cosmic::task::stream(input)]);
+                }
+            }
+            Message::PreviewLoaded(id, content) => {
+                if let Some(preview) = &mut self.preview
+                    && preview.id == id
+                {
+                    preview.content = Some(content);
+                }
+            }
+            Message::ClosePreview => {
+                if let Some(preview) = self.preview.take() {
+                    return window::close(preview.id);
+                }
+            }
+            Message::DragPreview => {
+                if let Some(preview) = &self.preview {
+                    return window::drag(preview.id);
+                }
+            }
             Message::SelectAll => self.shelf.select_all(),
             Message::Remove(path) => {
                 self.shelf.remove_with_undo(&path);
@@ -1160,7 +1256,7 @@ impl Orbit {
             .name("orbit-thumbnails".into())
             .spawn(move || {
                 for path in paths {
-                    let thumbnail = crate::thumbnail::generate(&path);
+                    let thumbnail = crate::thumbnail::generate(&path, 64);
                     if output
                         .unbounded_send(Message::ThumbnailReady(path, thumbnail))
                         .is_err()
@@ -1660,6 +1756,9 @@ impl Orbit {
         } else {
             DndAction::Move
         };
+        let content = widget::mouse_area(content)
+            .on_press(Message::FocusItem(path.to_owned()))
+            .on_double_click(Message::Preview(Some(path.to_owned())));
         let source = widget::DndSource::with_id(
             content,
             widget::Id::new(format!(
