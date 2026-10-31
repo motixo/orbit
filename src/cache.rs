@@ -144,14 +144,21 @@ fn cleanup(cache: &Path) {
         }
     }
     for directory in directories {
-        if protected.contains(&directory) {
-            continue;
-        }
         let Ok(lease) = OpenOptions::new()
             .read(true)
             .write(true)
             .open(directory.join(".lease"))
         else {
+            if directory
+                .metadata()
+                .and_then(|metadata| metadata.modified())
+                .ok()
+                .and_then(|modified| modified.elapsed().ok())
+                .is_some_and(|age| age >= Duration::from_secs(60))
+            {
+                // Legacy versions had no leases; only remove their empty directories.
+                let _ = fs::remove_dir(&directory);
+            }
             continue;
         };
         if lease
@@ -178,7 +185,7 @@ fn cleanup(cache: &Path) {
             .and_then(|modified| modified.elapsed().ok())
             .is_some_and(|age| age >= RETENTION);
         // Keep handed-off files long enough for receivers; the latest Orbit clipboard is exempt.
-        if empty || expired {
+        if empty || (expired && !protected.contains(&directory)) {
             let _ = fs::remove_dir_all(directory);
         }
     }
@@ -211,7 +218,18 @@ mod tests {
         .unwrap();
         cleanup(cache.path());
         assert!(directory.exists());
-        fs::remove_file(manifest).unwrap();
+        fs::remove_file(&manifest).unwrap();
+        cleanup(cache.path());
+        assert!(!directory.exists());
+
+        fs::create_dir(&directory).unwrap();
+        let lease = File::create(directory.join(".lease")).unwrap();
+        lease.set_modified(old).unwrap();
+        fs::write(
+            &manifest,
+            url::Url::from_file_path(&directory).unwrap().as_str(),
+        )
+        .unwrap();
         cleanup(cache.path());
         assert!(!directory.exists());
     }
