@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use cosmic::iced::Subscription;
-use notify::{Event, EventKind, RecursiveMode, Watcher};
+use notify::{
+    Event, EventKind, RecursiveMode, Watcher,
+    event::{AccessKind, AccessMode, ModifyKind, RenameMode},
+};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     fs::{self, File, OpenOptions, TryLockError},
     hash::{DefaultHasher, Hash, Hasher},
     io,
     path::{Path, PathBuf},
-    time::{Duration, Instant},
 };
 
 pub struct Folder {
@@ -86,6 +88,36 @@ fn candidate(path: &Path, root: &Path) -> bool {
         && path.is_file()
 }
 
+fn completed_files(
+    event: Event,
+    root: &Path,
+    seen: &mut HashSet<PathBuf>,
+) -> io::Result<Vec<PathBuf>> {
+    let completed = matches!(
+        event.kind,
+        EventKind::Access(AccessKind::Close(AccessMode::Write))
+            | EventKind::Modify(ModifyKind::Name(RenameMode::To | RenameMode::Both))
+    );
+    let mut ready = Vec::new();
+    for file in event.paths {
+        if file == root && !root.is_dir() {
+            return Err(io::Error::other("Folder is unavailable"));
+        }
+        if !file.exists() {
+            seen.remove(&file);
+        } else if completed && !seen.contains(&file) && candidate(&file, root) {
+            seen.insert(file.clone());
+            ready.push(file);
+        }
+    }
+    ready.sort_by_key(|file| {
+        file.metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok()
+    });
+    Ok(ready)
+}
+
 fn monitor(path: &Path, send: impl Fn(Result<Vec<PathBuf>, String>) -> bool) -> io::Result<()> {
     let (events, input) = std::sync::mpsc::channel();
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<Event>| {
@@ -99,51 +131,12 @@ fn monitor(path: &Path, send: impl Fn(Result<Vec<PathBuf>, String>) -> bool) -> 
         .flatten()
         .map(|entry| entry.path())
         .collect::<HashSet<_>>();
-    let mut pending = HashMap::<PathBuf, Instant>::new();
     loop {
-        let event = if pending.is_empty() {
-            input
-                .recv()
-                .map_err(|_| io::Error::other("Folder monitor stopped"))?
-        } else {
-            match input.recv_timeout(Duration::from_millis(200)) {
-                Ok(event) => event,
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Ok(Event::new(EventKind::Other)),
-                Err(error) => return Err(io::Error::other(error)),
-            }
-        }
-        .map_err(io::Error::other)?;
-        if matches!(
-            event.kind,
-            EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_) | EventKind::Any
-        ) {
-            for file in event.paths {
-                if file == path && !path.is_dir() {
-                    return Err(io::Error::other("Folder is unavailable"));
-                }
-                if !file.exists() {
-                    seen.remove(&file);
-                    pending.remove(&file);
-                } else if !seen.contains(&file) && candidate(&file, path) {
-                    pending.insert(file, Instant::now());
-                }
-            }
-        }
-        let mut ready = pending
-            .iter()
-            .filter(|(_, changed)| changed.elapsed() >= Duration::from_millis(500))
-            .map(|(file, _)| file.clone())
-            .collect::<Vec<_>>();
-        for file in &ready {
-            pending.remove(file);
-        }
-        ready.retain(|file| candidate(file, path));
-        ready.sort_by_key(|file| {
-            file.metadata()
-                .and_then(|metadata| metadata.modified())
-                .ok()
-        });
-        seen.extend(ready.iter().cloned());
+        let event = input
+            .recv()
+            .map_err(|_| io::Error::other("Folder monitor stopped"))?
+            .map_err(io::Error::other)?;
+        let ready = completed_files(event, path, &mut seen)?;
         if !ready.is_empty() && !send(Ok(ready)) {
             return Ok(());
         }
@@ -154,7 +147,7 @@ fn monitor(path: &Path, send: impl Fn(Result<Vec<PathBuf>, String>) -> bool) -> 
 mod tests {
     use super::*;
     #[test]
-    fn collects_completed_files_only_from_the_selected_folder() {
+    fn filters_temporary_hidden_and_nested_paths() {
         let root = tempfile::tempdir().unwrap();
         for (name, expected) in [
             ("image.png", true),
@@ -172,5 +165,82 @@ mod tests {
         fs::write(&file, []).unwrap();
         assert!(!candidate(&file, root.path()));
         assert!(!candidate(&nested, root.path()));
+    }
+
+    #[test]
+    fn waits_for_write_close_and_collects_final_renames_once() {
+        use notify::event::{CreateKind, DataChange};
+        use std::io::Write;
+
+        let root = tempfile::tempdir().unwrap();
+        let existing = root.path().join("existing.png");
+        fs::write(&existing, []).unwrap();
+        let mut seen = HashSet::from([existing.clone()]);
+        let path = root.path().join("image.png");
+        let mut writer = File::create(&path).unwrap();
+        writer.write_all(b"first part").unwrap();
+        for kind in [
+            EventKind::Create(CreateKind::File),
+            EventKind::Access(AccessKind::Open(AccessMode::Any)),
+            EventKind::Modify(ModifyKind::Data(DataChange::Any)),
+        ] {
+            assert!(
+                completed_files(
+                    Event::new(kind).add_path(path.clone()),
+                    root.path(),
+                    &mut seen
+                )
+                .unwrap()
+                .is_empty()
+            );
+        }
+        writer.write_all(b"last part").unwrap();
+        drop(writer);
+        let close = EventKind::Access(AccessKind::Close(AccessMode::Write));
+        assert_eq!(
+            completed_files(
+                Event::new(close).add_path(path.clone()),
+                root.path(),
+                &mut seen
+            )
+            .unwrap(),
+            vec![path.clone()]
+        );
+        for path in [path, existing] {
+            assert!(
+                completed_files(Event::new(close).add_path(path), root.path(), &mut seen)
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+
+        let temporary = root.path().join("download.png.crdownload");
+        fs::write(&temporary, b"complete").unwrap();
+        assert!(
+            completed_files(
+                Event::new(close).add_path(temporary.clone()),
+                root.path(),
+                &mut seen
+            )
+            .unwrap()
+            .is_empty()
+        );
+        let final_path = root.path().join("download.png");
+        fs::rename(&temporary, &final_path).unwrap();
+        for (mode, paths, expected) in [
+            (
+                RenameMode::To,
+                vec![final_path.clone()],
+                vec![final_path.clone()],
+            ),
+            (RenameMode::Both, vec![temporary, final_path], Vec::new()),
+        ] {
+            let mut event = Event::new(EventKind::Modify(ModifyKind::Name(mode)));
+            event.paths = paths;
+            assert_eq!(
+                completed_files(event, root.path(), &mut seen).unwrap(),
+                expected
+            );
+        }
     }
 }
