@@ -27,7 +27,7 @@ impl Item {
 pub struct Shelf {
     pub items: Vec<Item>,
     next_order: u64,
-    selection_drag: [OnceLock<Arc<Transfer>>; 2],
+    selection_drag: OnceLock<Arc<Transfer>>,
 }
 
 #[derive(Default, Debug, PartialEq)]
@@ -176,22 +176,14 @@ impl Shelf {
             .collect()
     }
 
-    pub fn drag_transfer(&self, path: &Path, content_only: bool) -> Arc<Transfer> {
+    pub fn drag_transfer(&self, path: &Path) -> Arc<Transfer> {
         if self
             .items
             .iter()
             .any(|item| item.path == path && item.selected)
         {
-            self.selection_drag[usize::from(content_only)]
-                .get_or_init(|| {
-                    let paths = self
-                        .items
-                        .iter()
-                        .filter(|item| item.selected && (!content_only || item.has_text()))
-                        .map(|item| item.path.clone())
-                        .collect();
-                    Arc::new(self.transfer(paths, false))
-                })
+            self.selection_drag
+                .get_or_init(|| Arc::new(self.transfer(self.export_paths(), false)))
                 .clone()
         } else {
             Arc::new(self.transfer(vec![path.to_owned()], false))
@@ -225,9 +217,7 @@ impl Shelf {
     }
 
     fn invalidate_transfers(&mut self) {
-        for transfer in &mut self.selection_drag {
-            transfer.take();
-        }
+        self.selection_drag.take();
     }
 }
 
@@ -281,39 +271,52 @@ mod tests {
         assert_eq!(shelf.selected_count(), 3);
         assert_eq!(shelf.export_paths(), [a.clone(), b.clone(), c.clone()]);
         shelf.toggle(&c);
-        let group = shelf.drag_transfer(&a, false);
+        let group = shelf.drag_transfer(&a);
         assert_eq!(group.files.0, [a, b.clone()]);
-        assert!(Arc::ptr_eq(&group, &shelf.drag_transfer(&b, false)));
-        assert_eq!(shelf.drag_transfer(&c, false).files.0, [c]);
+        assert!(Arc::ptr_eq(&group, &shelf.drag_transfer(&b)));
+        assert_eq!(shelf.drag_transfer(&c).files.0, [c]);
         shelf.select_all();
         assert_eq!(shelf.selected_count(), 3);
-        assert!(!Arc::ptr_eq(&group, &shelf.drag_transfer(&b, false)));
+        assert!(!Arc::ptr_eq(&group, &shelf.drag_transfer(&b)));
         shelf.select_all();
         assert_eq!(shelf.selected_count(), 0);
     }
 
     #[test]
-    fn content_drags_filter_selected_files_and_keep_file_drags_separate() {
+    fn text_drags_keep_mixed_selections_and_restore_content_when_files_are_deselected() {
         use cosmic::iced::clipboard::mime::AsMimeTypes;
         let fixture = Fixture::new();
         let text = fixture.file("notes.txt");
         let file = fixture.file("image.png");
         let mut shelf = Shelf::default();
         shelf.add([text.clone(), file.clone()]);
-        let content = shelf.drag_transfer(&text, true);
+        let mixed = shelf.drag_transfer(&text);
+        assert_eq!(mixed.files.0, [text.clone(), file.clone()]);
+        assert!(!mixed.text_only);
+        assert!(Arc::ptr_eq(&mixed, &shelf.drag_transfer(&file)));
+        assert_eq!(
+            FileList::try_from((
+                mixed
+                    .as_bytes(crate::transfer::URI_LIST)
+                    .unwrap()
+                    .into_owned(),
+                crate::transfer::URI_LIST.into(),
+            ))
+            .unwrap()
+            .0,
+            mixed.files.0
+        );
+        shelf.toggle(&file);
+        let content = shelf.drag_transfer(&text);
         assert_eq!(content.files.0.as_slice(), std::slice::from_ref(&text));
+        assert!(content.text_only);
         assert_eq!(
             content.as_bytes(crate::transfer::TEXT).unwrap().as_ref(),
             b"original contents"
         );
-        assert!(Arc::ptr_eq(&content, &shelf.drag_transfer(&text, true)));
-        assert_eq!(
-            shelf.drag_transfer(&text, false).files.0,
-            [text.clone(), file.clone()]
-        );
-        shelf.toggle(&file);
-        assert!(!Arc::ptr_eq(&content, &shelf.drag_transfer(&text, true)));
-        assert_eq!(shelf.drag_transfer(&file, false).files.0, [file]);
+        assert!(Arc::ptr_eq(&content, &shelf.drag_transfer(&text)));
+        assert!(!Arc::ptr_eq(&mixed, &content));
+        assert_eq!(shelf.drag_transfer(&file).files.0, [file]);
     }
 
     #[test]

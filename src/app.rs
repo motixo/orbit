@@ -1631,9 +1631,10 @@ impl Orbit {
         content: Element<'a, Message>,
         path: &std::path::Path,
         window: window::Id,
-        content_only: bool,
+        prefer_content: bool,
     ) -> Element<'a, Message> {
-        let data = self.shelf.drag_transfer(path, content_only);
+        let data = self.shelf.drag_transfer(path);
+        let content_only = prefer_content && data.text_only;
         let label = if content_only {
             fl!("drag-content")
         } else {
@@ -1649,7 +1650,7 @@ impl Orbit {
         let source = widget::DndSource::with_id(
             content,
             widget::Id::new(format!(
-                "orbit-source-{window:?}-{content_only}-{}",
+                "orbit-source-{window:?}-{prefer_content}-{}",
                 path.to_string_lossy()
             )),
         )
