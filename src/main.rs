@@ -9,6 +9,7 @@ mod file_icon;
 mod i18n;
 mod import;
 mod launch;
+mod orbit_icon;
 mod pin;
 mod pointer;
 mod shelf;

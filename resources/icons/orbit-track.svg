@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+  <defs>
+    <linearGradient id="depth" x1="0" y1="0" x2="1" y2="0">
+      <stop stop-color="#e3e7ee" stop-opacity=".25"/>
+      <stop offset="1" stop-color="#e3e7ee" stop-opacity=".65"/>
+    </linearGradient>
+  </defs>
+  <ellipse cx="12" cy="12" rx="8.75" ry="4.2" transform="rotate(28 12 12)" fill="none" stroke="url(#depth)" stroke-width="1.05"/>
+</svg>

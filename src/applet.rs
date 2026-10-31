@@ -103,7 +103,10 @@ impl cosmic::Application for OrbitApplet {
         widget::mouse_area(
             self.core
                 .applet
-                .icon_button("io.github.motixo.Orbit-symbolic")
+                .button_from_element(
+                    crate::orbit_icon::animated(self.core.applet.suggested_size(true).0),
+                    true,
+                )
                 .on_press(Message::NewOrbit)
                 .name(fl!("new-orbit")),
         )
