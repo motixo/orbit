@@ -22,11 +22,8 @@ check:
     desktop-file-validate resources/{{appid}}.desktop
     appstreamcli validate --no-net --override=url-homepage-missing=info resources/{{appid}}.metainfo.xml
 
-install: build-release
-    install -Dm0755 {{cargo-target-dir}}/release/{{name}} {{rootdir}}{{prefix}}/bin/{{name}}
-    install -Dm0644 resources/{{appid}}.desktop {{rootdir}}{{prefix}}/share/applications/{{appid}}.desktop
-    install -Dm0644 resources/{{appid}}.metainfo.xml {{rootdir}}{{prefix}}/share/metainfo/{{appid}}.metainfo.xml
-    install -Dm0644 resources/icons/hicolor/scalable/apps/{{appid}}.svg {{rootdir}}{{prefix}}/share/icons/hicolor/scalable/apps/{{appid}}.svg
+install:
+    ORBIT_PREFIX={{quote(rootdir + prefix)}} CARGO_TARGET_DIR={{quote(cargo-target-dir)}} scripts/install.sh
 
 uninstall:
     rm -f {{rootdir}}{{prefix}}/bin/{{name}} {{rootdir}}{{prefix}}/share/applications/{{appid}}.desktop {{rootdir}}{{prefix}}/share/metainfo/{{appid}}.metainfo.xml {{rootdir}}{{prefix}}/share/icons/hicolor/scalable/apps/{{appid}}.svg
