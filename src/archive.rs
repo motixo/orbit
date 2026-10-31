@@ -123,8 +123,13 @@ fn zip_entry<W: Write + Seek>(
     let name_str = name.to_str().ok_or_else(|| {
         io::Error::other("ZIP requires UTF-8 file names; use TGZ for this selection")
     })?;
+    let modified = jiff::Timestamp::try_from(metadata.modified()?)?
+        .to_zoned(jiff::tz::TimeZone::system())
+        .datetime();
     let options = SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated)
+        // ZIP's DOS timestamps only support years 1980–2107.
+        .last_modified_time(modified.try_into().unwrap_or_default())
         .unix_permissions(metadata.permissions().mode())
         .large_file(metadata.len() >= u32::MAX.into());
     if metadata.is_symlink() {
@@ -210,12 +215,27 @@ mod tests {
     #[test]
     fn archives_preserve_duplicate_names_and_originals() {
         let fixture = tempfile::tempdir().unwrap();
+        let modified =
+            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        let zip_modified = zip::DateTime::try_from(
+            jiff::Timestamp::try_from(modified)
+                .unwrap()
+                .to_zoned(jiff::tz::TimeZone::system())
+                .datetime(),
+        )
+        .unwrap();
         let mut paths = Vec::new();
         for (folder, contents) in [("a", "first"), ("b", "second")] {
             let folder = fixture.path().join(folder);
             fs::create_dir(&folder).unwrap();
             let path = folder.join("item.txt");
             fs::write(&path, contents).unwrap();
+            File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(modified)
+                .unwrap();
             paths.push(path);
         }
         for format in Format::ALL {
@@ -227,6 +247,7 @@ mod tests {
                     let mut archive = zip::ZipArchive::new(file).unwrap();
                     for index in 0..archive.len() {
                         let mut entry = archive.by_index(index).unwrap();
+                        assert_eq!(entry.last_modified(), Some(zip_modified));
                         let mut text = String::new();
                         entry.read_to_string(&mut text).unwrap();
                         contents.push((entry.name().to_owned(), text));

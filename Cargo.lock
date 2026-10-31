@@ -3619,6 +3619,7 @@ dependencies = [
  "i18n-embed-fl",
  "iced_winit",
  "image",
+ "jiff",
  "libcosmic",
  "mime_guess",
  "percent-encoding",
@@ -7049,6 +7050,7 @@ dependencies = [
  "crc32fast",
  "flate2",
  "indexmap",
+ "jiff",
  "memchr",
 ]
 
