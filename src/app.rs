@@ -1047,11 +1047,13 @@ impl Orbit {
             .on_close(Message::CancelCompress);
         if let Some(dialog) = &self.compression_dialog {
             let fields = widget::row::with_children(vec![
-                widget::text_input(fl!("archive-name"), &dialog.name)
-                    .id(dialog.input.clone())
-                    .on_input(Message::ArchiveName)
-                    .on_submit(|_| Message::StartCompress)
-                    .into(),
+                crate::layer_input::text_input(
+                    widget::text_input(fl!("archive-name"), &dialog.name)
+                        .id(dialog.input.clone())
+                        .on_input(Message::ArchiveName)
+                        .on_submit(|_| Message::StartCompress),
+                    self.pinned.is_some(),
+                ),
                 widget::dropdown(
                     Format::ALL,
                     Some(dialog.format.index()),

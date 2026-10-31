@@ -62,6 +62,19 @@ pub struct Shortcut {
     pub key: String,
 }
 
+pub fn physical_key(key: keyboard::key::Physical, layer_surface: bool) -> keyboard::key::Physical {
+    // shortcut: correct libcosmic 5a8bd94's layer offset until its SCTK key conversion is fixed.
+    if layer_surface {
+        iced_winit::conversion::physical_to_scancode(key)
+            .and_then(|code| code.checked_add(8))
+            .map(iced_winit::platform_specific::wayland::keymap::scancode_to_physicalkey)
+            .map(iced_winit::conversion::physical_key)
+            .unwrap_or(key)
+    } else {
+        key
+    }
+}
+
 impl Shortcut {
     pub fn from_event(event: &keyboard::Event, layer_surface: bool) -> Option<Self> {
         let keyboard::Event::KeyPressed {
@@ -74,16 +87,7 @@ impl Shortcut {
         else {
             return None;
         };
-        // shortcut: correct libcosmic 5a8bd94's layer offset until its SCTK key conversion is fixed.
-        let physical_key = if layer_surface {
-            iced_winit::conversion::physical_to_scancode(*physical_key)
-                .and_then(|code| code.checked_add(8))
-                .map(iced_winit::platform_specific::wayland::keymap::scancode_to_physicalkey)
-                .map(iced_winit::conversion::physical_key)
-                .unwrap_or(*physical_key)
-        } else {
-            *physical_key
-        };
+        let physical_key = self::physical_key(*physical_key, layer_surface);
         let key = if let Some(key) = key.to_latin(physical_key) {
             key.to_ascii_lowercase().to_string()
         } else if let keyboard::Key::Named(named) = key {
