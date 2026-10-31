@@ -27,17 +27,21 @@ impl Preview {
         path: std::path::PathBuf,
         lease: Arc<Transfer>,
     ) -> (Self, Task<cosmic::Action<Message>>) {
-        let (id, open) = window::open(window::Settings {
-            size: iced::Size::new(640.0, 480.0),
-            min_size: Some(iced::Size::new(320.0, 240.0)),
-            decorations: false,
-            transparent: true,
-            platform_specific: window::settings::PlatformSpecific {
-                application_id: <crate::app::Orbit as cosmic::Application>::APP_ID.into(),
+        let (id, open) = cosmic::surface::action::app_window::<crate::app::Orbit>(
+            |_| cosmic::surface::action::LiveSettings::default(),
+            |_| window::Settings {
+                size: iced::Size::new(640.0, 480.0),
+                min_size: Some(iced::Size::new(320.0, 240.0)),
+                decorations: false,
+                transparent: true,
+                platform_specific: window::settings::PlatformSpecific {
+                    application_id: <crate::app::Orbit as cosmic::Application>::APP_ID.into(),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
-            ..Default::default()
-        });
+            None,
+        );
         let name = path
             .file_name()
             .unwrap_or_default()
@@ -51,7 +55,7 @@ impl Preview {
                 content: None,
                 _lease: lease,
             },
-            open.map(|_| cosmic::Action::App(Message::Noop)),
+            cosmic::task::message(cosmic::Action::Surface(open)),
         )
     }
 
@@ -93,7 +97,7 @@ impl Preview {
             .class(cosmic::theme::Container::custom(|theme| {
                 let cosmic = theme.cosmic();
                 widget::container::Style {
-                    background: Some(cosmic.background(false).base.into()),
+                    background: Some(cosmic.background(theme.transparent).base.into()),
                     border: iced::Border {
                         color: cosmic.bg_divider().into(),
                         width: 1.0,
