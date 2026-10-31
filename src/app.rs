@@ -1004,7 +1004,7 @@ impl Orbit {
                         ),
                         widget::menu::Item::Entry(
                             widget::menu::Entry::new(fl!("compress"), Tool::Compress)
-                                .icon(widget::icon::from_name("package-x-generic-symbolic").into())
+                                .icon(widget::icon::from_name("mail-archive-symbolic").into())
                                 .checked(false)
                                 .enabled(self.shelf.selected_count() > 0),
                         ),
