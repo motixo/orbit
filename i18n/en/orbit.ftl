@@ -11,10 +11,11 @@ select-all = Select all
 deselect-all = Deselect all
 select-item = Select { $name }
 remove-item = Remove { $name }
-drag-items = { $count ->
-    [one] Drag 1 item
-   *[other] Drag { $count } items
+drag-files = { $count ->
+    [one] Drag file
+   *[other] Drag { $count } files
 }
+drag-content = Drag content
 shelf-count = { $count ->
     [one] 1 item
    *[other] { $count } items

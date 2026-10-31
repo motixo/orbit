@@ -3617,6 +3617,7 @@ dependencies = [
  "flate2",
  "i18n-embed",
  "i18n-embed-fl",
+ "iced_accessibility",
  "iced_winit",
  "image",
  "jiff",

@@ -1634,7 +1634,11 @@ impl Orbit {
         content_only: bool,
     ) -> Element<'a, Message> {
         let data = self.shelf.drag_transfer(path, content_only);
-        let label = fl!("drag-items", count = data.files.0.len());
+        let label = if content_only {
+            fl!("drag-content")
+        } else {
+            fl!("drag-files", count = data.files.0.len())
+        };
         let action = if self.copy_mode && data.has_local_files {
             DndAction::Copy
         } else if content_only || data.text_only && !data.has_local_files {
@@ -1642,7 +1646,7 @@ impl Orbit {
         } else {
             DndAction::Move
         };
-        widget::DndSource::with_id(
+        let source = widget::DndSource::with_id(
             content,
             widget::Id::new(format!(
                 "orbit-source-{window:?}-{content_only}-{}",
@@ -1656,18 +1660,9 @@ impl Orbit {
             transfer: data.clone(),
             content_only,
         })
-        .drag_icon(move |_| {
-            let icon: Element<'static, ()> = widget::container(widget::text::body(label.clone()))
-                .padding(12)
-                .class(cosmic::theme::Container::Card)
-                .into();
-            // The runtime lays out the preview before reconciling its widget state.
-            let state = icon.as_widget().state();
-            (icon, state, iced::Vector::ZERO)
-        })
         .on_finish(Some(Message::DragFinished))
-        .on_cancel(Some(Message::DragCancelled))
-        .into()
+        .on_cancel(Some(Message::DragCancelled));
+        crate::drag_preview::source(source, label)
     }
 }
 
