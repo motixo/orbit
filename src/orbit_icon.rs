@@ -75,16 +75,22 @@ impl<Message> Widget<Message, Theme, Renderer> for OrbitIcon {
         _: &Rectangle,
     ) {
         let bounds = layout.bounds();
+        let scale = bounds.width / 24.0 * 1.2;
+        let drawing_bounds = Rectangle {
+            x: bounds.center_x() - 12.0 * scale,
+            y: bounds.center_y() - 12.0 * scale,
+            width: 24.0 * scale,
+            height: 24.0 * scale,
+        };
         renderer.draw_svg(
             svg::Svg::new(TRACK.clone()).color(style.icon_color),
-            bounds,
+            drawing_bounds,
             bounds,
         );
         let elapsed = tree.state.downcast_ref::<Instant>().elapsed().as_secs_f64();
         let angle = (elapsed.rem_euclid(4.0) as f32) * TAU / 4.0;
         let (sine, cosine) = angle.sin_cos();
         let depth = (cosine + 1.0) / 2.0;
-        let scale = bounds.width / 24.0;
         let radius = (1.25 + 0.7 * depth) * scale;
         let (tilt_sine, tilt_cosine) = 28.0_f32.to_radians().sin_cos();
         let x = 8.75 * cosine;
