@@ -242,6 +242,7 @@ impl cosmic::Application for OrbitApplet {
             }
             Page::Settings => {
                 body = body
+                    .spacing(spacing.space_xxs)
                     .push(Self::popup_row(widget::settings::item(
                         fl!("open-as"),
                         widget::dropdown(
@@ -382,7 +383,7 @@ impl cosmic::Application for OrbitApplet {
         let mut content = widget::column::with_capacity(3)
             .spacing(spacing.space_xxs)
             .padding(spacing.space_xs)
-            .push(header)
+            .push_maybe((!matches!(self.page, Page::Menu)).then_some(header))
             .push(body);
         if !self.status.is_empty() {
             content = content.push(
