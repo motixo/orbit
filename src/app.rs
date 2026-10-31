@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use crate::{
+    archive::Format,
     fl,
     import::{ImportedFiles, Progress, Source},
     pin::{Area, Motion, Placement, Startup},
@@ -53,6 +54,7 @@ pub struct Orbit {
     preferences: crate::config::Preferences,
     shelf: Shelf,
     copy_mode: bool,
+    compression_dialog: Option<CompressionDialog>,
     thumbnails: HashMap<PathBuf, Option<widget::image::Handle>>,
     pending_imports: Vec<(u64, Progress, iced::task::Handle)>,
     dragged_paths: Vec<PathBuf>,
@@ -93,6 +95,12 @@ pub enum Message {
     Clear,
     Copy,
     ToggleCopyMode,
+    Compress,
+    ArchiveName(String),
+    ArchiveFormat(usize),
+    CancelCompress,
+    StartCompress,
+    Compressed(u64, Vec<(PathBuf, u64)>, Result<ImportedFiles, String>),
     Surface(cosmic::surface::Action<Message>),
     Paste,
     PasteData(Option<ClipboardData>),
@@ -123,6 +131,15 @@ pub enum Message {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tool {
     Copy,
+    Compress,
+}
+
+struct CompressionDialog {
+    name: String,
+    format: Format,
+    sources: Vec<(PathBuf, u64)>,
+    transfer: Transfer,
+    input: widget::Id,
 }
 
 impl widget::menu::Action for Tool {
@@ -131,6 +148,7 @@ impl widget::menu::Action for Tool {
     fn message(&self) -> Message {
         match self {
             Self::Copy => Message::ToggleCopyMode,
+            Self::Compress => Message::Compress,
         }
     }
 }
@@ -159,6 +177,7 @@ impl cosmic::Application for Orbit {
             core,
             shelf: Shelf::default(),
             copy_mode: false,
+            compression_dialog: None,
             thumbnails: HashMap::new(),
             pending_imports: Vec::new(),
             dragged_paths: Vec::new(),
@@ -228,12 +247,14 @@ impl cosmic::Application for Orbit {
             )
             .maximized(self.core.window.is_maximized)
             .sharp_corners(self.core.window.sharp_corners);
-        widget::column::with_children(vec![
-            header.into(),
-            self.shelf_view(self.core.main_window_id().unwrap_or(window::Id::NONE)),
-        ])
-        .height(Length::Fill)
-        .into()
+        self.with_compression_dialog(
+            widget::column::with_children(vec![
+                header.into(),
+                self.shelf_view(self.core.main_window_id().unwrap_or(window::Id::NONE)),
+            ])
+            .height(Length::Fill)
+            .into(),
+        )
     }
 
     fn on_close_requested(&self, id: window::Id) -> Option<Message> {
@@ -345,26 +366,28 @@ impl cosmic::Application for Orbit {
         if !self.pin_collapsed {
             children.push(self.shelf_view(id));
         }
-        widget::container(widget::column::with_children(children).height(Length::Fill))
-            .padding(1)
-            .class(cosmic::theme::Container::custom(|theme| {
-                let cosmic = theme.cosmic();
-                widget::container::Style {
-                    background: Some(cosmic.background(theme.transparent).base.into()),
-                    border: iced::Border {
-                        color: cosmic.bg_divider().into(),
-                        width: 1.0,
-                        radius: cosmic
-                            .radius_s()
-                            .map(|radius| if radius < 4.0 { radius } else { radius + 4.0 })
-                            .into(),
-                    },
-                    ..Default::default()
-                }
-            }))
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
+        self.with_compression_dialog(
+            widget::container(widget::column::with_children(children).height(Length::Fill))
+                .padding(1)
+                .class(cosmic::theme::Container::custom(|theme| {
+                    let cosmic = theme.cosmic();
+                    widget::container::Style {
+                        background: Some(cosmic.background(theme.transparent).base.into()),
+                        border: iced::Border {
+                            color: cosmic.bg_divider().into(),
+                            width: 1.0,
+                            radius: cosmic
+                                .radius_s()
+                                .map(|radius| if radius < 4.0 { radius } else { radius + 4.0 })
+                                .into(),
+                        },
+                        ..Default::default()
+                    }
+                }))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into(),
+        )
     }
 
     fn subscription(&self) -> Subscription<Message> {
@@ -405,6 +428,9 @@ impl cosmic::Application for Orbit {
     fn update(&mut self, message: Message) -> Task<cosmic::Action<Message>> {
         match message {
             Message::Shortcut(shortcut) => {
+                if self.compression_dialog.is_some() {
+                    return Task::none();
+                }
                 use crate::shortcuts::Action;
                 let message = match self.preferences.shortcuts.action(&shortcut) {
                     Some(Action::New) => Message::NewOrbit,
@@ -595,6 +621,74 @@ impl cosmic::Application for Orbit {
                 }
             }
             Message::ToggleCopyMode => self.copy_mode = !self.copy_mode,
+            Message::Compress => {
+                let sources = self
+                    .shelf
+                    .items
+                    .iter()
+                    .filter(|item| item.selected)
+                    .map(|item| (item.path.clone(), item.order))
+                    .collect::<Vec<_>>();
+                if sources.is_empty() || self.compression_dialog.is_some() {
+                    return Task::none();
+                }
+                let name = fl!("archive-default-name");
+                let input = widget::Id::unique();
+                let transfer = self.shelf.transfer(
+                    sources.iter().map(|(path, _)| path.clone()).collect(),
+                    false,
+                );
+                self.compression_dialog = Some(CompressionDialog {
+                    name,
+                    format: Format::default(),
+                    sources,
+                    transfer,
+                    input: input.clone(),
+                });
+                return self
+                    .set_pin_collapsed(false)
+                    .chain(widget::text_input::focus(input));
+            }
+            Message::ArchiveName(name) => {
+                if let Some(dialog) = &mut self.compression_dialog {
+                    dialog.name = name;
+                }
+            }
+            Message::ArchiveFormat(index) => {
+                if let Some(dialog) = &mut self.compression_dialog
+                    && let Some(format) = Format::ALL.get(index)
+                {
+                    dialog.format = *format;
+                }
+            }
+            Message::CancelCompress => self.compression_dialog = None,
+            Message::StartCompress => return self.begin_compression(),
+            Message::Compressed(id, sources, result) => {
+                if !self.pending_imports.iter().any(|(key, ..)| *key == id) {
+                    return Task::none();
+                }
+                let archive = result
+                    .as_ref()
+                    .ok()
+                    .and_then(|imported| imported.files.0.first())
+                    .cloned();
+                let task = self.update(Message::DropImported(id, result));
+                if archive.is_some_and(|path| self.shelf.items.iter().any(|item| item.path == path))
+                {
+                    for (path, order) in sources {
+                        if self
+                            .shelf
+                            .items
+                            .iter()
+                            .any(|item| item.path == path && item.order == order)
+                        {
+                            self.shelf.remove(&path);
+                        }
+                    }
+                    self.release_imports();
+                }
+                return task;
+            }
             Message::Surface(action) => {
                 return cosmic::task::message(cosmic::Action::Surface(action));
             }
@@ -902,12 +996,27 @@ impl Orbit {
                 widget::RcElementWrapper::new(root),
                 widget::menu::items(
                     &HashMap::new(),
-                    vec![widget::menu::Item::CheckBox(
-                        fl!("copy"),
-                        Some(widget::icon::from_name("edit-copy-symbolic").into()),
-                        self.copy_mode,
-                        Tool::Copy,
-                    )],
+                    vec![
+                        widget::menu::Item::CheckBox(
+                            fl!("copy"),
+                            Some(widget::icon::from_name("edit-copy-symbolic").into()),
+                            self.copy_mode,
+                            Tool::Copy,
+                        ),
+                        if self.shelf.selected_count() > 0 {
+                            widget::menu::Item::Button(
+                                fl!("compress"),
+                                Some(widget::icon::from_name("package-x-generic-symbolic").into()),
+                                Tool::Compress,
+                            )
+                        } else {
+                            widget::menu::Item::ButtonDisabled(
+                                fl!("compress"),
+                                Some(widget::icon::from_name("package-x-generic-symbolic").into()),
+                                Tool::Compress,
+                            )
+                        },
+                    ],
                 ),
             )])
             .item_width(widget::menu::ItemWidth::Uniform(160))
@@ -919,6 +1028,94 @@ impl Orbit {
         widget::row::with_children(buttons)
             .align_y(Alignment::Center)
             .into()
+    }
+
+    fn with_compression_dialog<'a>(
+        &'a self,
+        content: Element<'a, Message>,
+    ) -> Element<'a, Message> {
+        let mut popover = widget::popover(content)
+            .modal(true)
+            .on_close(Message::CancelCompress);
+        if let Some(dialog) = &self.compression_dialog {
+            let fields = widget::row::with_children(vec![
+                widget::text_input(fl!("archive-name"), &dialog.name)
+                    .id(dialog.input.clone())
+                    .on_input(Message::ArchiveName)
+                    .on_submit(|_| Message::StartCompress)
+                    .into(),
+                widget::dropdown(
+                    Format::ALL,
+                    Some(dialog.format.index()),
+                    Message::ArchiveFormat,
+                )
+                .width(80)
+                .into(),
+            ])
+            .spacing(cosmic::theme::spacing().space_xxs)
+            .align_y(Alignment::Center);
+            popover = popover.popup(
+                widget::dialog()
+                    .title(fl!("compress"))
+                    .width(SHELF_SIZE as f32 - 24.0)
+                    .control(fields)
+                    .primary_action(widget::button::suggested(fl!("compress")).on_press_maybe(
+                        crate::archive::valid_name(&dialog.name).then_some(Message::StartCompress),
+                    ))
+                    .secondary_action(
+                        widget::button::standard(fl!("cancel")).on_press(Message::CancelCompress),
+                    ),
+            );
+        }
+        popover.into()
+    }
+
+    fn begin_compression(&mut self) -> Task<cosmic::Action<Message>> {
+        if !self
+            .compression_dialog
+            .as_ref()
+            .is_some_and(|dialog| crate::archive::valid_name(&dialog.name))
+        {
+            return Task::none();
+        }
+        let dialog = self.compression_dialog.take().unwrap();
+        let id = self.shelf.reserve_order();
+        let name = format!("{}{}", dialog.name, dialog.format.extension());
+        let (output, input) = iced::futures::channel::mpsc::unbounded();
+        let worker = std::thread::Builder::new()
+            .name("orbit-compress".into())
+            .spawn(move || {
+                // Keep every source cache leased until compression has finished.
+                let dialog = dialog;
+                let result = crate::archive::create(
+                    &dialog.transfer.files.0,
+                    &dialog.name,
+                    dialog.format,
+                    || output.is_closed(),
+                )
+                .map_err(|error| {
+                    crate::import::record_error("archive", 0, error);
+                    fl!("compress-error")
+                });
+                let _ = output.unbounded_send(Message::Compressed(id, dialog.sources, result));
+            });
+        if let Err(error) = worker {
+            eprintln!("Could not start compression: {error}");
+            self.status = fl!("compress-error");
+            return Task::none();
+        }
+        let (task, handle) = cosmic::task::stream(input).abortable();
+        self.pending_imports.push((
+            id,
+            Progress {
+                name: Some(name),
+                status: Some(fl!("compressing")),
+                ..Default::default()
+            },
+            handle.abort_on_drop(),
+        ));
+        self.status.clear();
+        task
     }
 
     fn load_thumbnails(&mut self) -> Task<cosmic::Action<Message>> {
@@ -1245,7 +1442,9 @@ impl Orbit {
         }
         .size(28.0)
         .bar_height(2.5);
-        let detail = if let Some(fraction) = fraction {
+        let detail = if let Some(status) = &progress.status {
+            status.clone()
+        } else if let Some(fraction) = fraction {
             format!("{}%", (fraction * 100.0) as u32)
         } else if progress.received >= 1024 * 1024 {
             format!("{:.1} MB", progress.received as f64 / (1024.0 * 1024.0))

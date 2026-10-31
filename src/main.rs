@@ -3,6 +3,7 @@
 mod always_on_top;
 mod app;
 mod applet;
+mod archive;
 mod cache;
 mod config;
 mod file_icon;

@@ -52,6 +52,7 @@ pub struct ImportedFiles {
 #[derive(Clone, Debug, Default)]
 pub struct Progress {
     pub name: Option<String>,
+    pub status: Option<String>,
     pub received: u64,
     pub total: Option<u64>,
 }

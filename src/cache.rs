@@ -48,7 +48,9 @@ impl Directory {
         let directory = path.parent()?;
         let name = directory.file_name()?.to_str()?;
         if directory.parent()? != root().ok()?
-            || !(name.starts_with("orbit-image-") || name.starts_with("orbit-text-"))
+            || !(name.starts_with("orbit-image-")
+                || name.starts_with("orbit-text-")
+                || name.starts_with("orbit-archive-"))
         {
             return None;
         }
@@ -137,7 +139,9 @@ fn cleanup(cache: &Path) {
                         .filter_map(|line| url::Url::parse(line).ok()?.to_file_path().ok()),
                 );
             }
-        } else if (name.starts_with("orbit-image-") || name.starts_with("orbit-text-"))
+        } else if (name.starts_with("orbit-image-")
+            || name.starts_with("orbit-text-")
+            || name.starts_with("orbit-archive-"))
             && entry.file_type().is_ok_and(|kind| kind.is_dir())
         {
             directories.push(entry.path());
