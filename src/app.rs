@@ -1074,6 +1074,7 @@ impl Orbit {
                             .iter()
                             .map(|(id, progress)| self.import_view(*id, progress)),
                     )
+                    .rev()
                     .collect::<Vec<_>>(),
             )
             .spacing(spacing.space_xxs);
