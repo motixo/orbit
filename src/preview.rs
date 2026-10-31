@@ -8,6 +8,8 @@ use cosmic::{
 };
 use std::{path::Path, sync::Arc};
 
+const LOADER_SIZE: f32 = 32.0;
+
 #[derive(Clone, Debug)]
 pub enum Content {
     Image(widget::image::Handle),
@@ -72,7 +74,15 @@ impl Preview {
                     .into()
             }
             Some(Content::Unavailable) => widget::text::body(fl!("preview-unavailable")).into(),
-            None => widget::indeterminate_circular().into(),
+            None => iced::widget::responsive(|size| {
+                iced::widget::pin(widget::indeterminate_circular().size(LOADER_SIZE))
+                    .position(iced::Point::new(
+                        ((size.width - LOADER_SIZE) / 2.0).floor().max(0.0),
+                        ((size.height - LOADER_SIZE) / 2.0).floor().max(0.0),
+                    ))
+                    .into()
+            })
+            .into(),
         };
         let content = widget::column::with_children(vec![
             widget::header_bar()
