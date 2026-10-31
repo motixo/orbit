@@ -1573,20 +1573,35 @@ impl Orbit {
                 .center_y(32)
                 .into()
             };
-        let draggable = widget::row::with_children(vec![
-            preview,
-            widget::container(label)
-                .width(Length::Fill)
-                .clip(true)
-                .into(),
-        ])
-        .spacing(spacing.space_s)
-        .align_y(Alignment::Center)
-        .width(Length::Fill);
+        let label = widget::container(label)
+            .width(Length::Fill)
+            .clip(true)
+            .into();
+        let draggable = if item.has_text() {
+            widget::row::with_children(vec![
+                self.drag_source(preview, &item.path, window, false),
+                self.drag_source(label, &item.path, window, true),
+            ])
+            .spacing(spacing.space_s)
+            .align_y(Alignment::Center)
+            .width(Length::Fill)
+            .into()
+        } else {
+            self.drag_source(
+                widget::row::with_children(vec![preview, label])
+                    .spacing(spacing.space_s)
+                    .align_y(Alignment::Center)
+                    .width(Length::Fill)
+                    .into(),
+                &item.path,
+                window,
+                false,
+            )
+        };
         let path = item.path.clone();
         let row = widget::row::with_children(vec![
             checkbox.into(),
-            widget::container(self.drag_source(draggable.into(), &item.path, window))
+            widget::container(draggable)
                 .width(Length::Fill)
                 .clip(true)
                 .into(),
@@ -1615,12 +1630,15 @@ impl Orbit {
         content: Element<'a, Message>,
         path: &std::path::Path,
         window: window::Id,
+        content_only: bool,
     ) -> Element<'a, Message> {
-        let data = self.shelf.drag_transfer(path);
+        let data = self.shelf.drag_transfer(path, content_only);
         let label = fl!("drag-items", count = data.files.0.len());
-        let action = if self.copy_mode && data.has_local_files {
+        let action = if content_only {
+            DndAction::Copy | DndAction::Move
+        } else if self.copy_mode && data.has_local_files {
             DndAction::Copy
-        } else if data.text_only {
+        } else if data.text_only && !data.has_local_files {
             DndAction::Copy | DndAction::Move
         } else {
             DndAction::Move
@@ -1628,14 +1646,17 @@ impl Orbit {
         widget::DndSource::with_id(
             content,
             widget::Id::new(format!(
-                "orbit-source-{window:?}-{}",
+                "orbit-source-{window:?}-{content_only}-{}",
                 path.to_string_lossy()
             )),
         )
         .window(window)
         .action(action)
         .on_start(Some(Message::DragStarted(data.clone())))
-        .drag_content(move || data.as_ref().clone())
+        .drag_content(move || crate::transfer::Drag {
+            transfer: data.clone(),
+            content_only,
+        })
         .drag_icon(move |_| {
             let icon: Element<'static, ()> = widget::container(widget::text::body(label.clone()))
                 .padding(12)

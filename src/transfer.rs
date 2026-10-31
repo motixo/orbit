@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use cosmic::iced::clipboard::mime::{AllowedMimeTypes, AsMimeTypes};
-use std::{borrow::Cow, path::PathBuf, sync::Arc};
+use std::{
+    borrow::Cow,
+    io::Read,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 use url::Url;
 
 pub const URI_LIST: &str = "text/uri-list";
@@ -10,6 +15,63 @@ pub const TEXT: &str = "text/plain";
 pub const UTF8_TEXT: &str = "text/plain;charset=utf-8";
 pub const ORBIT_TEXT: &str = "application/x-orbit-text";
 pub const MOZ_URL: &str = "text/x-moz-url";
+// shortcut: text-file drags are capped at 1 MiB; stream text if larger snippets are needed.
+const MAX_TEXT_FILE_SIZE: u64 = 1024 * 1024;
+
+pub fn is_text_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("txt"))
+}
+
+#[derive(Clone, Debug)]
+pub enum Text {
+    Inline(String),
+    File(PathBuf),
+}
+
+impl Text {
+    fn contents(&self) -> Option<Cow<'_, str>> {
+        match self {
+            Self::Inline(text) => Some(Cow::Borrowed(text)),
+            Self::File(path) => {
+                let mut bytes = Vec::new();
+                std::fs::File::open(path)
+                    .ok()?
+                    .take(MAX_TEXT_FILE_SIZE + 1)
+                    .read_to_end(&mut bytes)
+                    .ok()?;
+                if bytes.len() as u64 > MAX_TEXT_FILE_SIZE {
+                    return None;
+                }
+                let text = if bytes.starts_with(&[0xff, 0xfe]) || bytes.starts_with(&[0xfe, 0xff]) {
+                    let little_endian = bytes[0] == 0xff;
+                    let (pairs, remainder) = bytes[2..].as_chunks::<2>();
+                    if !remainder.is_empty() {
+                        return None;
+                    }
+                    let units = pairs
+                        .iter()
+                        .map(|pair| {
+                            if little_endian {
+                                u16::from_le_bytes(*pair)
+                            } else {
+                                u16::from_be_bytes(*pair)
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    String::from_utf16(&units).ok()?
+                } else {
+                    String::from_utf8(bytes)
+                        .ok()?
+                        .trim_start_matches('\u{feff}')
+                        .to_owned()
+                };
+                (!text.contains('\0')).then_some(Cow::Owned(text))
+            }
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct ClipboardData(pub Vec<u8>, pub String);
@@ -116,7 +178,7 @@ impl AsMimeTypes for FileList {
 #[derive(Clone, Debug)]
 pub struct Transfer {
     pub files: FileList,
-    pub text: Option<String>,
+    pub text: Option<Vec<Text>>,
     pub text_only: bool,
     pub has_local_files: bool,
     pub links: bool,
@@ -125,6 +187,15 @@ pub struct Transfer {
 }
 
 impl Transfer {
+    fn plain_text(&self) -> Option<String> {
+        self.text
+            .as_ref()?
+            .iter()
+            .map(Text::contents)
+            .collect::<Option<Vec<_>>>()
+            .map(|parts| parts.join("\n\n"))
+    }
+
     fn file_bytes(&self, mime: &str) -> Option<Cow<'static, [u8]>> {
         let bytes = self.files.as_bytes(mime)?;
         for directory in &self.cached {
@@ -136,6 +207,31 @@ impl Transfer {
 
 impl AsMimeTypes for Transfer {
     fn available(&self) -> Cow<'static, [String]> {
+        self.available_for(false)
+    }
+
+    fn as_bytes(&self, mime: &str) -> Option<Cow<'static, [u8]>> {
+        self.bytes_for(mime, false)
+    }
+}
+
+pub struct Drag {
+    pub transfer: Arc<Transfer>,
+    pub content_only: bool,
+}
+
+impl AsMimeTypes for Drag {
+    fn available(&self) -> Cow<'static, [String]> {
+        self.transfer.available_for(self.content_only)
+    }
+
+    fn as_bytes(&self, mime: &str) -> Option<Cow<'static, [u8]>> {
+        self.transfer.bytes_for(mime, self.content_only)
+    }
+}
+
+impl Transfer {
+    fn available_for(&self, content_only: bool) -> Cow<'static, [String]> {
         let mut mimes = Vec::new();
         if self.text_only {
             mimes.extend([ORBIT_TEXT.into(), UTF8_TEXT.into(), TEXT.into()]);
@@ -143,9 +239,11 @@ impl AsMimeTypes for Transfer {
         if self.links && self.files.0.len() == 1 {
             mimes.push(MOZ_URL.into());
         }
-        mimes.push(URI_LIST.into());
+        if !content_only || self.links {
+            mimes.push(URI_LIST.into());
+        }
         // Keep the clipboard's copy operation out of native Move drags.
-        if self.clipboard && !self.links {
+        if !content_only && self.clipboard && !self.links {
             mimes.push(GNOME_FILES.into());
         }
         if self.text.is_some() && !self.text_only {
@@ -154,17 +252,13 @@ impl AsMimeTypes for Transfer {
         Cow::Owned(mimes)
     }
 
-    fn as_bytes(&self, mime: &str) -> Option<Cow<'static, [u8]>> {
+    fn bytes_for(&self, mime: &str, content_only: bool) -> Option<Cow<'static, [u8]>> {
         match mime {
-            ORBIT_TEXT if self.text_only => self
-                .text
-                .as_ref()
-                .map(|text| Cow::Owned(text.as_bytes().to_vec())),
-            TEXT | UTF8_TEXT => self
-                .text
-                .as_ref()
-                .map(|text| Cow::Owned(text.as_bytes().to_vec())),
-            MOZ_URL if self.links && self.files.0.len() == 1 => self.text.as_ref().map(|text| {
+            ORBIT_TEXT if self.text_only => {
+                self.plain_text().map(|text| Cow::Owned(text.into_bytes()))
+            }
+            TEXT | UTF8_TEXT => self.plain_text().map(|text| Cow::Owned(text.into_bytes())),
+            MOZ_URL if self.links && self.files.0.len() == 1 => self.plain_text().map(|text| {
                 let url = text.trim();
                 Cow::Owned(
                     format!("{url}\n{url}")
@@ -173,18 +267,20 @@ impl AsMimeTypes for Transfer {
                         .collect(),
                 )
             }),
-            URI_LIST if self.links && self.clipboard => self.text.as_ref().map(|text| {
-                Cow::Owned(
-                    text.lines()
-                        .map(str::trim)
-                        .filter(|line| !line.is_empty())
-                        .collect::<Vec<_>>()
-                        .join("\r\n")
-                        .into_bytes(),
-                )
-            }),
-            URI_LIST => self.file_bytes(mime),
-            GNOME_FILES if self.clipboard && !self.links => self.file_bytes(mime),
+            URI_LIST if self.links && (self.clipboard || content_only) => {
+                self.plain_text().map(|text| {
+                    Cow::Owned(
+                        text.lines()
+                            .map(str::trim)
+                            .filter(|line| !line.is_empty())
+                            .collect::<Vec<_>>()
+                            .join("\r\n")
+                            .into_bytes(),
+                    )
+                })
+            }
+            URI_LIST if !content_only => self.file_bytes(mime),
+            GNOME_FILES if !content_only && self.clipboard && !self.links => self.file_bytes(mime),
             _ => None,
         }
     }
@@ -198,7 +294,7 @@ mod tests {
     fn text_drags_keep_utf8_and_offer_a_file_fallback() {
         let data = Transfer {
             files: FileList(vec![PathBuf::from("/tmp/Text.txt")]),
-            text: Some("First line\nسلام\nLast line".into()),
+            text: Some(vec![Text::Inline("First line\nسلام\nLast line".into())]),
             text_only: true,
             has_local_files: false,
             links: false,
@@ -219,13 +315,23 @@ mod tests {
             .0,
             data.files.0
         );
+        let drag = Drag {
+            transfer: Arc::new(data),
+            content_only: true,
+        };
+        assert!(!drag.available().iter().any(|mime| mime == URI_LIST));
+        assert!(drag.as_bytes(URI_LIST).is_none());
+        assert_eq!(
+            drag.as_bytes(TEXT).unwrap().as_ref(),
+            "First line\nسلام\nLast line".as_bytes()
+        );
     }
 
     #[test]
     fn link_drags_offer_local_files_and_a_native_browser_url() {
         let data = Transfer {
             files: FileList(vec![PathBuf::from("/tmp/Link.html")]),
-            text: Some("https://example.com/article".into()),
+            text: Some(vec![Text::Inline("https://example.com/article".into())]),
             text_only: true,
             has_local_files: false,
             links: true,
@@ -252,6 +358,49 @@ mod tests {
             String::from_utf16(&units).unwrap(),
             "https://example.com/article\nhttps://example.com/article"
         );
+        let drag = Drag {
+            transfer: Arc::new(data),
+            content_only: true,
+        };
+        assert_eq!(
+            drag.as_bytes(URI_LIST).unwrap().as_ref(),
+            b"https://example.com/article"
+        );
+        assert_eq!(
+            drag.as_bytes(TEXT).unwrap().as_ref(),
+            b"https://example.com/article"
+        );
+    }
+
+    #[test]
+    fn text_file_contents_support_unicode_and_reject_invalid_or_oversized_data() {
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path().join("notes.TXT");
+        let source = Text::File(path.clone());
+        let text = "Hello\nسلام";
+        assert!(is_text_file(&path));
+        std::fs::write(&path, text).unwrap();
+        assert_eq!(source.contents().unwrap(), text);
+        for little_endian in [true, false] {
+            let mut bytes = if little_endian {
+                vec![0xff, 0xfe]
+            } else {
+                vec![0xfe, 0xff]
+            };
+            for unit in text.encode_utf16() {
+                bytes.extend(if little_endian {
+                    unit.to_le_bytes()
+                } else {
+                    unit.to_be_bytes()
+                });
+            }
+            std::fs::write(&path, bytes).unwrap();
+            assert_eq!(source.contents().unwrap(), text);
+        }
+        std::fs::write(&path, [0xff]).unwrap();
+        assert!(source.contents().is_none());
+        std::fs::write(&path, vec![b'a'; MAX_TEXT_FILE_SIZE as usize + 1]).unwrap();
+        assert!(source.contents().is_none());
     }
 
     #[test]

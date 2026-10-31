@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use crate::transfer::{FileList, Transfer, is_link};
+use crate::transfer::{FileList, Text, Transfer, is_link, is_text_file};
 use std::{
     path::{Path, PathBuf},
     sync::{Arc, OnceLock},
@@ -17,11 +17,17 @@ pub struct Item {
     cache: Option<Arc<crate::cache::Directory>>,
 }
 
+impl Item {
+    pub fn has_text(&self) -> bool {
+        self.text.is_some() || (!self.directory && is_text_file(&self.path))
+    }
+}
+
 #[derive(Default)]
 pub struct Shelf {
     pub items: Vec<Item>,
     next_order: u64,
-    selection_drag: OnceLock<Arc<Transfer>>,
+    selection_drag: [OnceLock<Arc<Transfer>>; 2],
 }
 
 #[derive(Default, Debug, PartialEq)]
@@ -33,7 +39,7 @@ pub struct AddReport {
 
 impl Shelf {
     pub fn add(&mut self, paths: impl IntoIterator<Item = PathBuf>) -> AddReport {
-        self.selection_drag.take();
+        self.invalidate_transfers();
         let mut report = AddReport::default();
         for path in paths {
             let Ok(path) = std::path::absolute(path) else {
@@ -85,7 +91,7 @@ impl Shelf {
         text: Option<String>,
         cache: Option<Arc<crate::cache::Directory>>,
     ) {
-        self.selection_drag.take();
+        self.invalidate_transfers();
         if let Some(item) = self.items.iter_mut().find(|item| item.path == path) {
             item.cache = cache;
             if let Some(text) = text {
@@ -121,23 +127,28 @@ impl Shelf {
             .iter()
             .filter_map(|path| self.items.iter().find(|item| &item.path == path))
             .collect::<Vec<_>>();
-        let text_only = !items.is_empty() && items.iter().all(|item| item.text.is_some());
+        let text_only = !items.is_empty() && items.iter().all(|item| item.has_text());
         let links = text_only
             && items
                 .iter()
                 .all(|item| item.text.as_deref().is_some_and(is_link));
-        let text = items.iter().any(|item| item.text.is_some()).then(|| {
+        let text = items.iter().any(|item| item.has_text()).then(|| {
             items
                 .iter()
                 .map(|item| {
-                    item.text.clone().unwrap_or_else(|| {
-                        url::Url::from_file_path(&item.path)
-                            .map(|url| url.to_string())
-                            .unwrap_or_else(|_| item.path.to_string_lossy().into_owned())
-                    })
+                    if let Some(text) = &item.text {
+                        Text::Inline(text.clone())
+                    } else if item.has_text() {
+                        Text::File(item.path.clone())
+                    } else {
+                        Text::Inline(
+                            url::Url::from_file_path(&item.path)
+                                .map(|url| url.to_string())
+                                .unwrap_or_else(|_| item.path.to_string_lossy().into_owned()),
+                        )
+                    }
                 })
                 .collect::<Vec<_>>()
-                .join("\n\n")
         });
         Transfer {
             has_local_files: items
@@ -165,14 +176,22 @@ impl Shelf {
             .collect()
     }
 
-    pub fn drag_transfer(&self, path: &Path) -> Arc<Transfer> {
+    pub fn drag_transfer(&self, path: &Path, content_only: bool) -> Arc<Transfer> {
         if self
             .items
             .iter()
             .any(|item| item.path == path && item.selected)
         {
-            self.selection_drag
-                .get_or_init(|| Arc::new(self.transfer(self.export_paths(), false)))
+            self.selection_drag[usize::from(content_only)]
+                .get_or_init(|| {
+                    let paths = self
+                        .items
+                        .iter()
+                        .filter(|item| item.selected && (!content_only || item.has_text()))
+                        .map(|item| item.path.clone())
+                        .collect();
+                    Arc::new(self.transfer(paths, false))
+                })
                 .clone()
         } else {
             Arc::new(self.transfer(vec![path.to_owned()], false))
@@ -180,14 +199,14 @@ impl Shelf {
     }
 
     pub fn toggle(&mut self, path: &Path) {
-        self.selection_drag.take();
+        self.invalidate_transfers();
         if let Some(item) = self.items.iter_mut().find(|item| item.path == path) {
             item.selected = !item.selected;
         }
     }
 
     pub fn select_all(&mut self) {
-        self.selection_drag.take();
+        self.invalidate_transfers();
         let selected = self.selected_count() != self.items.len();
         for item in &mut self.items {
             item.selected = selected;
@@ -195,14 +214,20 @@ impl Shelf {
     }
 
     pub fn remove(&mut self, path: &Path) {
-        self.selection_drag.take();
+        self.invalidate_transfers();
         self.items.retain(|item| item.path != path);
     }
 
     pub fn clear(&mut self) {
-        self.selection_drag.take();
+        self.invalidate_transfers();
         let has_selection = self.selected_count() > 0;
         self.items.retain(|item| has_selection && !item.selected);
+    }
+
+    fn invalidate_transfers(&mut self) {
+        for transfer in &mut self.selection_drag {
+            transfer.take();
+        }
     }
 }
 
@@ -256,15 +281,39 @@ mod tests {
         assert_eq!(shelf.selected_count(), 3);
         assert_eq!(shelf.export_paths(), [a.clone(), b.clone(), c.clone()]);
         shelf.toggle(&c);
-        let group = shelf.drag_transfer(&a);
+        let group = shelf.drag_transfer(&a, false);
         assert_eq!(group.files.0, [a, b.clone()]);
-        assert!(Arc::ptr_eq(&group, &shelf.drag_transfer(&b)));
-        assert_eq!(shelf.drag_transfer(&c).files.0, [c]);
+        assert!(Arc::ptr_eq(&group, &shelf.drag_transfer(&b, false)));
+        assert_eq!(shelf.drag_transfer(&c, false).files.0, [c]);
         shelf.select_all();
         assert_eq!(shelf.selected_count(), 3);
-        assert!(!Arc::ptr_eq(&group, &shelf.drag_transfer(&b)));
+        assert!(!Arc::ptr_eq(&group, &shelf.drag_transfer(&b, false)));
         shelf.select_all();
         assert_eq!(shelf.selected_count(), 0);
+    }
+
+    #[test]
+    fn content_drags_filter_selected_files_and_keep_file_drags_separate() {
+        use cosmic::iced::clipboard::mime::AsMimeTypes;
+        let fixture = Fixture::new();
+        let text = fixture.file("notes.txt");
+        let file = fixture.file("image.png");
+        let mut shelf = Shelf::default();
+        shelf.add([text.clone(), file.clone()]);
+        let content = shelf.drag_transfer(&text, true);
+        assert_eq!(content.files.0.as_slice(), std::slice::from_ref(&text));
+        assert_eq!(
+            content.as_bytes(crate::transfer::TEXT).unwrap().as_ref(),
+            b"original contents"
+        );
+        assert!(Arc::ptr_eq(&content, &shelf.drag_transfer(&text, true)));
+        assert_eq!(
+            shelf.drag_transfer(&text, false).files.0,
+            [text.clone(), file.clone()]
+        );
+        shelf.toggle(&file);
+        assert!(!Arc::ptr_eq(&content, &shelf.drag_transfer(&text, true)));
+        assert_eq!(shelf.drag_transfer(&file, false).files.0, [file]);
     }
 
     #[test]
