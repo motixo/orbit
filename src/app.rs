@@ -48,6 +48,8 @@ impl cosmic::app::CosmicFlags for Flags {
 
 pub struct Orbit {
     core: cosmic::Core,
+    preferences: crate::config::Preferences,
+    startup_pin: bool,
     shelf: Shelf,
     thumbnails: HashMap<PathBuf, Option<widget::image::Handle>>,
     pending_imports: Vec<(u64, Progress, iced::task::Handle)>,
@@ -73,6 +75,8 @@ pub struct Orbit {
 pub enum Message {
     Choose(bool),
     NewOrbit,
+    StartupPin,
+    Config(crate::config::Preferences),
     Incoming(Result<FileList, String>),
     DropData(Vec<u8>, String),
     DropProgress(u64, Progress),
@@ -130,7 +134,9 @@ impl cosmic::Application for Orbit {
         core.window.show_minimize = false;
         core.window.show_maximize = false;
         core.window.border_padding = Some(0);
+        let preferences = crate::config::Preferences::load();
         let mut app = Self {
+            startup_pin: flags.startup.is_none() && preferences.pinned,
             core,
             shelf: Shelf::default(),
             thumbnails: HashMap::new(),
@@ -146,7 +152,7 @@ impl cosmic::Application for Orbit {
                 .startup
                 .as_ref()
                 .map(|startup| startup.anchor)
-                .unwrap_or(Anchor::TOP | Anchor::RIGHT),
+                .unwrap_or(preferences.corner.anchor()),
             pin_drag_start: None,
             pin_cursor: iced::Point::ORIGIN,
             pin_pointer_down: false,
@@ -154,6 +160,7 @@ impl cosmic::Application for Orbit {
             pin_motion: None,
             pin_collapsed: false,
             pin_header_height: 49,
+            preferences,
             drop_target: widget::Id::unique(),
         };
         app.set_header_title(fl!("app-title"));
@@ -381,11 +388,31 @@ impl cosmic::Application for Orbit {
             Subscription::none()
         };
         let opened = iced::window::open_events().map(Message::WindowOpened);
-        Subscription::batch([keyboard, layout, pointer, animation, opened])
+        let config = self
+            .core
+            .watch_config::<crate::config::Preferences>(crate::config::ID)
+            .map(|update| Message::Config(update.config));
+        let startup = if self.startup_pin {
+            iced::time::every(std::time::Duration::from_millis(100)).map(|_| Message::StartupPin)
+        } else {
+            Subscription::none()
+        };
+        Subscription::batch([
+            keyboard, layout, pointer, animation, opened, config, startup,
+        ])
     }
 
     fn update(&mut self, message: Message) -> Task<cosmic::Action<Message>> {
         match message {
+            Message::Config(preferences) => self.preferences = preferences,
+            Message::StartupPin => {
+                if crate::always_on_top::active_output().is_some()
+                    && self.core.main_window_id().is_some()
+                {
+                    self.startup_pin = false;
+                    return self.update(Message::TogglePin);
+                }
+            }
             Message::DropData(bytes, mime) => {
                 return self.begin_import(bytes, mime, Source::Drop);
             }
@@ -496,25 +523,10 @@ impl cosmic::Application for Orbit {
                     move |token| {
                         let startup = startup.clone();
                         cosmic::task::future(async move {
-                            let Ok(executable) = std::env::current_exe() else {
-                                return Message::Incoming(Err(fl!("new-orbit-error")));
-                            };
-                            let mut command = std::process::Command::new(executable);
-                            // Bypass single-instance activation so each shelf has its own state.
-                            command
-                                .env("COSMIC_SINGLE_INSTANCE", "0")
-                                .env_remove("ORBIT_START_PINNED")
-                                .env_remove("XDG_ACTIVATION_TOKEN")
-                                .env_remove("DESKTOP_STARTUP_ID");
-                            if let Some(token) = token {
-                                command.env("XDG_ACTIVATION_TOKEN", token);
-                            }
-                            if let Some(startup) = startup {
-                                command.env("ORBIT_START_PINNED", startup);
-                            }
-                            match cosmic::process::spawn(command).await {
-                                Some(_) => Message::Noop,
-                                None => Message::Incoming(Err(fl!("new-orbit-error"))),
+                            if crate::launch::new_orbit(token, startup).await {
+                                Message::Noop
+                            } else {
+                                Message::Incoming(Err(fl!("new-orbit-error")))
                             }
                         })
                     },

@@ -2,10 +2,13 @@
 
 mod always_on_top;
 mod app;
+mod applet;
 mod cache;
+mod config;
 mod file_icon;
 mod i18n;
 mod import;
+mod launch;
 mod pin;
 mod pointer;
 mod shelf;
@@ -14,16 +17,27 @@ mod transfer;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut paths: Vec<_> = std::env::args_os().skip(1).collect();
+    let mut independent = false;
     match paths.first().and_then(|arg| arg.to_str()) {
         Some("--help" | "-h") => {
             println!(
-                "Orbit — a floating file shelf for COSMIC\n\nUsage: orbit [FILE_OR_FOLDER ...]\n       orbit --version\n\nCtrl+O: add files    Ctrl+Shift+O: add folders\nCtrl+V: collect      Ctrl+C: copy items\nCtrl+A: select all   Ctrl+P: pin shelf\nCtrl+Q: quit"
+                "Orbit — a floating file shelf for COSMIC\n\nUsage: orbit [FILE_OR_FOLDER ...]\n       orbit --new\n       orbit --applet\n       orbit --version\n\nCtrl+O: add files    Ctrl+Shift+O: add folders\nCtrl+V: collect      Ctrl+C: copy items\nCtrl+A: select all   Ctrl+P: pin shelf\nCtrl+Q: quit"
             );
             return Ok(());
         }
         Some("--version" | "-V") => {
             println!("Orbit {}", env!("CARGO_PKG_VERSION"));
             return Ok(());
+        }
+        Some("--applet") => {
+            let languages = i18n_embed::DesktopLanguageRequester::requested_languages();
+            i18n::init(&languages);
+            cosmic::applet::run::<applet::OrbitApplet>(())?;
+            return Ok(());
+        }
+        Some("--new") => {
+            independent = true;
+            paths.remove(0);
         }
         Some("--") => {
             paths.remove(0);
@@ -55,13 +69,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     cache::start_cleanup()?;
     always_on_top::start()?;
-    cosmic::app::run_single_instance::<app::Orbit>(
-        settings,
-        app::Flags {
-            uris,
-            action: "collect".into(),
-            startup,
-        },
-    )?;
+    let flags = app::Flags {
+        uris,
+        action: "collect".into(),
+        startup,
+    };
+    if independent {
+        cosmic::app::run::<app::Orbit>(settings, flags)?;
+    } else {
+        cosmic::app::run_single_instance::<app::Orbit>(settings, flags)?;
+    }
     Ok(())
 }

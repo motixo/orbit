@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Orbit
+Comment=Open a new Orbit
+Exec=orbit --applet
+Icon=io.github.motixo.Orbit-symbolic
+Terminal=false
+Categories=COSMIC;
+Keywords=Orbit;Shelf;Files;
+NoDisplay=true
+X-CosmicApplet=true

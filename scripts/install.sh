@@ -19,6 +19,8 @@ mv -f "$orbit_staged" "$orbit_prefix/bin/orbit"
 install -Dm0644 "resources/$orbit_appid.desktop" "$orbit_prefix/share/applications/$orbit_appid.desktop"
 install -Dm0644 "resources/$orbit_appid.metainfo.xml" "$orbit_prefix/share/metainfo/$orbit_appid.metainfo.xml"
 install -Dm0644 "resources/icons/hicolor/scalable/apps/$orbit_appid.svg" "$orbit_prefix/share/icons/hicolor/scalable/apps/$orbit_appid.svg"
+install -Dm0644 "resources/$orbit_appid.Applet.desktop" "$orbit_prefix/share/applications/$orbit_appid.Applet.desktop"
+install -Dm0644 "resources/icons/hicolor/symbolic/apps/$orbit_appid-symbolic.svg" "$orbit_prefix/share/icons/hicolor/symbolic/apps/$orbit_appid-symbolic.svg"
 if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database "$orbit_prefix/share/applications"
 fi
