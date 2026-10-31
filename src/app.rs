@@ -150,7 +150,6 @@ impl cosmic::Application for Orbit {
     }
 
     fn init(mut core: cosmic::Core, flags: Flags) -> (Self, Task<cosmic::Action<Message>>) {
-        // Use a native header with pinning instead of the template's double-click maximize.
         core.window.show_headerbar = false;
         core.window.show_minimize = false;
         core.window.show_maximize = false;

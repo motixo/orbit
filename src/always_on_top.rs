@@ -57,7 +57,6 @@ fn run(ready: oneshot::Sender<Option<crate::pin::Area>>) -> Result<(), Box<dyn s
         info,
         sticky_supported: false,
     };
-    // Collect output geometry and toplevel details without creating a temporary window.
     queue.roundtrip(&mut state)?;
     queue.roundtrip(&mut state)?;
     let _ = ready.send(state.startup_area());

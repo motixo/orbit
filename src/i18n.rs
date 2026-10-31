@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! Provides localization support for this crate.
-
 use i18n_embed::{
     DefaultLocalizer, LanguageLoader, Localizer,
     fluent::{FluentLanguageLoader, fluent_language_loader},
@@ -10,14 +8,12 @@ use i18n_embed::{
 use rust_embed::RustEmbed;
 use std::sync::LazyLock;
 
-/// Applies the requested language(s) to requested translations from the `fl!()` macro.
 pub fn init(requested_languages: &[LanguageIdentifier]) {
     if let Err(why) = localizer().select(requested_languages) {
         eprintln!("error while loading fluent localizations: {why}");
     }
 }
 
-// Get the `Localizer` to be used for localizing this library.
 #[must_use]
 pub fn localizer() -> Box<dyn Localizer> {
     Box::from(DefaultLocalizer::new(&*LANGUAGE_LOADER, &Localizations))
@@ -37,7 +33,6 @@ pub static LANGUAGE_LOADER: LazyLock<FluentLanguageLoader> = LazyLock::new(|| {
     loader
 });
 
-/// Request a localized string by ID from the i18n/ directory.
 #[macro_export]
 macro_rules! fl {
     ($message_id:literal) => {{

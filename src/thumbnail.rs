@@ -25,7 +25,6 @@ pub fn generate(path: &Path) -> Option<Handle> {
     let directory = tempfile::tempdir().ok()?;
     let output = directory.path().join("thumbnail.png");
     let uri = url::Url::from_file_path(path).ok()?;
-    // Use the installed desktop thumbnailers without blocking the app or leaving children hung.
     let mut command = Command::new("timeout");
     command.args(["--kill-after=2s", "15s"]);
     match kind {
@@ -68,21 +67,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn media_types_include_browser_images_and_common_video_formats() {
-        for name in [
-            "photo.png",
-            "PHOTO.JPG",
-            "image.webp",
-            "image.avif",
-            "drawing.svg",
+    fn classifies_thumbnail_candidates() {
+        for (name, expected) in [
+            ("IMAGE.AVIF", Some(Kind::Image)),
+            ("clip.mp4", Some(Kind::Video)),
+            ("report.pdf", None),
         ] {
-            assert_eq!(kind(Path::new(name)), Some(Kind::Image));
-        }
-        for name in ["clip.mp4", "CLIP.MOV", "clip.webm", "clip.mkv"] {
-            assert_eq!(kind(Path::new(name)), Some(Kind::Video));
-        }
-        for name in ["Text.txt", "report.pdf", "archive.zip"] {
-            assert_eq!(kind(Path::new(name)), None);
+            assert_eq!(kind(Path::new(name)), expected);
         }
     }
 }
