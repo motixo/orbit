@@ -69,7 +69,7 @@ impl Preview {
                 .content_fit(iced::ContentFit::Contain)
                 .into(),
             Some(Content::Text(text)) => {
-                widget::scrollable(widget::text::body(text).width(Length::Fill))
+                widget::scrollable(widget::selectable_text::body(text).width(Length::Fill))
                     .height(Length::Fill)
                     .into()
             }
