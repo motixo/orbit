@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use crate::{
-    config::{Corner, Preferences, REPOSITORY},
+    config::{Corner, Preferences, REPOSITORY, UPDATES_URL, UpdateReminder},
     fl,
     shortcuts::{Action, Shortcut},
 };
@@ -20,6 +20,9 @@ pub struct OrbitApplet {
     preferences: Preferences,
     modes: Vec<String>,
     corners: Vec<String>,
+    reminders: Vec<String>,
+    checking_update: bool,
+    available_update: Option<String>,
     status: String,
     editing: Option<EditTarget>,
     global_shortcut: Option<Shortcut>,
@@ -48,10 +51,13 @@ pub enum Message {
     Page(Page),
     Mode(usize),
     Corner(usize),
+    Reminder(usize),
+    CheckUpdates(bool),
+    Checked(bool, Result<crate::updates::Outcome, String>),
     Config(Preferences),
     Edit(EditTarget),
     Key(iced::keyboard::Event),
-    Repository,
+    OpenLink(&'static str),
     Ignore,
 }
 
@@ -82,11 +88,14 @@ impl cosmic::Application for OrbitApplet {
                     fl!("bottom-right"),
                     fl!("bottom-left"),
                 ],
+                reminders: vec![fl!("disabled"), fl!("daily"), fl!("weekly")],
+                checking_update: false,
+                available_update: None,
                 status: String::new(),
                 editing: None,
                 global_shortcut: None,
             },
-            Task::none(),
+            cosmic::task::message(Message::CheckUpdates(false)),
         )
     }
 
@@ -119,7 +128,13 @@ impl cosmic::Application for OrbitApplet {
         } else {
             Subscription::none()
         };
-        Subscription::batch([config, keyboard])
+        let updates = if self.preferences.update_reminder != UpdateReminder::Off {
+            iced::time::every(std::time::Duration::from_secs(60))
+                .map(|_| Message::CheckUpdates(false))
+        } else {
+            Subscription::none()
+        };
+        Subscription::batch([config, keyboard, updates])
     }
 
     fn view_window(&self, _: window::Id) -> Element<'_, Message> {
@@ -175,7 +190,24 @@ impl cosmic::Application for OrbitApplet {
                         Some(self.preferences.corner.index()),
                         Message::Corner,
                     ),
-                )),
+                ))
+                .push(widget::settings::item(
+                    fl!("update-reminder"),
+                    widget::dropdown(
+                        &self.reminders,
+                        Some(self.preferences.update_reminder.index()),
+                        Message::Reminder,
+                    ),
+                ))
+                .push(
+                    widget::button::standard(fl!("check-updates")).on_press_maybe(
+                        (!self.checking_update).then_some(Message::CheckUpdates(true)),
+                    ),
+                )
+                .push_maybe(self.available_update.as_ref().map(|version| {
+                    widget::button::link(fl!("update-available", version = version.as_str()))
+                        .on_press(Message::OpenLink(UPDATES_URL))
+                })),
             Page::Shortcuts => {
                 let mut shortcuts = widget::column::with_capacity(15)
                     .spacing(8)
@@ -208,7 +240,7 @@ impl cosmic::Application for OrbitApplet {
                     "Orbit {}",
                     env!("CARGO_PKG_VERSION")
                 )))
-                .push(widget::button::link(REPOSITORY).on_press(Message::Repository)),
+                .push(widget::button::link(REPOSITORY).on_press(Message::OpenLink(REPOSITORY))),
         };
         if !self.status.is_empty() {
             content = content.push(widget::text::caption(&self.status));
@@ -296,6 +328,53 @@ impl cosmic::Application for OrbitApplet {
                     self.save();
                 }
             }
+            Message::Reminder(index) => {
+                if let Some(reminder) = UpdateReminder::ALL.get(index) {
+                    self.preferences.update_reminder = *reminder;
+                    self.save();
+                }
+            }
+            Message::CheckUpdates(manual) => {
+                if self.checking_update
+                    || (!manual && self.preferences.update_reminder == UpdateReminder::Off)
+                {
+                    return Task::none();
+                }
+                self.checking_update = true;
+                let reminder = self.preferences.update_reminder;
+                return cosmic::task::future(async move {
+                    Message::Checked(manual, crate::updates::check(reminder, manual).await)
+                });
+            }
+            Message::Checked(manual, result) => {
+                self.checking_update = false;
+                match result {
+                    Ok(crate::updates::Outcome::Available(version)) => {
+                        self.available_update = Some(version);
+                        if manual {
+                            self.status.clear();
+                        }
+                    }
+                    Ok(crate::updates::Outcome::Current) => {
+                        self.available_update = None;
+                        if manual {
+                            self.status = fl!("up-to-date");
+                        }
+                    }
+                    Ok(crate::updates::Outcome::Skipped) => {
+                        if manual {
+                            self.status = fl!("update-busy");
+                        }
+                    }
+                    Err(error) => {
+                        if manual {
+                            self.status = error;
+                        } else {
+                            eprintln!("{error}");
+                        }
+                    }
+                }
+            }
             Message::Config(preferences) => self.preferences = preferences,
             Message::Edit(target) => {
                 self.editing = Some(target);
@@ -308,10 +387,10 @@ impl cosmic::Application for OrbitApplet {
                     return inhibit_shortcuts(false).discard();
                 }
             }
-            Message::Repository => {
-                return cosmic::task::future(async {
+            Message::OpenLink(url) => {
+                return cosmic::task::future(async move {
                     let mut command = std::process::Command::new("xdg-open");
-                    command.arg(REPOSITORY).env_remove("WAYLAND_SOCKET");
+                    command.arg(url).env_remove("WAYLAND_SOCKET");
                     cosmic::process::spawn(command).await;
                     Message::Ignore
                 });

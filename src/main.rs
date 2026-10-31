@@ -15,6 +15,7 @@ mod shelf;
 mod shortcuts;
 mod thumbnail;
 mod transfer;
+mod updates;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut paths: Vec<_> = std::env::args_os().skip(1).collect();

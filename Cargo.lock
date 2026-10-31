@@ -3595,10 +3595,13 @@ dependencies = [
  "ron",
  "roxmltree",
  "rust-embed",
+ "semver",
  "serde",
+ "serde_json",
  "tempfile",
  "url",
  "uuid",
+ "zbus",
 ]
 
 [[package]]

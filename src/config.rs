@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 pub const ID: &str = "io.github.motixo.Orbit";
 pub const REPOSITORY: &str = "https://github.com/motixo/orbit";
+pub const UPDATES_URL: &str = "https://github.com/motixo/orbit/tags";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub enum Corner {
@@ -43,11 +44,39 @@ impl Corner {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub enum UpdateReminder {
+    Off,
+    Daily,
+    #[default]
+    Weekly,
+}
+
+impl UpdateReminder {
+    pub const ALL: [Self; 3] = [Self::Off, Self::Daily, Self::Weekly];
+
+    pub fn index(self) -> usize {
+        Self::ALL
+            .iter()
+            .position(|reminder| *reminder == self)
+            .unwrap_or(2)
+    }
+
+    pub fn seconds(self) -> u64 {
+        match self {
+            Self::Off => 0,
+            Self::Daily => 86_400,
+            Self::Weekly => 604_800,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, CosmicConfigEntry)]
 #[version = 1]
 pub struct Preferences {
     pub pinned: bool,
     pub corner: Corner,
+    pub update_reminder: UpdateReminder,
     pub shortcuts: crate::shortcuts::Bindings,
 }
 
