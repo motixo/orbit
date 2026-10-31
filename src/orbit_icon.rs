@@ -19,12 +19,16 @@ static TRACK: LazyLock<svg::Handle> = LazyLock::new(|| {
     svg::Handle::from_memory(include_bytes!("../resources/icons/orbit-track.svg").as_slice())
 });
 
-pub fn animated<'a, Message: 'a>(size: u16) -> Element<'a, Message> {
-    Element::new(OrbitIcon { size: size.into() })
+pub fn animated<'a, Message: 'a>(size: u16, count: usize) -> Element<'a, Message> {
+    Element::new(OrbitIcon {
+        size: size.into(),
+        count,
+    })
 }
 
 struct OrbitIcon {
     size: f32,
+    count: usize,
 }
 
 impl<Message> Widget<Message, Theme, Renderer> for OrbitIcon {
@@ -59,7 +63,7 @@ impl<Message> Widget<Message, Theme, Renderer> for OrbitIcon {
         shell: &mut Shell<'_, Message>,
         _: &Rectangle,
     ) {
-        if matches!(event, Event::Window(window::Event::RedrawRequested(_))) {
+        if self.count > 0 && matches!(event, Event::Window(window::Event::RedrawRequested(_))) {
             shell.request_redraw();
         }
     }
@@ -89,29 +93,31 @@ impl<Message> Widget<Message, Theme, Renderer> for OrbitIcon {
         );
         let elapsed = tree.state.downcast_ref::<Instant>().elapsed().as_secs_f64();
         let angle = (elapsed.rem_euclid(4.0) as f32) * TAU / 4.0;
-        let (sine, cosine) = angle.sin_cos();
-        let depth = (cosine + 1.0) / 2.0;
-        let radius = (1.25 + 0.7 * depth) * scale;
         let (tilt_sine, tilt_cosine) = 28.0_f32.to_radians().sin_cos();
-        let x = 8.75 * cosine;
-        let y = 4.2 * sine;
-        let mut color = style.icon_color;
-        color.a *= 0.65 + 0.35 * depth;
-        renderer.fill_quad(
-            renderer::Quad {
-                bounds: Rectangle {
-                    x: bounds.center_x() + (x * tilt_cosine - y * tilt_sine) * scale - radius,
-                    y: bounds.center_y() + (x * tilt_sine + y * tilt_cosine) * scale - radius,
-                    width: radius * 2.0,
-                    height: radius * 2.0,
+        for index in 0..self.count {
+            let (sine, cosine) = (angle + TAU * index as f32 / self.count as f32).sin_cos();
+            let depth = (cosine + 1.0) / 2.0;
+            let radius = (1.25 + 0.7 * depth) * scale;
+            let x = 8.75 * cosine;
+            let y = 4.2 * sine;
+            let mut color = style.icon_color;
+            color.a *= 0.65 + 0.35 * depth;
+            renderer.fill_quad(
+                renderer::Quad {
+                    bounds: Rectangle {
+                        x: bounds.center_x() + (x * tilt_cosine - y * tilt_sine) * scale - radius,
+                        y: bounds.center_y() + (x * tilt_sine + y * tilt_cosine) * scale - radius,
+                        width: radius * 2.0,
+                        height: radius * 2.0,
+                    },
+                    border: Border {
+                        radius: radius.into(),
+                        ..Border::default()
+                    },
+                    ..renderer::Quad::default()
                 },
-                border: Border {
-                    radius: radius.into(),
-                    ..Border::default()
-                },
-                ..renderer::Quad::default()
-            },
-            color,
-        );
+                color,
+            );
+        }
     }
 }

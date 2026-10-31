@@ -29,6 +29,7 @@ pub struct OrbitApplet {
     hovering: bool,
     drop_target: widget::Id,
     recent: Vec<crate::history::Entry>,
+    open_orbits: usize,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -68,6 +69,7 @@ pub enum Message {
     Ignore,
     Hover(bool),
     DropData(Vec<u8>, String),
+    OpenOrbits(usize),
 }
 
 impl cosmic::Application for OrbitApplet {
@@ -108,6 +110,7 @@ impl cosmic::Application for OrbitApplet {
                 hovering: false,
                 drop_target: widget::Id::unique(),
                 recent: Vec::new(),
+                open_orbits: 0,
             },
             Task::batch([cosmic::task::message(Message::CheckUpdates(false)), watches]),
         )
@@ -118,7 +121,10 @@ impl cosmic::Application for OrbitApplet {
             self.core
                 .applet
                 .button_from_element(
-                    crate::orbit_icon::animated(self.core.applet.suggested_size(false).0),
+                    crate::orbit_icon::animated(
+                        self.core.applet.suggested_size(false).0,
+                        self.open_orbits,
+                    ),
                     false,
                 )
                 .selected(self.hovering)
@@ -175,7 +181,8 @@ impl cosmic::Application for OrbitApplet {
         } else {
             Subscription::none()
         };
-        Subscription::batch([config, keyboard, updates])
+        let presence = crate::presence::count().map(Message::OpenOrbits);
+        Subscription::batch([config, keyboard, updates, presence])
     }
 
     fn view_window(&self, _: window::Id) -> Element<'_, Message> {
@@ -396,6 +403,7 @@ impl cosmic::Application for OrbitApplet {
 
     fn update(&mut self, message: Message) -> Task<cosmic::Action<Message>> {
         match message {
+            Message::OpenOrbits(count) => self.open_orbits = count,
             Message::Restore(id) => return self.launch(vec!["--restore".into(), id.into()], None),
             Message::NewOrbit => {
                 return self.launch(Vec::new(), None);

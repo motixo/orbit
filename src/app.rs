@@ -459,7 +459,18 @@ impl cosmic::Application for Orbit {
             .as_ref()
             .map(|watch| watch.subscription())
             .unwrap_or_else(Subscription::none);
-        Subscription::batch([keyboard, layout, pointer, animation, opened, config, watch])
+        let presence = if self.watch.is_none()
+            || self.core.main_window_id().is_some()
+            || self.pinned.is_some()
+            || self.pin_pending
+        {
+            crate::presence::announce().map(|_| Message::Noop)
+        } else {
+            Subscription::none()
+        };
+        Subscription::batch([
+            keyboard, layout, pointer, animation, opened, config, watch, presence,
+        ])
     }
 
     fn update(&mut self, message: Message) -> Task<cosmic::Action<Message>> {

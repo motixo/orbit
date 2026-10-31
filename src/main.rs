@@ -16,6 +16,7 @@ mod layer_input;
 mod orbit_icon;
 mod pin;
 mod pointer;
+mod presence;
 mod preview;
 mod shelf;
 mod shortcuts;
