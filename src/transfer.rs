@@ -16,6 +16,7 @@ pub const GNOME_FILES: &str = "x-special/gnome-copied-files";
 pub const TEXT: &str = "text/plain";
 pub const UTF8_TEXT: &str = "text/plain;charset=utf-8";
 pub const ORBIT_TEXT: &str = "application/x-orbit-text";
+pub const MOZ_URL: &str = "text/x-moz-url";
 
 #[derive(Clone, Debug)]
 pub struct ClipboardData(pub Vec<u8>, pub String);
@@ -137,6 +138,9 @@ impl AsMimeTypes for Transfer {
         if self.text_only {
             mimes.extend([ORBIT_TEXT.into(), UTF8_TEXT.into(), TEXT.into()]);
         }
+        if self.links && self.files.0.len() == 1 {
+            mimes.push(MOZ_URL.into());
+        }
         mimes.push(URI_LIST.into());
         // Keep the clipboard's copy operation out of native Move drags.
         if self.clipboard && !self.links {
@@ -158,7 +162,16 @@ impl AsMimeTypes for Transfer {
                 .text
                 .as_ref()
                 .map(|text| Cow::Owned(text.as_bytes().to_vec())),
-            URI_LIST if self.links => self.text.as_ref().map(|text| {
+            MOZ_URL if self.links && self.files.0.len() == 1 => self.text.as_ref().map(|text| {
+                let url = text.trim();
+                Cow::Owned(
+                    format!("{url}\n{url}")
+                        .encode_utf16()
+                        .flat_map(u16::to_le_bytes)
+                        .collect(),
+                )
+            }),
+            URI_LIST if self.links && self.clipboard => self.text.as_ref().map(|text| {
                 Cow::Owned(
                     text.lines()
                         .map(str::trim)
@@ -214,7 +227,7 @@ mod tests {
     }
 
     #[test]
-    fn link_drags_offer_the_web_address_as_a_uri() {
+    fn link_drags_offer_local_files_and_a_native_browser_url() {
         let data = Transfer {
             files: FileList(vec![PathBuf::from("/tmp/Link.txt")]),
             text: Some("https://example.com/article".into()),
@@ -224,10 +237,24 @@ mod tests {
             files_requested: Default::default(),
         };
         assert_eq!(
-            data.as_bytes(URI_LIST).unwrap().as_ref(),
-            b"https://example.com/article"
+            FileList::try_from((
+                data.as_bytes(URI_LIST).unwrap().into_owned(),
+                URI_LIST.into()
+            ))
+            .unwrap()
+            .0,
+            data.files.0
         );
-        assert!(!data.files_requested.load(Ordering::Relaxed));
+        assert!(data.files_requested.load(Ordering::Relaxed));
+        let bytes = data.as_bytes(MOZ_URL).unwrap();
+        let units = bytes
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            String::from_utf16(&units).unwrap(),
+            "https://example.com/article\nhttps://example.com/article"
+        );
     }
 
     #[test]
