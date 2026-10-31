@@ -50,7 +50,8 @@ impl Directory {
         if directory.parent()? != root().ok()?
             || !(name.starts_with("orbit-image-")
                 || name.starts_with("orbit-text-")
-                || name.starts_with("orbit-archive-"))
+                || name.starts_with("orbit-archive-")
+                || name.starts_with("orbit-drop-"))
         {
             return None;
         }
@@ -141,7 +142,8 @@ fn cleanup(cache: &Path) {
             }
         } else if (name.starts_with("orbit-image-")
             || name.starts_with("orbit-text-")
-            || name.starts_with("orbit-archive-"))
+            || name.starts_with("orbit-archive-")
+            || name.starts_with("orbit-drop-"))
             && entry.file_type().is_ok_and(|kind| kind.is_dir())
         {
             directories.push(entry.path());

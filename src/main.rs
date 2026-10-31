@@ -50,6 +50,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => (),
     }
+    let incoming_drop = if paths.first().is_some_and(|arg| arg == "--drop") {
+        if paths.len() != 3 {
+            return Err("Usage: orbit --new --drop MIME PAYLOAD".into());
+        }
+        let mime = paths[1]
+            .to_str()
+            .ok_or("Invalid drop MIME type")?
+            .to_owned();
+        let bytes = launch::read_drop(std::path::Path::new(&paths[2]))?;
+        paths.clear();
+        Some((bytes, mime))
+    } else {
+        None
+    };
     let mut uris = Vec::new();
     for path in paths {
         let path = std::path::absolute(path)?;
@@ -79,6 +93,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let startup_area = always_on_top::start()?;
     let flags = app::Flags {
         uris,
+        incoming_drop,
         action: "collect".into(),
         startup_area: (preferences.pinned && startup.is_none()).then_some(startup_area),
         preferences,

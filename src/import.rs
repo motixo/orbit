@@ -12,7 +12,7 @@ use std::{
 };
 use url::Url;
 
-const MAX_IMAGE_SIZE: usize = 50 * 1024 * 1024;
+pub const MAX_IMAGE_SIZE: usize = 50 * 1024 * 1024;
 const MAX_TEXT_SIZE: usize = 1024 * 1024;
 
 // Prefer bytes from the browser: they also work for images that require its session.

@@ -26,6 +26,8 @@ pub struct OrbitApplet {
     status: String,
     editing: Option<EditTarget>,
     global_shortcut: Option<Shortcut>,
+    hovering: bool,
+    drop_target: widget::Id,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -59,6 +61,8 @@ pub enum Message {
     Key(iced::keyboard::Event),
     OpenLink(&'static str),
     Ignore,
+    Hover(bool),
+    DropData(Vec<u8>, String),
 }
 
 impl cosmic::Application for OrbitApplet {
@@ -94,23 +98,48 @@ impl cosmic::Application for OrbitApplet {
                 status: String::new(),
                 editing: None,
                 global_shortcut: None,
+                hovering: false,
+                drop_target: widget::Id::unique(),
             },
             cosmic::task::message(Message::CheckUpdates(false)),
         )
     }
 
     fn view(&self) -> Element<'_, Message> {
-        widget::mouse_area(
+        let button = widget::mouse_area(
             self.core
                 .applet
                 .button_from_element(
                     crate::orbit_icon::animated(self.core.applet.suggested_size(false).0),
-                    false,
+                    self.hovering,
                 )
                 .on_press(Message::NewOrbit)
                 .name(fl!("new-orbit")),
         )
-        .on_right_press(Message::TogglePopup)
+        .on_right_press(Message::TogglePopup);
+        widget::DndDestination::with_id(
+            button,
+            self.drop_target.clone(),
+            crate::import::MIME_TYPES
+                .iter()
+                .copied()
+                .filter(|mime| mime.starts_with("image/"))
+                .chain([crate::transfer::URI_LIST, crate::transfer::GNOME_FILES])
+                .chain(crate::import::MIME_TYPES.iter().copied().filter(|mime| {
+                    !mime.starts_with("image/")
+                        && !matches!(
+                            *mime,
+                            crate::transfer::URI_LIST | crate::transfer::GNOME_FILES
+                        )
+                }))
+                .map(Into::into)
+                .collect(),
+        )
+        .action(iced::clipboard::dnd::DndAction::Copy | iced::clipboard::dnd::DndAction::Move)
+        .preferred_action(iced::clipboard::dnd::DndAction::Copy)
+        .on_enter(|_, _, _| Message::Hover(true))
+        .on_leave(|| Message::Hover(false))
+        .on_finish(|mime, bytes, _, _, _| Message::DropData(bytes, mime))
         .into()
     }
 
@@ -299,24 +328,12 @@ impl cosmic::Application for OrbitApplet {
     fn update(&mut self, message: Message) -> Task<cosmic::Action<Message>> {
         match message {
             Message::NewOrbit => {
-                self.editing = None;
-                let close = self
-                    .popup
-                    .take()
-                    .map(destroy_popup)
-                    .unwrap_or_else(Task::none);
-                let launch = activation::request_token(
-                    Some(crate::config::ID.into()),
-                    self.core.main_window_id(),
-                )
-                .then(|token| {
-                    cosmic::task::future(async move {
-                        Message::Launched(crate::launch::new_orbit(token, None).await)
-                    })
-                });
-                return launch
-                    .chain(close)
-                    .chain(inhibit_shortcuts(false).discard());
+                return self.launch(Vec::new(), None);
+            }
+            Message::Hover(value) => self.hovering = value,
+            Message::DropData(bytes, mime) => {
+                self.hovering = false;
+                return self.launch(Vec::new(), Some((bytes, mime)));
             }
             Message::Launched(ok) => {
                 if !ok {
@@ -450,6 +467,33 @@ impl cosmic::Application for OrbitApplet {
 }
 
 impl OrbitApplet {
+    fn launch(
+        &mut self,
+        arguments: Vec<std::ffi::OsString>,
+        mut incoming: Option<(Vec<u8>, String)>,
+    ) -> Task<cosmic::Action<Message>> {
+        self.editing = None;
+        let close = self
+            .popup
+            .take()
+            .map(destroy_popup)
+            .unwrap_or_else(Task::none);
+        activation::request_token(Some(crate::config::ID.into()), self.core.main_window_id())
+            .then(move |token| {
+                let arguments = arguments.clone();
+                let incoming = incoming.take();
+                cosmic::task::future(async move {
+                    Message::Launched(if let Some((bytes, mime)) = incoming {
+                        crate::launch::from_drop(token, bytes, mime).await
+                    } else {
+                        crate::launch::new_orbit(token, None, arguments).await
+                    })
+                })
+            })
+            .chain(close)
+            .chain(inhibit_shortcuts(false).discard())
+    }
+
     fn popup_row<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
         let spacing = cosmic::theme::spacing();
         widget::container(content)

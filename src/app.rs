@@ -32,6 +32,7 @@ const PREVIEW_PADDING: u32 = 20;
 
 pub struct Flags {
     pub uris: Vec<String>,
+    pub incoming_drop: Option<(Vec<u8>, String)>,
     pub action: String,
     pub startup: Option<Startup>,
     pub preferences: crate::config::Preferences,
@@ -186,7 +187,9 @@ impl cosmic::Application for Orbit {
             drop_target: widget::Id::unique(),
         };
         app.set_header_title(fl!("app-title"));
-        let incoming = if !flags.uris.is_empty() {
+        let incoming = if let Some((bytes, mime)) = flags.incoming_drop {
+            app.update(Message::DropData(bytes, mime))
+        } else if !flags.uris.is_empty() {
             app.update(Message::Incoming(files_from_uris(flags.uris)))
         } else {
             Task::none()
@@ -576,7 +579,7 @@ impl cosmic::Application for Orbit {
                     move |token| {
                         let startup = startup.clone();
                         cosmic::task::future(async move {
-                            if crate::launch::new_orbit(token, startup).await {
+                            if crate::launch::new_orbit(token, startup, Vec::new()).await {
                                 Message::Noop
                             } else {
                                 Message::Incoming(Err(fl!("new-orbit-error")))
