@@ -104,8 +104,8 @@ impl cosmic::Application for OrbitApplet {
             self.core
                 .applet
                 .button_from_element(
-                    crate::orbit_icon::animated(self.core.applet.suggested_size(true).0),
-                    true,
+                    crate::orbit_icon::animated(self.core.applet.suggested_size(false).0),
+                    false,
                 )
                 .on_press(Message::NewOrbit)
                 .name(fl!("new-orbit")),
