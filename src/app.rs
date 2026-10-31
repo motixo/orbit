@@ -1636,7 +1636,7 @@ impl Orbit {
         let data = self.shelf.drag_transfer(path);
         let content_only = prefer_content && data.text_only;
         let label = if content_only {
-            fl!("drag-content")
+            fl!("drag-content", count = data.files.0.len())
         } else {
             fl!("drag-files", count = data.files.0.len())
         };
