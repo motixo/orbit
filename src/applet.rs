@@ -217,10 +217,14 @@ impl cosmic::Application for OrbitApplet {
                     (fl!("about"), Message::Page(Page::About)),
                 ] {
                     body = body.push(
-                        cosmic::applet::menu_button(widget::text::body(label))
-                            .padding([spacing.space_xxxs, spacing.space_xxs])
-                            .height(row_height)
-                            .on_press(message),
+                        cosmic::applet::menu_button(
+                            widget::text::body(label)
+                                .height(Length::Fill)
+                                .align_y(iced::Alignment::Center),
+                        )
+                        .padding([spacing.space_xxxs, spacing.space_xxs])
+                        .height(row_height)
+                        .on_press(message),
                     );
                 }
                 if !self.recent.is_empty() {
@@ -233,6 +237,8 @@ impl cosmic::Application for OrbitApplet {
                             cosmic::applet::menu_button(
                                 widget::text::body(entry.label())
                                     .width(Length::Fill)
+                                    .height(Length::Fill)
+                                    .align_y(iced::Alignment::Center)
                                     .wrapping(iced::widget::text::Wrapping::None)
                                     .ellipsize(iced::advanced::text::Ellipsize::End(
                                         iced::advanced::text::EllipsizeHeightLimit::Lines(1),
