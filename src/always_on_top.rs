@@ -20,6 +20,7 @@ use cosmic::cctk::{
     },
     wayland_protocols::ext::foreign_toplevel_list::v1::client::ext_foreign_toplevel_handle_v1::ExtForeignToplevelHandleV1,
 };
+use cosmic::iced::futures::channel::oneshot;
 use std::sync::Mutex;
 
 static ACTIVE_OUTPUT: Mutex<Option<u32>> = Mutex::new(None);
@@ -28,18 +29,19 @@ pub fn active_output() -> Option<u32> {
     *ACTIVE_OUTPUT.lock().unwrap()
 }
 
-pub fn start() -> std::io::Result<()> {
+pub fn start() -> std::io::Result<oneshot::Receiver<Option<crate::pin::Area>>> {
+    let (ready, receiver) = oneshot::channel();
     std::thread::Builder::new()
         .name("orbit-on-top".into())
-        .spawn(|| {
-            if let Err(error) = run() {
+        .spawn(move || {
+            if let Err(error) = run(ready) {
                 eprintln!("Could not keep Orbit on top: {error}");
             }
         })
-        .map(|_| ())
+        .map(|_| receiver)
 }
 
-fn run() -> Result<(), Box<dyn std::error::Error>> {
+fn run(ready: oneshot::Sender<Option<crate::pin::Area>>) -> Result<(), Box<dyn std::error::Error>> {
     let conn = Connection::connect_to_env()?;
     let (globals, mut queue) = registry_queue_init(&conn)?;
     let qh = queue.handle();
@@ -55,6 +57,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         info,
         sticky_supported: false,
     };
+    // Collect output geometry and toplevel details without creating a temporary window.
+    queue.roundtrip(&mut state)?;
+    queue.roundtrip(&mut state)?;
+    let _ = ready.send(state.startup_area());
     loop {
         queue.blocking_dispatch(&mut state)?;
     }
@@ -69,6 +75,37 @@ struct State {
 }
 
 impl State {
+    fn startup_area(&self) -> Option<crate::pin::Area> {
+        let active = self
+            .info
+            .toplevels()
+            .find(|info| info.state.contains(&WindowState::Activated))
+            .and_then(|info| {
+                info.output.iter().max_by_key(|output| {
+                    info.geometry
+                        .get(*output)
+                        .map(|geometry| i64::from(geometry.width) * i64::from(geometry.height))
+                        .unwrap_or(0)
+                })
+            });
+        active
+            .cloned()
+            .into_iter()
+            .chain(self.output.outputs())
+            .find_map(|output| {
+                let info = self.output.info(&output)?;
+                let (width, height) = info.logical_size?;
+                if info.id == 0 || width <= 0 || height <= 0 {
+                    return None;
+                }
+                Some(crate::pin::Area {
+                    width: width as u32,
+                    height: height as u32,
+                    output: info.id,
+                })
+            })
+    }
+
     fn keep_above(&self) {
         if let Some(toplevel) = self.info.toplevels().find(|info| {
             info.app_id == crate::app::Orbit::APP_ID && info.state.contains(&WindowState::Activated)

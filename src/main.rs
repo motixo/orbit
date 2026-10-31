@@ -58,9 +58,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let languages = i18n_embed::DesktopLanguageRequester::requested_languages();
     i18n::init(&languages);
     let startup = pin::Startup::from_env()?;
+    let preferences = config::Preferences::load();
+    let pinned = startup.is_some() || preferences.pinned;
     let size = app::SHELF_SIZE as f32;
     let settings = cosmic::app::Settings::default()
-        .no_main_window(startup.is_some())
+        .no_main_window(pinned)
         .size(cosmic::iced::Size::new(size, size))
         .size_limits(
             cosmic::iced::Limits::NONE
@@ -70,10 +72,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .max_height(size),
         );
     cache::start_cleanup()?;
-    always_on_top::start()?;
+    let startup_area = always_on_top::start()?;
     let flags = app::Flags {
         uris,
         action: "collect".into(),
+        startup_area: (preferences.pinned && startup.is_none()).then_some(startup_area),
+        preferences,
         startup,
     };
     if independent {

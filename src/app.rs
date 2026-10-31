@@ -33,6 +33,8 @@ pub struct Flags {
     pub uris: Vec<String>,
     pub action: String,
     pub startup: Option<Startup>,
+    pub preferences: crate::config::Preferences,
+    pub startup_area: Option<iced::futures::channel::oneshot::Receiver<Option<Area>>>,
 }
 
 impl cosmic::app::CosmicFlags for Flags {
@@ -49,7 +51,6 @@ impl cosmic::app::CosmicFlags for Flags {
 pub struct Orbit {
     core: cosmic::Core,
     preferences: crate::config::Preferences,
-    startup_pin: bool,
     shelf: Shelf,
     thumbnails: HashMap<PathBuf, Option<widget::image::Handle>>,
     pending_imports: Vec<(u64, Progress, iced::task::Handle)>,
@@ -77,7 +78,6 @@ pub enum Message {
     NewOrbit,
     Shortcut(crate::shortcuts::Shortcut),
     NextCorner,
-    StartupPin,
     Config(crate::config::Preferences),
     Incoming(Result<FileList, String>),
     DropData(Vec<u8>, String),
@@ -136,9 +136,8 @@ impl cosmic::Application for Orbit {
         core.window.show_minimize = false;
         core.window.show_maximize = false;
         core.window.border_padding = Some(0);
-        let preferences = crate::config::Preferences::load();
+        let preferences = flags.preferences;
         let mut app = Self {
-            startup_pin: flags.startup.is_none() && preferences.pinned,
             core,
             shelf: Shelf::default(),
             thumbnails: HashMap::new(),
@@ -148,7 +147,7 @@ impl cosmic::Application for Orbit {
             status: String::new(),
             pinned: None,
             pin_placement: None,
-            pin_pending: false,
+            pin_pending: flags.startup.is_some() || flags.startup_area.is_some(),
             unpin_activation: None,
             pin_anchor: flags
                 .startup
@@ -180,6 +179,13 @@ impl cosmic::Application for Orbit {
             app.update(Message::PinReady {
                 area: Some(startup.area),
                 near: Some(startup.near),
+            })
+        } else if let Some(area) = flags.startup_area {
+            cosmic::task::future(async move {
+                Message::PinReady {
+                    area: area.await.ok().flatten(),
+                    near: None,
+                }
             })
         } else {
             Task::none()
@@ -374,14 +380,7 @@ impl cosmic::Application for Orbit {
             .core
             .watch_config::<crate::config::Preferences>(crate::config::ID)
             .map(|update| Message::Config(update.config));
-        let startup = if self.startup_pin {
-            iced::time::every(std::time::Duration::from_millis(100)).map(|_| Message::StartupPin)
-        } else {
-            Subscription::none()
-        };
-        Subscription::batch([
-            keyboard, layout, pointer, animation, opened, config, startup,
-        ])
+        Subscription::batch([keyboard, layout, pointer, animation, opened, config])
     }
 
     fn update(&mut self, message: Message) -> Task<cosmic::Action<Message>> {
@@ -430,14 +429,6 @@ impl cosmic::Application for Orbit {
                 }
             }
             Message::Config(preferences) => self.preferences = preferences,
-            Message::StartupPin => {
-                if crate::always_on_top::active_output().is_some()
-                    && self.core.main_window_id().is_some()
-                {
-                    self.startup_pin = false;
-                    return self.update(Message::TogglePin);
-                }
-            }
             Message::DropData(bytes, mime) => {
                 return self.begin_import(bytes, mime, Source::Drop);
             }
@@ -794,7 +785,6 @@ impl cosmic::Application for Orbit {
                 }
             }
             Message::TogglePin => {
-                self.startup_pin = false;
                 self.pin_drag_start = None;
                 self.pin_pointer_down = false;
                 self.pin_motion = None;
