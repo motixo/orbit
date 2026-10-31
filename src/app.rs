@@ -1201,7 +1201,7 @@ impl Orbit {
             }
             let selection = widget::row::with_children(vec![
                 widget::row::with_children(count_items)
-                    .spacing(spacing.space_xxxs)
+                    .spacing(spacing.space_xs)
                     .align_y(Alignment::Center)
                     .into(),
                 widget::space::horizontal().into(),
