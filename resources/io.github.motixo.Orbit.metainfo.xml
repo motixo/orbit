@@ -6,6 +6,7 @@
   <developer id="io.github.motixo"><name>Orbit contributors</name></developer>
   <name>Orbit</name>
   <summary>A floating file shelf for the COSMIC desktop</summary>
+  <url type="homepage">https://github.com/motixo/orbit</url>
   <description>
     <p>Collect files and folders from different locations on a temporary shelf,
     then drag them together to your destination. Orbit keeps references to your
@@ -17,6 +18,11 @@
   <supports><control>keyboard</control><control>pointing</control></supports>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.3.3" date="2026-10-31">
+      <description>
+        <p>Fix text and link drops on the COSMIC desktop, mixed selections, and drag previews.</p>
+      </description>
+    </release>
     <release version="0.3.2" date="2026-10-31">
       <description><p>Fix update checks on fresh installations.</p></description>
     </release>
