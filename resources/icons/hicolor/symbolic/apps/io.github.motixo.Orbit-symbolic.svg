@@ -1,1 +1,12 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16"><g fill="none" stroke="#bebebe" stroke-width="1.5"><circle cx="8" cy="8" r="5.5"/><path d="M8 5v6M5 8h6" stroke-linecap="round"/></g></svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+  <defs>
+    <linearGradient id="depth" x1="0" y1="0" x2="1" y2="0">
+      <stop stop-color="#e3e7ee" stop-opacity=".25"/>
+      <stop offset="1" stop-color="#e3e7ee" stop-opacity=".65"/>
+    </linearGradient>
+  </defs>
+  <g transform="rotate(28 12 12)">
+    <ellipse cx="12" cy="12" rx="8.75" ry="4.2" fill="none" stroke="url(#depth)" stroke-width="1.05"/>
+    <circle cx="19.8789" cy="10.1731" r="1.9152" fill="#e3e7ee" opacity="0.9826"/>
+  </g>
+</svg>
