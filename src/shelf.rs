@@ -10,11 +10,13 @@ pub struct Item {
     pub directory: bool,
     pub selected: bool,
     pub text: Option<String>,
+    pub order: u64,
 }
 
 #[derive(Default)]
 pub struct Shelf {
     pub items: Vec<Item>,
+    next_order: u64,
 }
 
 #[derive(Default, Debug, PartialEq)]
@@ -49,16 +51,24 @@ impl Shelf {
                 .unwrap_or(path.as_os_str())
                 .to_string_lossy()
                 .into();
+            let order = self.reserve_order();
             self.items.push(Item {
                 path,
                 name,
                 directory: metadata.is_dir(),
                 selected: false,
                 text: None,
+                order,
             });
             report.added += 1;
         }
         report
+    }
+
+    pub fn reserve_order(&mut self) -> u64 {
+        let order = self.next_order;
+        self.next_order += 1;
+        order
     }
 
     pub fn set_text(&mut self, path: &Path, text: String) {

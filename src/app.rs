@@ -59,7 +59,6 @@ pub struct Orbit {
     thumbnails: HashMap<PathBuf, Option<widget::image::Handle>>,
     imported_items: Vec<PathBuf>,
     pending_imports: Vec<(u64, Progress)>,
-    next_import: u64,
     dragged_paths: Vec<PathBuf>,
     drag_files_requested: Option<Arc<AtomicBool>>,
     hovering: bool,
@@ -146,7 +145,6 @@ impl cosmic::Application for Orbit {
             thumbnails: HashMap::new(),
             imported_items: Vec::new(),
             pending_imports: Vec::new(),
-            next_import: 0,
             dragged_paths: Vec::new(),
             drag_files_requested: None,
             hovering: false,
@@ -444,7 +442,11 @@ impl cosmic::Application for Orbit {
                     text = imported.files.0.first().cloned().zip(imported.text);
                     imported.files
                 });
+                let first_added = self.shelf.items.len();
                 let task = self.update(Message::Incoming(files));
+                for item in &mut self.shelf.items[first_added..] {
+                    item.order = id;
+                }
                 if let Some((path, text)) = text {
                     self.shelf.set_text(&path, text);
                 }
@@ -904,8 +906,7 @@ impl Orbit {
         source: Source,
     ) -> Task<cosmic::Action<Message>> {
         self.hovering = false;
-        let id = self.next_import;
-        self.next_import += 1;
+        let id = self.shelf.reserve_order();
         self.pending_imports.push((id, Progress::default()));
         self.status.clear();
         cosmic::task::stream(iced::stream::channel(4, async move |mut output| {
@@ -1066,18 +1067,20 @@ impl Orbit {
             .padding(spacing.space_xs)
             .into()
         } else {
+            let mut rows = self
+                .shelf
+                .items
+                .iter()
+                .map(|item| (item.order, self.item_view(item, window)))
+                .chain(
+                    self.pending_imports
+                        .iter()
+                        .map(|(id, progress)| (*id, self.import_view(*id, progress))),
+                )
+                .collect::<Vec<_>>();
+            rows.sort_by_key(|(order, _)| std::cmp::Reverse(*order));
             let rows = widget::column::with_children(
-                self.shelf
-                    .items
-                    .iter()
-                    .map(|item| self.item_view(item, window))
-                    .chain(
-                        self.pending_imports
-                            .iter()
-                            .map(|(id, progress)| self.import_view(*id, progress)),
-                    )
-                    .rev()
-                    .collect::<Vec<_>>(),
+                rows.into_iter().map(|(_, row)| row).collect::<Vec<_>>(),
             )
             .spacing(spacing.space_xxs);
             widget::scrollable(rows).height(Length::Fill).into()
