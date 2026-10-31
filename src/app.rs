@@ -714,12 +714,20 @@ impl cosmic::Application for Orbit {
                     self.preview = Some(preview);
                     let title = self.set_window_title(fl!("preview"), id);
                     let (output, input) = iced::futures::channel::mpsc::unbounded();
-                    let _ = std::thread::Builder::new()
+                    let errors = output.clone();
+                    if let Err(error) = std::thread::Builder::new()
                         .name("orbit-preview".into())
                         .spawn(move || {
                             let content = crate::preview::load(&path, text);
                             let _ = output.unbounded_send(Message::PreviewLoaded(id, content));
-                        });
+                        })
+                    {
+                        eprintln!("Could not load preview: {error}");
+                        let _ = errors.unbounded_send(Message::PreviewLoaded(
+                            id,
+                            crate::preview::Content::Unavailable,
+                        ));
+                    }
                     return Task::batch([previous, open, title, cosmic::task::stream(input)]);
                 }
             }
