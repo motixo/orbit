@@ -16,11 +16,6 @@ struct Pointer {
     window: window::Id,
 }
 
-enum Input {
-    Event(subscription::Event),
-    Frame,
-}
-
 impl Recipe for Pointer {
     type Output = (mouse::Event, Point);
 
@@ -35,17 +30,17 @@ impl Recipe for Pointer {
             .next()
             .expect("frame timer recipe")
             .stream(stream::empty().boxed())
-            .map(|_| Input::Frame);
+            .map(|_| None);
         let mut position = Point::ORIGIN;
         let mut pending = false;
 
-        stream::select(input.map(Input::Event), ticks)
+        stream::select(input.map(Some), ticks)
             .filter_map(move |input| {
-                let output =
-                    match input {
-                        Input::Event(subscription::Event::Interaction {
-                            window, event, ..
-                        }) if window == self.window => match event {
+                let output = match input {
+                    Some(subscription::Event::Interaction { window, event, .. })
+                        if window == self.window =>
+                    {
+                        match event {
                             Event::Mouse(mouse::Event::CursorMoved { position: next }) => {
                                 pending |= position != next;
                                 position = next;
@@ -64,13 +59,14 @@ impl Recipe for Pointer {
                                 Some((mouse::Event::CursorLeft, position))
                             }
                             _ => None,
-                        },
-                        Input::Frame if pending => {
-                            pending = false;
-                            Some((mouse::Event::CursorMoved { position }, position))
                         }
-                        _ => None,
-                    };
+                    }
+                    None if pending => {
+                        pending = false;
+                        Some((mouse::Event::CursorMoved { position }, position))
+                    }
+                    _ => None,
+                };
                 future::ready(output)
             })
             .boxed()

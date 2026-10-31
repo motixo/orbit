@@ -33,11 +33,9 @@ impl AllowedMimeTypes for ClipboardData {
     }
 }
 
-impl TryFrom<(Vec<u8>, String)> for ClipboardData {
-    type Error = std::convert::Infallible;
-
-    fn try_from((bytes, mime): (Vec<u8>, String)) -> Result<Self, Self::Error> {
-        Ok(Self(bytes, mime))
+impl From<(Vec<u8>, String)> for ClipboardData {
+    fn from((bytes, mime): (Vec<u8>, String)) -> Self {
+        Self(bytes, mime)
     }
 }
 
@@ -242,7 +240,9 @@ mod tests {
         );
         let bytes = data.as_bytes(MOZ_URL).unwrap();
         let units = bytes
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
             .collect::<Vec<_>>();
         assert_eq!(

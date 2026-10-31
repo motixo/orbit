@@ -89,12 +89,14 @@ pub async fn receive(
         "text/x-moz-url" | "text/x-moz-url-data" | "application/x-moz-file-promise-url"
     ) && (bytes.contains(&0) || bytes.starts_with(&[0xfe, 0xff]))
     {
-        if bytes.len() % 2 != 0 {
+        if !bytes.len().is_multiple_of(2) {
             return Err("Invalid browser URL".into());
         }
         let big_endian = bytes.starts_with(&[0xfe, 0xff]);
         let units = bytes
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| {
                 if big_endian {
                     u16::from_be_bytes([pair[0], pair[1]])
