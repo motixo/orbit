@@ -1,0 +1,94 @@
+name: Packages
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag
+        required: true
+        default: v0.3.1
+
+permissions:
+  contents: read
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  build:
+    name: Build (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-22.04, ubuntu-22.04-arm]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TAG }}
+          path: source
+      - name: Verify tag
+        shell: bash
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          version=$(sed -n 's/^version = "\([^"]*\)"$/\1/p' source/Cargo.toml | head -n 1)
+          test "$TAG" = "v$version"
+      - name: Build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake pkg-config libxkbcommon-dev libwayland-dev libfontconfig1-dev libfreetype6-dev libexpat1-dev libudev-dev libinput-dev libgbm-dev libegl1-mesa-dev dpkg-dev rpm libarchive-tools zstd
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: source -> target
+      - name: Build
+        working-directory: source
+        run: cargo build --release --locked
+      - name: Package
+        run: scripts/package.sh source source/target/release/orbit dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: packages-${{ runner.arch }}
+          path: dist/*
+          if-no-files-found: error
+          compression-level: 0
+
+  publish:
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: packages-*
+          path: dist
+          merge-multiple: true
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp install.sh dist/
+          cd dist
+          test "$(find . -maxdepth 1 -type f | wc -l)" -eq 7
+          sha256sum *.deb *.rpm *.pkg.tar.zst install.sh > SHA256SUMS
+          cat > notes.md <<'EOF'
+          Native packages for Arch, Fedora and Ubuntu/Pop!_OS 22.04+, with COSMIC.
+          Available for x64 and ARM64.
+
+          ```sh
+          curl -fsSL https://github.com/motixo/orbit/releases/latest/download/install.sh | sh
+          ```
+
+          Fixes pinned input shortcuts and ZIP timestamps, and reduces idle work.
+          EOF
+          gh release create "$TAG" ./*.deb ./*.rpm ./*.pkg.tar.zst install.sh SHA256SUMS --verify-tag --draft --title "Orbit $TAG" --notes-file notes.md
+          gh release edit "$TAG" --draft=false --prerelease=false --latest
