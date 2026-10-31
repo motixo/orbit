@@ -22,6 +22,8 @@ pub const MIME_TYPES: &[&str] = &[
     "image/bmp",
     "image/tiff",
     "downloadurl",
+    "text/html;charset=utf-8",
+    "text/html",
     URI_LIST,
     "application/x-moz-file-promise-url",
     "text/x-moz-url-data",
@@ -86,6 +88,11 @@ pub async fn receive(
     } else {
         String::from_utf8(bytes)?
     };
+    let text = if mime.starts_with("text/html") {
+        image_source(&text)?
+    } else {
+        text
+    };
     let mut lines = text
         .trim_start_matches('\u{feff}')
         .lines()
@@ -103,11 +110,17 @@ pub async fn receive(
     if mime == URI_LIST && lines.next().is_some() {
         return Err("Expected one image URL".into());
     }
-    let url = Url::parse(address)?;
+    let mut url = Url::parse(address)?;
+    if url.path() == "/imgres"
+        && let Some((_, image)) = url.query_pairs().find(|(key, _)| key == "imgurl")
+    {
+        url = Url::parse(&image)?;
+    }
     match url.scheme() {
         "http" | "https" => download(url, progress).await,
         "data" => {
-            let (metadata, encoded) = address
+            let (metadata, encoded) = url
+                .as_str()
                 .strip_prefix("data:")
                 .and_then(|data| data.split_once(','))
                 .ok_or("Invalid image URL")?;
@@ -123,6 +136,31 @@ pub async fn receive(
             save_image(&bytes, None)
         }
         _ => Err("Unsupported image URL".into()),
+    }
+}
+
+fn image_source(html: &str) -> Result<String, Box<dyn Error + Send + Sync>> {
+    use quick_xml::events::Event;
+
+    let mut reader = quick_xml::Reader::from_str(html.trim_start_matches('\u{feff}'));
+    // Browser fragments contain HTML void elements without XML closing tags.
+    reader.config_mut().check_end_names = false;
+    loop {
+        match reader.read_event()? {
+            Event::Start(tag) | Event::Empty(tag)
+                if tag.name().as_ref().eq_ignore_ascii_case(b"img") =>
+            {
+                for attribute in tag.html_attributes() {
+                    let attribute = attribute?;
+                    if attribute.key.as_ref().eq_ignore_ascii_case(b"src") {
+                        let value = std::str::from_utf8(attribute.value.as_ref())?;
+                        return Ok(quick_xml::escape::unescape(value)?.into_owned());
+                    }
+                }
+            }
+            Event::Eof => return Err("Missing image source in browser fragment".into()),
+            _ => (),
+        }
     }
 }
 

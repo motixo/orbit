@@ -3497,6 +3497,7 @@ dependencies = [
  "image",
  "libcosmic",
  "percent-encoding",
+ "quick-xml",
  "reqwest",
  "roxmltree",
  "rust-embed",
