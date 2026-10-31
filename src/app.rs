@@ -58,7 +58,7 @@ pub struct Orbit {
     shelf: Shelf,
     thumbnails: HashMap<PathBuf, Option<widget::image::Handle>>,
     imported_items: Vec<PathBuf>,
-    pending_imports: Vec<(u64, Progress)>,
+    pending_imports: Vec<(u64, Progress, iced::task::Handle)>,
     dragged_paths: Vec<PathBuf>,
     drag_files_requested: Option<Arc<AtomicBool>>,
     hovering: bool,
@@ -401,8 +401,8 @@ impl cosmic::Application for Orbit {
                 return self.begin_import(bytes, mime, Source::Drop);
             }
             Message::DropProgress(id, progress) => {
-                if let Some((_, state)) =
-                    self.pending_imports.iter_mut().find(|(key, _)| *key == id)
+                if let Some((_, state, _)) =
+                    self.pending_imports.iter_mut().find(|(key, ..)| *key == id)
                 {
                     *state = progress;
                 }
@@ -413,7 +413,7 @@ impl cosmic::Application for Orbit {
                 }
             }
             Message::DropImported(id, result) => {
-                if !self.pending_imports.iter().any(|(key, _)| *key == id) {
+                if !self.pending_imports.iter().any(|(key, ..)| *key == id) {
                     if let Ok(ImportedFiles {
                         directory: Some(directory),
                         ..
@@ -423,7 +423,7 @@ impl cosmic::Application for Orbit {
                     }
                     return Task::none();
                 }
-                self.pending_imports.retain(|(key, _)| *key != id);
+                self.pending_imports.retain(|(key, ..)| *key != id);
                 let mut text = None;
                 let files = result.map(|imported| {
                     if imported
@@ -453,7 +453,7 @@ impl cosmic::Application for Orbit {
                 return task;
             }
             Message::RemoveImport(id) => {
-                self.pending_imports.retain(|(key, _)| *key != id);
+                self.pending_imports.retain(|(key, ..)| *key != id);
             }
             Message::Incoming(result) => {
                 self.hovering = false;
@@ -907,20 +907,24 @@ impl Orbit {
     ) -> Task<cosmic::Action<Message>> {
         self.hovering = false;
         let id = self.shelf.reserve_order();
-        self.pending_imports.push((id, Progress::default()));
         self.status.clear();
-        cosmic::task::stream(iced::stream::channel(4, async move |mut output| {
-            let size = bytes.len();
-            let result = crate::import::receive(bytes, mime.clone(), source, |progress| {
-                let _ = output.try_send(Message::DropProgress(id, progress));
-            })
-            .await
-            .map_err(|error| {
-                crate::import::record_error(&mime, size, error);
-                fl!("import-error")
-            });
-            let _ = output.send(Message::DropImported(id, result)).await;
-        }))
+        let (task, handle) =
+            cosmic::task::stream(iced::stream::channel(4, async move |mut output| {
+                let size = bytes.len();
+                let result = crate::import::receive(bytes, mime.clone(), source, |progress| {
+                    let _ = output.try_send(Message::DropProgress(id, progress));
+                })
+                .await
+                .map_err(|error| {
+                    crate::import::record_error(&mime, size, error);
+                    fl!("import-error")
+                });
+                let _ = output.send(Message::DropImported(id, result)).await;
+            }))
+            .abortable();
+        self.pending_imports
+            .push((id, Progress::default(), handle.abort_on_drop()));
+        task
     }
 
     fn release_imports(&mut self) {
@@ -1075,7 +1079,7 @@ impl Orbit {
                 .chain(
                     self.pending_imports
                         .iter()
-                        .map(|(id, progress)| (*id, self.import_view(*id, progress))),
+                        .map(|(id, progress, _)| (*id, self.import_view(*id, progress))),
                 )
                 .collect::<Vec<_>>();
             rows.sort_by_key(|(order, _)| std::cmp::Reverse(*order));
