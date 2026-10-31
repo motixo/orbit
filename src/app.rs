@@ -1214,14 +1214,22 @@ impl Orbit {
         ])
         .width(Length::Fill);
         let draggable = widget::row::with_children(vec![
-            widget::icon::from_name(if item.directory {
-                "folder"
-            } else if item.text.as_deref().is_some_and(is_link) {
-                "insert-link-symbolic"
-            } else {
-                "text-x-generic"
-            })
-            .size(32)
+            widget::container(
+                widget::icon::from_name(if item.directory {
+                    "folder"
+                } else if item.text.as_deref().is_some_and(is_link) {
+                    "web-browser-symbolic"
+                } else if item.text.is_some() {
+                    "text-x-generic-symbolic"
+                } else {
+                    "text-x-generic"
+                })
+                .size(if item.text.is_some() { 20 } else { 32 })
+                .icon()
+                .content_fit(iced::ContentFit::Contain),
+            )
+            .center_x(32)
+            .center_y(32)
             .into(),
             widget::container(label)
                 .width(Length::Fill)
