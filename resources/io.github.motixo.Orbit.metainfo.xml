@@ -18,6 +18,9 @@
   <supports><control>keyboard</control><control>pointing</control></supports>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.4.0" type="development" date="2026-10-31">
+      <description><p>Applet drops, quick previews, undo, recent Orbits, and watched folders.</p></description>
+    </release>
     <release version="0.3.3" date="2026-10-31">
       <description>
         <p>Fix text and link drops on the COSMIC desktop, mixed selections, and drag previews.</p>
