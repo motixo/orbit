@@ -48,6 +48,7 @@ impl Corner {
 pub struct Preferences {
     pub pinned: bool,
     pub corner: Corner,
+    pub shortcuts: crate::shortcuts::Bindings,
 }
 
 impl Preferences {

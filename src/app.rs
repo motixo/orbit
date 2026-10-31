@@ -10,7 +10,7 @@ use crate::{
 use cosmic::cctk::sctk::shell::wlr_layer::{Anchor, KeyboardInteractivity, Layer};
 use cosmic::{
     Application,
-    iced::{self, Alignment, Length, Subscription, keyboard, mouse, window},
+    iced::{self, Alignment, Length, Subscription, mouse, window},
     prelude::*,
     surface::action::{LiveSettings, app_layer_shell},
     widget,
@@ -75,6 +75,8 @@ pub struct Orbit {
 pub enum Message {
     Choose(bool),
     NewOrbit,
+    Shortcut(crate::shortcuts::Shortcut),
+    NextCorner,
     StartupPin,
     Config(crate::config::Preferences),
     Incoming(Result<FileList, String>),
@@ -345,28 +347,8 @@ impl cosmic::Application for Orbit {
             if status == iced::event::Status::Captured {
                 return None;
             }
-            let iced::Event::Keyboard(keyboard::Event::KeyPressed {
-                key,
-                physical_key,
-                modifiers,
-                ..
-            }) = event
-            else {
-                return None;
-            };
-            if modifiers.control() {
-                return match key
-                    .to_latin(physical_key)
-                    .map(|key| key.to_ascii_lowercase())
-                {
-                    Some('o') => Some(Message::Choose(modifiers.shift())),
-                    Some('v') => Some(Message::Paste),
-                    Some('c') => Some(Message::Copy),
-                    Some('a') => Some(Message::SelectAll),
-                    Some('p') => Some(Message::TogglePin),
-                    Some('q') => Some(Message::Quit),
-                    _ => None,
-                };
+            if let iced::Event::Keyboard(event) = event {
+                return crate::shortcuts::Shortcut::from_event(&event).map(Message::Shortcut);
             }
             None
         });
@@ -404,6 +386,49 @@ impl cosmic::Application for Orbit {
 
     fn update(&mut self, message: Message) -> Task<cosmic::Action<Message>> {
         match message {
+            Message::Shortcut(shortcut) => {
+                use crate::shortcuts::Action;
+                let message = match self.preferences.shortcuts.action(&shortcut) {
+                    Some(Action::New) => Message::NewOrbit,
+                    Some(Action::Pin) => Message::TogglePin,
+                    Some(Action::Corner) => Message::NextCorner,
+                    Some(Action::Collapse) => Message::ToggleCollapse,
+                    Some(Action::Files) => Message::Choose(false),
+                    Some(Action::Folders) => Message::Choose(true),
+                    Some(Action::Copy) => Message::Copy,
+                    Some(Action::Paste) => Message::Paste,
+                    Some(Action::SelectAll) => Message::SelectAll,
+                    Some(Action::Clear) => Message::Clear,
+                    Some(Action::Close) => Message::Quit,
+                    None => return Task::none(),
+                };
+                return self.update(message);
+            }
+            Message::NextCorner => {
+                if !self.pin_pending
+                    && self.pin_drag_start.is_none()
+                    && let Some(id) = self.pinned
+                    && let Some(placement) = self.pin_placement.as_mut()
+                {
+                    let corners = crate::config::Corner::ALL;
+                    let index = corners
+                        .iter()
+                        .position(|corner| corner.anchor() == self.pin_anchor)
+                        .unwrap_or(1);
+                    let anchor = corners[(index + 1) % corners.len()].anchor();
+                    let from = placement.margin;
+                    match placement.move_to(anchor) {
+                        Ok(margin) => {
+                            self.pin_anchor = anchor;
+                            return Task::batch([
+                                set_anchor(id, anchor),
+                                self.animate_pin(id, from, margin),
+                            ]);
+                        }
+                        Err(_) => self.status = fl!("pin-error"),
+                    }
+                }
+            }
             Message::Config(preferences) => self.preferences = preferences,
             Message::StartupPin => {
                 if crate::always_on_top::active_output().is_some()
@@ -769,6 +794,7 @@ impl cosmic::Application for Orbit {
                 }
             }
             Message::TogglePin => {
+                self.startup_pin = false;
                 self.pin_drag_start = None;
                 self.pin_pointer_down = false;
                 self.pin_motion = None;

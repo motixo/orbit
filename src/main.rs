@@ -12,6 +12,7 @@ mod launch;
 mod pin;
 mod pointer;
 mod shelf;
+mod shortcuts;
 mod thumbnail;
 mod transfer;
 
@@ -21,7 +22,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match paths.first().and_then(|arg| arg.to_str()) {
         Some("--help" | "-h") => {
             println!(
-                "Orbit — a floating file shelf for COSMIC\n\nUsage: orbit [FILE_OR_FOLDER ...]\n       orbit --new\n       orbit --applet\n       orbit --version\n\nCtrl+O: add files    Ctrl+Shift+O: add folders\nCtrl+V: collect      Ctrl+C: copy items\nCtrl+A: select all   Ctrl+P: pin shelf\nCtrl+Q: quit"
+                "Orbit — a file shelf for COSMIC\n\nUsage: orbit [FILE_OR_FOLDER ...]\n       orbit --new\n       orbit --applet\n       orbit --version"
             );
             return Ok(());
         }
