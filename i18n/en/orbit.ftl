@@ -86,5 +86,6 @@ history-error = Could not save recent Orbits
 
 watch-folder = Watch folder
 watch-folders = Watched folders
+watch-folder-hint = New files appear in a separate Orbit.
 watch-error = Could not watch folder
 remove-folder = Remove folder

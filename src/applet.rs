@@ -271,7 +271,7 @@ impl cosmic::Application for OrbitApplet {
                         )
                         .width(Length::Fixed(144.0)),
                     )));
-                body = body.push(
+                body = body.push(widget::divider::horizontal::default()).push(
                     widget::container(widget::text::caption(fl!("watch-folders")))
                         .padding([0, spacing.space_xxs]),
                 );
@@ -307,9 +307,15 @@ impl cosmic::Application for OrbitApplet {
                             * f32::from(row_height),
                     ));
                 }
-                body = body.push(Self::popup_row(
-                    widget::button::standard(fl!("watch-folder")).on_press(Message::ChooseWatch),
-                ));
+                body = body
+                    .push(Self::popup_row(
+                        widget::button::standard(fl!("watch-folder"))
+                            .on_press(Message::ChooseWatch),
+                    ))
+                    .push(
+                        widget::container(widget::text::caption(fl!("watch-folder-hint")))
+                            .padding([0, spacing.space_xxs]),
+                    );
                 body = body
                     .push(widget::divider::horizontal::default())
                     .push(Self::popup_row(widget::settings::item(
