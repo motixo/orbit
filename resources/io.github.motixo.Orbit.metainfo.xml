@@ -16,5 +16,13 @@
   <categories><category>Utility</category><category>FileTools</category></categories>
   <supports><control>keyboard</control><control>pointing</control></supports>
   <content_rating type="oars-1.1"/>
-  <releases><release version="0.1.0" date="2026-10-30"/></releases>
+  <releases>
+    <release version="0.2.0" date="2026-10-31">
+      <description>
+        <p>Native COSMIC applet, configurable shortcuts and defaults, update reminders,
+        direct pinned startup, and refreshed icons.</p>
+      </description>
+    </release>
+    <release version="0.1.0" date="2026-10-30"/>
+  </releases>
 </component>
