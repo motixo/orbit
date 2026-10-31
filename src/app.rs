@@ -52,6 +52,7 @@ pub struct Orbit {
     core: cosmic::Core,
     preferences: crate::config::Preferences,
     shelf: Shelf,
+    copy_mode: bool,
     thumbnails: HashMap<PathBuf, Option<widget::image::Handle>>,
     pending_imports: Vec<(u64, Progress, iced::task::Handle)>,
     dragged_paths: Vec<PathBuf>,
@@ -91,6 +92,8 @@ pub enum Message {
     Remove(PathBuf),
     Clear,
     Copy,
+    ToggleCopyMode,
+    Surface(cosmic::surface::Action<Message>),
     Paste,
     PasteData(Option<ClipboardData>),
     DragStarted(Arc<Transfer>),
@@ -117,6 +120,21 @@ pub enum Message {
     Quit,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Tool {
+    Copy,
+}
+
+impl widget::menu::Action for Tool {
+    type Message = Message;
+
+    fn message(&self) -> Message {
+        match self {
+            Self::Copy => Message::ToggleCopyMode,
+        }
+    }
+}
+
 impl cosmic::Application for Orbit {
     type Executor = cosmic::executor::Default;
     type Flags = Flags;
@@ -140,6 +158,7 @@ impl cosmic::Application for Orbit {
         let mut app = Self {
             core,
             shelf: Shelf::default(),
+            copy_mode: false,
             thumbnails: HashMap::new(),
             pending_imports: Vec::new(),
             dragged_paths: Vec::new(),
@@ -196,7 +215,7 @@ impl cosmic::Application for Orbit {
     fn view(&self) -> Element<'_, Message> {
         let header = widget::header_bar()
             .title(fl!("app-title"))
-            .start(self.new_orbit_button())
+            .start(self.header_tools(self.core.main_window_id().unwrap_or(window::Id::NONE)))
             .on_drag(Message::WindowAction(cosmic::app::Action::Drag))
             .on_right_click(Message::WindowAction(cosmic::app::Action::ShowWindowMenu))
             .on_double_click(Message::TogglePin)
@@ -297,7 +316,7 @@ impl cosmic::Application for Orbit {
         }
         let header = widget::header_bar()
             .title(fl!("app-title"))
-            .start(self.new_orbit_button())
+            .start(self.header_tools(id))
             .end(
                 widget::button::icon(widget::icon::from_name(if self.pin_collapsed {
                     "insert-rectangle-symbolic"
@@ -574,6 +593,10 @@ impl cosmic::Application for Orbit {
                     }
                     return iced::clipboard::write_data(data);
                 }
+            }
+            Message::ToggleCopyMode => self.copy_mode = !self.copy_mode,
+            Message::Surface(action) => {
+                return cosmic::task::message(cosmic::Action::Surface(action));
             }
             Message::Paste => {
                 return iced::clipboard::read_data::<ClipboardData>()
@@ -862,6 +885,42 @@ impl cosmic::Application for Orbit {
 }
 
 impl Orbit {
+    fn header_tools(&self, window: window::Id) -> Element<'_, Message> {
+        let mut buttons = vec![self.new_orbit_button()];
+        if !self.shelf.items.is_empty() || !self.pending_imports.is_empty() {
+            let root: Element<'static, Message> = widget::button::custom(
+                widget::icon::from_name("view-more-horizontal-symbolic")
+                    .size(16)
+                    .icon(),
+            )
+            .padding(cosmic::theme::spacing().space_xxs)
+            .class(cosmic::theme::Button::Icon)
+            .force_enabled(true)
+            .name(fl!("tools"))
+            .into();
+            let menu = widget::menu::bar(vec![widget::menu::Tree::with_children(
+                widget::RcElementWrapper::new(root),
+                widget::menu::items(
+                    &HashMap::new(),
+                    vec![widget::menu::Item::CheckBox(
+                        fl!("copy"),
+                        Some(widget::icon::from_name("edit-copy-symbolic").into()),
+                        self.copy_mode,
+                        Tool::Copy,
+                    )],
+                ),
+            )])
+            .item_width(widget::menu::ItemWidth::Uniform(160))
+            .item_height(widget::menu::ItemHeight::Uniform(36))
+            .window_id(window)
+            .on_surface_action(Message::Surface);
+            buttons.push(menu.into());
+        }
+        widget::row::with_children(buttons)
+            .align_y(Alignment::Center)
+            .into()
+    }
+
     fn load_thumbnails(&mut self) -> Task<cosmic::Action<Message>> {
         let mut paths = Vec::new();
         for item in &self.shelf.items {
@@ -1126,9 +1185,24 @@ impl Orbit {
                 ),
                 ..Default::default()
             });
-            let selection = widget::row::with_children(vec![
+            let mut count_items = vec![
                 widget::text::caption(fl!("shelf-count", count = count))
                     .class(muted)
+                    .into(),
+            ];
+            if self.copy_mode {
+                count_items.push(
+                    widget::icon::from_name("edit-copy-symbolic")
+                        .size(14)
+                        .icon()
+                        .opacity(0.5)
+                        .into(),
+                );
+            }
+            let selection = widget::row::with_children(vec![
+                widget::row::with_children(count_items)
+                    .spacing(spacing.space_xxxs)
+                    .align_y(Alignment::Center)
                     .into(),
                 widget::space::horizontal().into(),
                 widget::button::text(if selected > 0 && selected == self.shelf.items.len() {
@@ -1336,7 +1410,9 @@ impl Orbit {
     ) -> Element<'a, Message> {
         let data = self.shelf.drag_transfer(path);
         let label = fl!("drag-items", count = data.files.0.len());
-        let action = if data.text_only {
+        let action = if self.copy_mode && data.has_local_files {
+            DndAction::Copy
+        } else if data.text_only {
             DndAction::Copy | DndAction::Move
         } else {
             DndAction::Move

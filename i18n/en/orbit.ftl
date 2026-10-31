@@ -48,6 +48,7 @@ pin-toggle = Pin / Unpin
 next-corner = Next corner
 collapse-toggle = Collapse / Expand
 copy = Copy
+tools = Tools
 paste = Paste
 close = Close
 disabled = Disabled

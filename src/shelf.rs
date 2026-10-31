@@ -140,6 +140,9 @@ impl Shelf {
                 .join("\n\n")
         });
         Transfer {
+            has_local_files: items
+                .iter()
+                .any(|item| item.cache.is_none() && item.text.is_none()),
             cached: items.iter().filter_map(|item| item.cache.clone()).collect(),
             files: FileList(paths),
             text,
