@@ -17,7 +17,7 @@ drag-files = { $count ->
 }
 drag-content = { $count ->
     [one] Drag content
-   *[other] Drag { $count } content items
+   *[other] Drag { $count } content
 }
 shelf-count = { $count ->
     [one] 1 item
