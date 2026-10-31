@@ -63,7 +63,7 @@ impl Shelf {
                 path,
                 name,
                 directory: metadata.is_dir(),
-                selected: false,
+                selected: true,
                 text: None,
                 order,
                 cache,
@@ -253,9 +253,9 @@ mod tests {
         let c = fixture.file("c");
         let mut shelf = Shelf::default();
         shelf.add([a.clone(), b.clone(), c.clone()]);
+        assert_eq!(shelf.selected_count(), 3);
         assert_eq!(shelf.export_paths(), [a.clone(), b.clone(), c.clone()]);
-        shelf.toggle(&a);
-        shelf.toggle(&b);
+        shelf.toggle(&c);
         let group = shelf.drag_transfer(&a);
         assert_eq!(group.files.0, [a, b.clone()]);
         assert!(Arc::ptr_eq(&group, &shelf.drag_transfer(&b)));
@@ -291,7 +291,7 @@ mod tests {
         let b = fixture.file("b");
         let mut shelf = Shelf::default();
         shelf.add([a.clone(), b.clone()]);
-        shelf.toggle(&a);
+        shelf.toggle(&b);
         shelf.clear();
         assert_eq!(shelf.export_paths(), [b]);
         shelf.clear();
