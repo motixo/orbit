@@ -40,7 +40,11 @@ pub fn for_path(path: &Path) -> Named {
         }
         _ => mime_name.replace('/', "-"),
     };
-    let mut fallbacks = vec![mime_name.replace('/', "-").into()];
+    let mut fallbacks = Vec::new();
+    let mime_icon = mime_name.replace('/', "-");
+    if mime_icon != name {
+        fallbacks.push(mime_icon.into());
+    }
     if let Some((category, subtype)) = mime_name.split_once('/') {
         if category == "text" || matches!(subtype, "json" | "xml") {
             fallbacks.push(format!("text-x-{subtype}").into());
@@ -51,6 +55,7 @@ pub fn for_path(path: &Path) -> Named {
         fallbacks.push(format!("{category}-x-generic").into());
     }
     fallbacks.push("text-x-generic".into());
+    fallbacks.dedup();
     icon::from_name(name).fallback(Some(IconFallback::Names(fallbacks)))
 }
 
