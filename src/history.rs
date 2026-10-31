@@ -74,6 +74,7 @@ pub fn save(
     corner: Corner,
     copy_mode: bool,
     collapsed: bool,
+    restored_id: Option<&str>,
 ) -> io::Result<()> {
     if shelf.items.is_empty() {
         return Ok(());
@@ -90,7 +91,9 @@ pub fn save(
     let mut ordered = shelf.items.iter().collect::<Vec<_>>();
     ordered.sort_by_key(|item| item.order);
     let entry = Entry {
-        id: uuid::Uuid::new_v4().to_string(),
+        id: restored_id
+            .map(str::to_owned)
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
         items: ordered
             .into_iter()
             .map(|item| {
@@ -110,7 +113,9 @@ pub fn save(
     };
     let path = root.join("recent.json");
     let mut entries = read(&path)?;
-    insert(&mut entries, entry);
+    if !store(&mut entries, entry, restored_id.is_some()) {
+        return Ok(());
+    }
     let mut file = tempfile::NamedTempFile::new_in(&root)?;
     serde_json::to_writer(&mut file, &entries)?;
     file.as_file().sync_all()?;
@@ -127,9 +132,17 @@ pub fn save(
     Ok(())
 }
 
-fn insert(entries: &mut Vec<Entry>, entry: Entry) {
-    entries.insert(0, entry);
-    entries.truncate(5);
+fn store(entries: &mut Vec<Entry>, entry: Entry, restored: bool) -> bool {
+    if restored {
+        let Some(saved) = entries.iter_mut().find(|saved| saved.id == entry.id) else {
+            return false;
+        };
+        *saved = entry;
+    } else {
+        entries.insert(0, entry);
+        entries.truncate(5);
+    }
+    true
 }
 
 pub fn protected(root: &Path) -> HashSet<PathBuf> {
@@ -145,7 +158,7 @@ pub fn protected(root: &Path) -> HashSet<PathBuf> {
 mod tests {
     use super::*;
     #[test]
-    fn history_keeps_five_recent_shelves_and_non_utf8_paths() {
+    fn history_keeps_five_shelves_and_updates_restored_entries_in_place() {
         use std::os::unix::ffi::OsStringExt;
         let path = PathBuf::from("/tmp").join(std::ffi::OsString::from_vec(vec![0xff]));
         let item = SavedItem {
@@ -156,7 +169,7 @@ mod tests {
         assert_eq!(item.path(), Some(path));
         let mut entries = Vec::new();
         for index in 0..7 {
-            insert(
+            store(
                 &mut entries,
                 Entry {
                     id: index.to_string(),
@@ -166,6 +179,7 @@ mod tests {
                     copy_mode: false,
                     collapsed: false,
                 },
+                false,
             );
         }
         let restored: Vec<Entry> =
@@ -174,5 +188,31 @@ mod tests {
         assert_eq!(restored[0].id, "6");
         assert_eq!(restored[4].id, "2");
         assert_eq!(restored[0].items[0].path(), entries[0].items[0].path());
+
+        let ids = entries
+            .iter()
+            .map(|entry| entry.id.clone())
+            .collect::<Vec<_>>();
+        let mut reopened = entries[2].clone();
+        reopened.collapsed = true;
+        assert!(store(&mut entries, reopened.clone(), true));
+        assert!(entries[2].collapsed);
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.id.clone())
+                .collect::<Vec<_>>(),
+            ids
+        );
+
+        reopened.id = "evicted".into();
+        assert!(!store(&mut entries, reopened, true));
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.id.clone())
+                .collect::<Vec<_>>(),
+            ids
+        );
     }
 }

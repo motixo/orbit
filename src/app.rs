@@ -56,6 +56,7 @@ pub struct Orbit {
     core: cosmic::Core,
     preferences: crate::config::Preferences,
     shelf: Shelf,
+    restored_id: Option<String>,
     copy_mode: bool,
     compression_dialog: Option<CompressionDialog>,
     preview: Option<crate::preview::Preview>,
@@ -173,6 +174,7 @@ impl cosmic::Application for Orbit {
         let mut app = Self {
             core,
             shelf: Shelf::default(),
+            restored_id: flags.restored.as_ref().map(|entry| entry.id.clone()),
             copy_mode: flags.restored.as_ref().is_some_and(|entry| entry.copy_mode),
             compression_dialog: None,
             preview: None,
@@ -1149,6 +1151,7 @@ impl cosmic::Application for Orbit {
                     corner,
                     self.copy_mode,
                     self.pin_collapsed,
+                    self.restored_id.as_deref(),
                 ) {
                     self.status = fl!("history-error");
                     eprintln!("Could not save Orbit: {error}");
