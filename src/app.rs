@@ -1213,6 +1213,7 @@ impl Orbit {
                 .on_press_maybe((!self.shelf.items.is_empty()).then_some(Message::SelectAll))
                 .into(),
                 widget::button::text(fl!("clear-shelf"))
+                    .class(cosmic::theme::Button::Icon)
                     .on_press(Message::Clear)
                     .into(),
             ])
