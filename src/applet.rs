@@ -28,6 +28,7 @@ pub struct OrbitApplet {
     global_shortcut: Option<Shortcut>,
     hovering: bool,
     drop_target: widget::Id,
+    recent: Vec<crate::history::Entry>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -47,6 +48,7 @@ pub enum EditTarget {
 #[derive(Clone, Debug)]
 pub enum Message {
     NewOrbit,
+    Restore(String),
     Launched(bool),
     TogglePopup,
     Closed,
@@ -100,6 +102,7 @@ impl cosmic::Application for OrbitApplet {
                 global_shortcut: None,
                 hovering: false,
                 drop_target: widget::Id::unique(),
+                recent: Vec::new(),
             },
             cosmic::task::message(Message::CheckUpdates(false)),
         )
@@ -215,6 +218,27 @@ impl cosmic::Application for OrbitApplet {
                             .on_press(message),
                     );
                 }
+                if !self.recent.is_empty() {
+                    body = body.push(widget::divider::horizontal::default()).push(
+                        widget::container(widget::text::caption(fl!("recent")))
+                            .padding([0, spacing.space_xxs]),
+                    );
+                    for entry in &self.recent {
+                        body = body.push(
+                            cosmic::applet::menu_button(
+                                widget::text::body(entry.label())
+                                    .width(Length::Fill)
+                                    .wrapping(iced::widget::text::Wrapping::None)
+                                    .ellipsize(iced::advanced::text::Ellipsize::End(
+                                        iced::advanced::text::EllipsizeHeightLimit::Lines(1),
+                                    )),
+                            )
+                            .padding([spacing.space_xxxs, spacing.space_xxs])
+                            .height(row_height)
+                            .on_press(Message::Restore(entry.id.clone())),
+                        );
+                    }
+                }
             }
             Page::Settings => {
                 body = body
@@ -327,6 +351,7 @@ impl cosmic::Application for OrbitApplet {
 
     fn update(&mut self, message: Message) -> Task<cosmic::Action<Message>> {
         match message {
+            Message::Restore(id) => return self.launch(vec!["--restore".into(), id.into()], None),
             Message::NewOrbit => {
                 return self.launch(Vec::new(), None);
             }
@@ -345,8 +370,15 @@ impl cosmic::Application for OrbitApplet {
                     self.editing = None;
                     return destroy_popup(id).chain(inhibit_shortcuts(false).discard());
                 }
-                self.page = Page::Menu;
                 self.status.clear();
+                self.recent = match crate::history::list() {
+                    Ok(recent) => recent,
+                    Err(_) => {
+                        self.status = fl!("history-error");
+                        Vec::new()
+                    }
+                };
+                self.page = Page::Menu;
                 return cosmic::surface::surface_task(cosmic::surface::action::app_popup(
                     |_| Default::default(),
                     |app: &mut Self| {

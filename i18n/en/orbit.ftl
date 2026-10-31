@@ -80,3 +80,6 @@ update-busy = Check already running.
 
 preview = Preview
 preview-unavailable = No preview
+
+recent = Recent
+history-error = Could not save recent Orbits

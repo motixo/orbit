@@ -32,6 +32,7 @@ const PREVIEW_PADDING: u32 = 20;
 
 pub struct Flags {
     pub uris: Vec<String>,
+    pub restored: Option<crate::history::Entry>,
     pub incoming_drop: Option<(Vec<u8>, String)>,
     pub action: String,
     pub startup: Option<Startup>,
@@ -167,7 +168,7 @@ impl cosmic::Application for Orbit {
         let mut app = Self {
             core,
             shelf: Shelf::default(),
-            copy_mode: false,
+            copy_mode: flags.restored.as_ref().is_some_and(|entry| entry.copy_mode),
             compression_dialog: None,
             preview: None,
             focused_item: None,
@@ -190,12 +191,16 @@ impl cosmic::Application for Orbit {
             pin_pointer_down: false,
             pin_preview: None,
             pin_motion: None,
-            pin_collapsed: false,
+            pin_collapsed: flags.restored.as_ref().is_some_and(|entry| entry.collapsed),
             pin_header_height: 49,
             preferences,
             drop_target: widget::Id::unique(),
         };
         app.set_header_title(fl!("app-title"));
+        if let Some(entry) = &flags.restored {
+            app.shelf.restore(entry);
+        }
+        let thumbnails = app.load_thumbnails();
         let incoming = if let Some((bytes, mime)) = flags.incoming_drop {
             app.update(Message::DropData(bytes, mime))
         } else if !flags.uris.is_empty() {
@@ -223,7 +228,7 @@ impl cosmic::Application for Orbit {
         } else {
             Task::none()
         };
-        (app, Task::batch([title, startup, incoming]))
+        (app, Task::batch([title, startup, incoming, thumbnails]))
     }
 
     fn view(&self) -> Element<'_, Message> {
@@ -233,7 +238,7 @@ impl cosmic::Application for Orbit {
             .on_drag(Message::WindowAction(cosmic::app::Action::Drag))
             .on_right_click(Message::WindowAction(cosmic::app::Action::ShowWindowMenu))
             .on_double_click(Message::TogglePin)
-            .on_close(Message::WindowAction(cosmic::app::Action::Close))
+            .on_close(Message::Quit)
             .focused(
                 self.core
                     .focus_chain()
@@ -264,6 +269,10 @@ impl cosmic::Application for Orbit {
             .as_ref()
             .filter(|(layer, _)| *layer == id)
             .map(|_| Message::UnpinClosed)
+            .or_else(|| {
+                (self.pinned == Some(id) || self.core.main_window_id() == Some(id))
+                    .then_some(Message::Quit)
+            })
     }
 
     fn dbus_activation(
@@ -1035,10 +1044,18 @@ impl cosmic::Application for Orbit {
                     self.status = fl!("pin-error");
                     return self.ensure_floating();
                 };
-                let Ok(placement) = Placement::new(area, self.pin_anchor, near) else {
+                let Ok(mut placement) = Placement::new(area, self.pin_anchor, near) else {
                     self.status = fl!("pin-error");
                     return self.ensure_floating();
                 };
+                if self.pin_collapsed
+                    && placement
+                        .resize(self.pin_header_height, self.pin_anchor)
+                        .is_err()
+                {
+                    self.pin_collapsed = false;
+                }
+                let height = placement.height;
                 let margin = placement.margin;
                 self.status.clear();
                 self.pin_placement = Some(placement);
@@ -1052,7 +1069,7 @@ impl cosmic::Application for Orbit {
                     namespace: Self::APP_ID.into(),
                     keyboard_interactivity: KeyboardInteractivity::OnDemand,
                     margin,
-                    size: Some((Some(SHELF_SIZE), Some(SHELF_SIZE))),
+                    size: Some((Some(SHELF_SIZE), Some(height))),
                     exclusive_zone: 0,
                     ..Default::default()
                 };
@@ -1068,7 +1085,24 @@ impl cosmic::Application for Orbit {
                 );
                 return cosmic::task::message(cosmic::Action::Surface(surface));
             }
-            Message::Quit => return iced::exit(),
+            Message::Quit => {
+                let corner = crate::config::Corner::ALL
+                    .into_iter()
+                    .find(|corner| corner.anchor() == self.pin_anchor)
+                    .unwrap_or(self.preferences.corner);
+                if let Err(error) = crate::history::save(
+                    &self.shelf,
+                    self.pinned.is_some(),
+                    corner,
+                    self.copy_mode,
+                    self.pin_collapsed,
+                ) {
+                    self.status = fl!("history-error");
+                    eprintln!("Could not save Orbit: {error}");
+                    return Task::none();
+                }
+                return iced::exit();
+            }
         }
         Task::none()
     }

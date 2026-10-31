@@ -39,6 +39,23 @@ pub struct AddReport {
 }
 
 impl Shelf {
+    pub fn restore(&mut self, entry: &crate::history::Entry) {
+        for saved in &entry.items {
+            if let Some(path) = saved.path()
+                && self.add([path.clone()]).added > 0
+            {
+                self.set_import(
+                    &path,
+                    saved.text.clone(),
+                    crate::cache::Directory::for_file(&path),
+                );
+                if let Some(item) = self.items.last_mut() {
+                    item.selected = saved.selected;
+                }
+            }
+        }
+    }
+
     pub fn add(&mut self, paths: impl IntoIterator<Item = PathBuf>) -> AddReport {
         self.invalidate_transfers();
         let mut report = AddReport::default();

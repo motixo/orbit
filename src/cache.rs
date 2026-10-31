@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use std::{
-    collections::HashSet,
     fs::{self, File, OpenOptions},
     hash::{DefaultHasher, Hash, Hasher},
     io::{self, Write},
@@ -128,7 +127,7 @@ fn cleanup(cache: &Path) {
     let Ok(entries) = fs::read_dir(cache) else {
         return;
     };
-    let mut protected = HashSet::new();
+    let mut protected = crate::history::protected(cache);
     let mut directories = Vec::new();
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();

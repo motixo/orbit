@@ -8,6 +8,7 @@ mod cache;
 mod config;
 mod drag_preview;
 mod file_icon;
+mod history;
 mod i18n;
 mod import;
 mod launch;
@@ -51,6 +52,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => (),
     }
+    let restored = if paths.first().is_some_and(|arg| arg == "--restore") {
+        if paths.len() != 2 {
+            return Err("Usage: orbit --new --restore ID".into());
+        }
+        let id = paths[1].to_str().ok_or("Invalid history ID")?;
+        let entry = history::list()?
+            .into_iter()
+            .find(|entry| entry.id == id)
+            .ok_or("Orbit no longer available")?;
+        paths.clear();
+        Some(entry)
+    } else {
+        None
+    };
     let incoming_drop = if paths.first().is_some_and(|arg| arg == "--drop") {
         if paths.len() != 3 {
             return Err("Usage: orbit --new --drop MIME PAYLOAD".into());
@@ -77,7 +92,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let languages = i18n_embed::DesktopLanguageRequester::requested_languages();
     i18n::init(&languages);
     let startup = pin::Startup::from_env()?;
-    let preferences = config::Preferences::load();
+    let mut preferences = config::Preferences::load();
+    if let Some(entry) = &restored {
+        preferences.pinned = entry.pinned;
+        preferences.corner = entry.corner;
+    }
     let pinned = startup.is_some() || preferences.pinned;
     let size = app::SHELF_SIZE as f32;
     let settings = cosmic::app::Settings::default()
@@ -95,6 +114,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let flags = app::Flags {
         uris,
         incoming_drop,
+        restored,
         action: "collect".into(),
         startup_area: (preferences.pinned && startup.is_none()).then_some(startup_area),
         preferences,
