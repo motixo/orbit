@@ -182,32 +182,29 @@ impl cosmic::Application for OrbitApplet {
         let spacing = cosmic::theme::spacing();
         let row_height = spacing.space_l + 2 * spacing.space_xxxs;
         let title = match self.page {
-            Page::Menu => fl!("app-title"),
-            Page::Settings => fl!("settings"),
-            Page::Shortcuts => fl!("shortcuts"),
-            Page::About => fl!("about"),
+            Page::Menu => None,
+            Page::Settings => Some(fl!("settings")),
+            Page::Shortcuts => Some(fl!("shortcuts")),
+            Page::About => Some(fl!("about")),
         };
-        let back: Element<'_, Message> = if matches!(self.page, Page::Menu) {
-            widget::Space::new().into()
-        } else {
-            widget::button::icon(widget::icon::from_name("go-previous-symbolic"))
+        let header = title.map(|title| {
+            let back = widget::button::icon(widget::icon::from_name("go-previous-symbolic"))
                 .name(fl!("back"))
-                .on_press(Message::Page(Page::Menu))
-                .into()
-        };
-        let header = widget::row::with_children(vec![
-            widget::container(back)
-                .width(spacing.space_l)
-                .height(spacing.space_l)
-                .into(),
-            widget::text::heading(title)
-                .width(Length::Fill)
-                .align_x(iced::Alignment::Center)
-                .into(),
-            widget::Space::new().width(spacing.space_l).into(),
-        ])
-        .height(spacing.space_l)
-        .align_y(iced::Alignment::Center);
+                .on_press(Message::Page(Page::Menu));
+            widget::row::with_children(vec![
+                widget::container(back)
+                    .width(spacing.space_l)
+                    .height(spacing.space_l)
+                    .into(),
+                widget::text::heading(title)
+                    .width(Length::Fill)
+                    .align_x(iced::Alignment::Center)
+                    .into(),
+                widget::Space::new().width(spacing.space_l).into(),
+            ])
+            .height(spacing.space_l)
+            .align_y(iced::Alignment::Center)
+        });
         let mut body = widget::column::with_capacity(15);
         match self.page {
             Page::Menu => {
@@ -383,7 +380,7 @@ impl cosmic::Application for OrbitApplet {
         let mut content = widget::column::with_capacity(3)
             .spacing(spacing.space_xxs)
             .padding(spacing.space_xs)
-            .push_maybe((!matches!(self.page, Page::Menu)).then_some(header))
+            .push_maybe(header)
             .push(body);
         if !self.status.is_empty() {
             content = content.push(
