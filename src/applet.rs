@@ -207,7 +207,7 @@ impl cosmic::Application for OrbitApplet {
         ])
         .height(spacing.space_l)
         .align_y(iced::Alignment::Center);
-        let mut body = widget::column::with_capacity(15).spacing(spacing.space_xxs);
+        let mut body = widget::column::with_capacity(15);
         match self.page {
             Page::Menu => {
                 for (label, message) in [
@@ -217,35 +217,23 @@ impl cosmic::Application for OrbitApplet {
                     (fl!("about"), Message::Page(Page::About)),
                 ] {
                     body = body.push(
-                        cosmic::applet::menu_button(
-                            widget::text::body(label)
-                                .height(Length::Fill)
-                                .align_y(iced::Alignment::Center),
-                        )
-                        .padding([spacing.space_xxxs, spacing.space_xxs])
-                        .height(row_height)
-                        .on_press(message),
+                        cosmic::applet::menu_button(widget::text::body(label)).on_press(message),
                     );
                 }
                 if !self.recent.is_empty() {
                     body = body.push(widget::divider::horizontal::default()).push(
-                        widget::container(widget::text::caption(fl!("recent")))
-                            .padding([0, spacing.space_xxs]),
+                        cosmic::applet::padded_control(widget::text::caption(fl!("recent"))),
                     );
                     for entry in &self.recent {
                         body = body.push(
                             cosmic::applet::menu_button(
                                 widget::text::body(entry.label())
                                     .width(Length::Fill)
-                                    .height(Length::Fill)
-                                    .align_y(iced::Alignment::Center)
                                     .wrapping(iced::widget::text::Wrapping::None)
                                     .ellipsize(iced::advanced::text::Ellipsize::End(
                                         iced::advanced::text::EllipsizeHeightLimit::Lines(1),
                                     )),
                             )
-                            .padding([spacing.space_xxxs, spacing.space_xxs])
-                            .height(row_height)
                             .on_press(Message::Restore(entry.id.clone())),
                         );
                     }
