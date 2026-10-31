@@ -5,7 +5,7 @@ use crate::{
     import::{ImportedFiles, Progress, Source},
     pin::{Area, Motion, Placement, Startup},
     shelf::{Item, Shelf},
-    transfer::{ClipboardData, FileList, URI_LIST, is_link},
+    transfer::{ClipboardData, FileList, Transfer, URI_LIST, is_link},
 };
 use cosmic::cctk::sctk::shell::wlr_layer::{Anchor, KeyboardInteractivity, Layer};
 use cosmic::{
@@ -96,7 +96,7 @@ pub enum Message {
     Copy,
     Paste,
     PasteData(Option<ClipboardData>),
-    DragStarted(Vec<PathBuf>, Arc<AtomicBool>),
+    DragStarted(Arc<Transfer>, Arc<AtomicBool>),
     DragFinished,
     DragCancelled,
     Noop,
@@ -570,8 +570,8 @@ impl cosmic::Application for Orbit {
                 }
                 self.status = fl!("unsupported-content");
             }
-            Message::DragStarted(paths, files_requested) => {
-                self.dragged_paths = paths;
+            Message::DragStarted(data, files_requested) => {
+                self.dragged_paths = data.files.0.clone();
                 self.drag_files_requested = Some(files_requested);
                 self.hovering = false;
                 self.status.clear();
@@ -1320,15 +1320,10 @@ impl Orbit {
         let path = item.path.clone();
         let row = widget::row::with_children(vec![
             checkbox.into(),
-            widget::container(self.drag_source(
-                draggable.into(),
-                self.shelf.drag_paths(&item.path),
-                item.path.to_string_lossy().into_owned(),
-                window,
-            ))
-            .width(Length::Fill)
-            .clip(true)
-            .into(),
+            widget::container(self.drag_source(draggable.into(), &item.path, window))
+                .width(Length::Fill)
+                .clip(true)
+                .into(),
             widget::button::icon(widget::icon::from_name("list-remove-symbolic"))
                 .name(fl!("remove-item", name = item.name.as_str()))
                 .width(32)
@@ -1352,12 +1347,12 @@ impl Orbit {
     fn drag_source<'a>(
         &self,
         content: Element<'a, Message>,
-        paths: Vec<PathBuf>,
-        id: String,
+        path: &std::path::Path,
         window: window::Id,
     ) -> Element<'a, Message> {
-        let label = fl!("drag-items", count = paths.len());
-        let data = self.shelf.transfer(paths.clone(), false);
+        let data = self.shelf.drag_transfer(path);
+        let label = fl!("drag-items", count = data.files.0.len());
+        let files_requested = Arc::new(AtomicBool::new(false));
         let action = if data.text_only {
             DndAction::Copy | DndAction::Move
         } else {
@@ -1365,15 +1360,21 @@ impl Orbit {
         };
         widget::DndSource::with_id(
             content,
-            widget::Id::new(format!("orbit-source-{window:?}-{id}")),
+            widget::Id::new(format!(
+                "orbit-source-{window:?}-{}",
+                path.to_string_lossy()
+            )),
         )
         .window(window)
         .action(action)
         .on_start(Some(Message::DragStarted(
-            paths.clone(),
-            data.files_requested.clone(),
+            data.clone(),
+            files_requested.clone(),
         )))
-        .drag_content(move || data.clone())
+        .drag_content(move || Transfer {
+            files_requested: files_requested.clone(),
+            ..data.as_ref().clone()
+        })
         .drag_icon(move |_| {
             let icon: Element<'static, ()> = widget::container(widget::text::body(label.clone()))
                 .padding(12)

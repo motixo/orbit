@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use crate::transfer::{FileList, Transfer, is_link};
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::{Arc, OnceLock},
+};
 
 #[derive(Debug)]
 pub struct Item {
@@ -17,6 +20,7 @@ pub struct Item {
 pub struct Shelf {
     pub items: Vec<Item>,
     next_order: u64,
+    selection_drag: OnceLock<Arc<Transfer>>,
 }
 
 #[derive(Default, Debug, PartialEq)]
@@ -28,6 +32,7 @@ pub struct AddReport {
 
 impl Shelf {
     pub fn add(&mut self, paths: impl IntoIterator<Item = PathBuf>) -> AddReport {
+        self.selection_drag.take();
         let mut report = AddReport::default();
         for path in paths {
             let Ok(path) = std::path::absolute(path) else {
@@ -72,6 +77,7 @@ impl Shelf {
     }
 
     pub fn set_text(&mut self, path: &Path, text: String) {
+        self.selection_drag.take();
         if let Some(item) = self.items.iter_mut().find(|item| item.path == path) {
             item.name = text
                 .lines()
@@ -145,25 +151,29 @@ impl Shelf {
             .collect()
     }
 
-    pub fn drag_paths(&self, path: &Path) -> Vec<PathBuf> {
+    pub fn drag_transfer(&self, path: &Path) -> Arc<Transfer> {
         if self
             .items
             .iter()
             .any(|item| item.path == path && item.selected)
         {
-            self.export_paths()
+            self.selection_drag
+                .get_or_init(|| Arc::new(self.transfer(self.export_paths(), false)))
+                .clone()
         } else {
-            vec![path.to_owned()]
+            Arc::new(self.transfer(vec![path.to_owned()], false))
         }
     }
 
     pub fn toggle(&mut self, path: &Path) {
+        self.selection_drag.take();
         if let Some(item) = self.items.iter_mut().find(|item| item.path == path) {
             item.selected = !item.selected;
         }
     }
 
     pub fn select_all(&mut self) {
+        self.selection_drag.take();
         let selected = self.selected_count() != self.items.len();
         for item in &mut self.items {
             item.selected = selected;
@@ -171,10 +181,12 @@ impl Shelf {
     }
 
     pub fn remove(&mut self, path: &Path) {
+        self.selection_drag.take();
         self.items.retain(|item| item.path != path);
     }
 
     pub fn clear(&mut self) {
+        self.selection_drag.take();
         let has_selection = self.selected_count() > 0;
         self.items.retain(|item| has_selection && !item.selected);
     }
@@ -247,10 +259,13 @@ mod tests {
         assert_eq!(shelf.export_paths(), [a.clone(), b.clone(), c.clone()]);
         shelf.toggle(&a);
         shelf.toggle(&b);
-        assert_eq!(shelf.drag_paths(&a), [a, b]);
-        assert_eq!(shelf.drag_paths(&c), [c]);
+        let group = shelf.drag_transfer(&a);
+        assert_eq!(group.files.0, [a, b.clone()]);
+        assert!(Arc::ptr_eq(&group, &shelf.drag_transfer(&b)));
+        assert_eq!(shelf.drag_transfer(&c).files.0, [c]);
         shelf.select_all();
         assert_eq!(shelf.selected_count(), 3);
+        assert!(!Arc::ptr_eq(&group, &shelf.drag_transfer(&b)));
         shelf.select_all();
         assert_eq!(shelf.selected_count(), 0);
     }
