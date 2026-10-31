@@ -17,6 +17,9 @@
   <supports><control>keyboard</control><control>pointing</control></supports>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.3.2" date="2026-10-31">
+      <description><p>Fix update checks on fresh installations.</p></description>
+    </release>
     <release version="0.3.1" date="2026-10-31">
       <description>
         <p>Fix pinned text input shortcuts and ZIP timestamps, reduce idle work,
