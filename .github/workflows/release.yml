@@ -80,15 +80,6 @@ jobs:
           cd dist
           test "$(find . -maxdepth 1 -type f | wc -l)" -eq 7
           sha256sum *.deb *.rpm *.pkg.tar.zst install.sh > SHA256SUMS
-          cat > notes.md <<'EOF'
-          Native packages for Arch, Fedora and Ubuntu/Pop!_OS 22.04+, with COSMIC.
-          Available for x64 and ARM64.
-
-          ```sh
-          curl -fsSL https://github.com/motixo/orbit/releases/latest/download/install.sh | sh
-          ```
-
-          Fixes pinned input shortcuts and ZIP timestamps, and reduces idle work.
-          EOF
-          gh release create "$TAG" ./*.deb ./*.rpm ./*.pkg.tar.zst install.sh SHA256SUMS --verify-tag --draft --title "Orbit $TAG" --notes-file notes.md
+          git fetch --depth=1 origin "refs/tags/$TAG:refs/tags/$TAG"
+          gh release create "$TAG" ./*.deb ./*.rpm ./*.pkg.tar.zst install.sh SHA256SUMS --verify-tag --draft --title "Orbit $TAG" --notes-from-tag
           gh release edit "$TAG" --draft=false --prerelease=false --latest
