@@ -1153,9 +1153,7 @@ impl cosmic::Application for Orbit {
                     self.pin_collapsed,
                     self.restored_id.as_deref(),
                 ) {
-                    self.status = fl!("history-error");
                     eprintln!("Could not save Orbit: {error}");
-                    return Task::none();
                 }
                 return self.close_shelf();
             }

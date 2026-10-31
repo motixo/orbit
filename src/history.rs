@@ -58,7 +58,8 @@ impl SavedItem {
 
 fn read(path: &Path) -> io::Result<Vec<Entry>> {
     match fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes).map_err(io::Error::other),
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
         Err(error) => Err(error),
     }
@@ -79,15 +80,16 @@ pub fn save(
     if shelf.items.is_empty() {
         return Ok(());
     }
-    let root = crate::cache::root()?;
-    fs::create_dir_all(&root)?;
-    let lock = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(root.join("recent.lock"))?;
-    lock.lock()?;
+    // Keep imported files available even if history cannot be saved on exit.
+    for directory in shelf
+        .transfer(
+            shelf.items.iter().map(|item| item.path.clone()).collect(),
+            false,
+        )
+        .cached
+    {
+        directory.hand_off();
+    }
     let mut ordered = shelf.items.iter().collect::<Vec<_>>();
     ordered.sort_by_key(|item| item.order);
     let entry = Entry {
@@ -111,24 +113,35 @@ pub fn save(
         copy_mode,
         collapsed,
     };
+    write(&crate::cache::root()?, entry, restored_id.is_some())
+}
+
+fn write(root: &Path, entry: Entry, restored: bool) -> io::Result<()> {
+    fs::create_dir_all(root)?;
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(root.join("recent.lock"))?;
+    lock.lock()?;
     let path = root.join("recent.json");
-    let mut entries = read(&path)?;
-    if !store(&mut entries, entry, restored_id.is_some()) {
+    let (mut entries, restored) = match read(&path) {
+        Ok(entries) => (entries, restored),
+        Err(error) if error.kind() == io::ErrorKind::InvalidData => {
+            let backup = root.join(format!("recent-corrupt-{}.json", uuid::Uuid::new_v4()));
+            fs::rename(&path, backup)?;
+            (Vec::new(), false)
+        }
+        Err(error) => return Err(error),
+    };
+    if !store(&mut entries, entry, restored) {
         return Ok(());
     }
-    let mut file = tempfile::NamedTempFile::new_in(&root)?;
+    let mut file = tempfile::NamedTempFile::new_in(root)?;
     serde_json::to_writer(&mut file, &entries)?;
     file.as_file().sync_all()?;
     file.persist(path)?;
-    for directory in shelf
-        .transfer(
-            shelf.items.iter().map(|item| item.path.clone()).collect(),
-            false,
-        )
-        .cached
-    {
-        directory.hand_off();
-    }
     Ok(())
 }
 
@@ -157,6 +170,41 @@ pub fn protected(root: &Path) -> HashSet<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replaces_corrupt_history_with_a_backup_and_preserves_io_errors() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("recent.json");
+        let corrupt = b"{broken history";
+        fs::write(&path, corrupt).unwrap();
+        let entry = Entry {
+            id: "restored".into(),
+            items: Vec::new(),
+            pinned: false,
+            corner: Corner::TopRight,
+            copy_mode: false,
+            collapsed: false,
+        };
+        write(root.path(), entry.clone(), true).unwrap();
+        assert_eq!(read(&path).unwrap()[0].id, entry.id);
+        let backup = fs::read_dir(root.path())
+            .unwrap()
+            .flatten()
+            .find(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("recent-corrupt-")
+            })
+            .unwrap();
+        assert_eq!(fs::read(backup.path()).unwrap(), corrupt);
+
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        assert!(write(root.path(), entry, false).is_err());
+        assert!(path.is_dir());
+    }
+
     #[test]
     fn history_keeps_five_shelves_and_updates_restored_entries_in_place() {
         use std::os::unix::ffi::OsStringExt;
