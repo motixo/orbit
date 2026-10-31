@@ -699,9 +699,10 @@ impl cosmic::Application for Orbit {
                         self.shelf
                             .items
                             .iter()
-                            .filter(|item| item.selected)
+                            .filter(|item| item.selected && !item.is_missing())
                             .max_by_key(|item| item.order)
-                    });
+                    })
+                    .filter(|item| !item.is_missing());
                 if let Some(item) = item {
                     let path = item.path.clone();
                     let text = item.text.clone();
@@ -786,7 +787,7 @@ impl cosmic::Application for Orbit {
                     .shelf
                     .items
                     .iter()
-                    .filter(|item| item.selected)
+                    .filter(|item| item.selected && !item.is_missing())
                     .map(|item| (item.path.clone(), item.order))
                     .collect::<Vec<_>>();
                 if sources.is_empty() || self.compression_dialog.is_some() {
@@ -1228,7 +1229,11 @@ impl Orbit {
                 (
                     fl!("compress"),
                     "mail-archive-symbolic",
-                    (self.shelf.selected_count() > 0).then_some(Message::Compress),
+                    self.shelf
+                        .items
+                        .iter()
+                        .any(|item| item.selected && !item.is_missing())
+                        .then_some(Message::Compress),
                     false,
                 ),
             ]
@@ -1380,6 +1385,7 @@ impl Orbit {
         let mut paths = Vec::new();
         for item in &self.shelf.items {
             if !item.directory
+                && !item.is_missing()
                 && item.text.is_none()
                 && crate::thumbnail::kind(&item.path).is_some()
                 && !self.thumbnails.contains_key(&item.path)
@@ -1762,6 +1768,17 @@ impl Orbit {
 
         let spacing = cosmic::theme::spacing();
         let ellipsize = Ellipsize::Middle(EllipsizeHeightLimit::Lines(1));
+        let missing = item.is_missing();
+        let text_style = if missing {
+            cosmic::theme::Text::Custom(|theme| iced::widget::text::Style {
+                color: Some(
+                    iced::Color::from(theme.cosmic().background(false).on).scale_alpha(0.45),
+                ),
+                ..Default::default()
+            })
+        } else {
+            cosmic::theme::Text::Default
+        };
         let path = item.path.clone();
         let checkbox = widget::checkbox(item.selected)
             .name(fl!("select-item", name = item.name.as_str()))
@@ -1785,49 +1802,64 @@ impl Orbit {
         };
         let label = widget::column::with_children(vec![
             widget::text::body(&item.name)
+                .class(text_style)
                 .width(Length::Fill)
                 .wrapping(iced::widget::text::Wrapping::None)
                 .ellipsize(ellipsize)
                 .into(),
             widget::text::caption(parent)
+                .class(text_style)
                 .width(Length::Fill)
                 .wrapping(iced::widget::text::Wrapping::None)
                 .ellipsize(ellipsize)
                 .into(),
         ])
         .width(Length::Fill);
-        let preview: Element<'_, Message> =
-            if let Some(Some(thumbnail)) = self.thumbnails.get(&item.path) {
-                widget::image(thumbnail.clone())
-                    .width(32)
-                    .height(32)
-                    .content_fit(iced::ContentFit::Contain)
-                    .border_radius(cosmic::theme::active().cosmic().corner_radii.radius_s)
-                    .into()
-            } else {
-                widget::container(
-                    (if item.directory {
-                        widget::icon::from_name("folder")
-                    } else if item.text.as_deref().is_some_and(is_link) {
-                        widget::icon::from_name("web-browser-symbolic")
-                    } else if item.text.is_some() {
-                        widget::icon::from_name("text-x-generic-symbolic")
-                    } else {
-                        crate::file_icon::for_path(&item.path)
-                    })
-                    .size(if item.text.is_some() { 20 } else { 32 })
-                    .icon()
-                    .content_fit(iced::ContentFit::Contain),
-                )
-                .center_x(32)
+        let preview: Element<'_, Message> = if missing {
+            widget::container(widget::text::caption(fl!("missing-item")).class(text_style))
+                .center_x(48)
                 .center_y(32)
                 .into()
-            };
+        } else if let Some(Some(thumbnail)) = self.thumbnails.get(&item.path) {
+            widget::image(thumbnail.clone())
+                .width(32)
+                .height(32)
+                .content_fit(iced::ContentFit::Contain)
+                .border_radius(cosmic::theme::active().cosmic().corner_radii.radius_s)
+                .into()
+        } else {
+            widget::container(
+                (if item.directory {
+                    widget::icon::from_name("folder")
+                } else if item.text.as_deref().is_some_and(is_link) {
+                    widget::icon::from_name("web-browser-symbolic")
+                } else if item.text.is_some() {
+                    widget::icon::from_name("text-x-generic-symbolic")
+                } else {
+                    crate::file_icon::for_path(&item.path)
+                })
+                .size(if item.text.is_some() { 20 } else { 32 })
+                .icon()
+                .content_fit(iced::ContentFit::Contain),
+            )
+            .center_x(32)
+            .center_y(32)
+            .into()
+        };
         let label = widget::container(label)
             .width(Length::Fill)
             .clip(true)
             .into();
-        let draggable = if item.has_text() {
+        let draggable = if missing {
+            widget::mouse_area(
+                widget::row::with_children(vec![preview, label])
+                    .spacing(spacing.space_s)
+                    .align_y(Alignment::Center)
+                    .width(Length::Fill),
+            )
+            .on_press(Message::FocusItem(item.path.clone()))
+            .into()
+        } else if item.has_text() {
             widget::row::with_children(vec![
                 self.drag_source(preview, &item.path, window, false),
                 self.drag_source(label, &item.path, window, true),

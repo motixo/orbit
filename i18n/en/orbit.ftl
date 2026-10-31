@@ -12,6 +12,7 @@ select-all = Select all
 deselect-all = Deselect all
 select-item = Select { $name }
 remove-item = Remove { $name }
+missing-item = Missing
 drag-files = { $count ->
     [one] Drag file
    *[other] Drag { $count } files

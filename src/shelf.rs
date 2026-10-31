@@ -18,6 +18,13 @@ pub struct Item {
 }
 
 impl Item {
+    pub fn is_missing(&self) -> bool {
+        !self
+            .path
+            .metadata()
+            .is_ok_and(|metadata| metadata.is_file() || metadata.is_dir())
+    }
+
     pub fn has_text(&self) -> bool {
         self.text.is_some() || (!self.directory && is_text_file(&self.path))
     }
@@ -42,8 +49,9 @@ impl Shelf {
     pub fn restore(&mut self, entry: &crate::history::Entry) {
         for saved in &entry.items {
             if let Some(path) = saved.path()
-                && self.add([path.clone()]).added > 0
+                && !self.items.iter().any(|item| item.path == path)
             {
+                self.insert(path.clone(), path.is_dir());
                 self.set_import(
                     &path,
                     saved.text.clone(),
@@ -76,25 +84,29 @@ impl Shelf {
                 report.duplicates += 1;
                 continue;
             }
-            let name = path
-                .file_name()
-                .unwrap_or(path.as_os_str())
-                .to_string_lossy()
-                .into();
-            let order = self.reserve_order();
-            let cache = crate::cache::Directory::for_file(&path);
-            self.items.push(Item {
-                path,
-                name,
-                directory: metadata.is_dir(),
-                selected: true,
-                text: None,
-                order,
-                cache,
-            });
+            self.insert(path, metadata.is_dir());
             report.added += 1;
         }
         report
+    }
+
+    fn insert(&mut self, path: PathBuf, directory: bool) {
+        let name = path
+            .file_name()
+            .unwrap_or(path.as_os_str())
+            .to_string_lossy()
+            .into();
+        let order = self.reserve_order();
+        let cache = crate::cache::Directory::for_file(&path);
+        self.items.push(Item {
+            path,
+            name,
+            directory,
+            selected: true,
+            text: None,
+            order,
+            cache,
+        });
     }
 
     pub fn reserve_order(&mut self) -> u64 {
@@ -144,7 +156,9 @@ impl Shelf {
         let items = paths
             .iter()
             .filter_map(|path| self.items.iter().find(|item| &item.path == path))
+            .filter(|item| !item.is_missing())
             .collect::<Vec<_>>();
+        let paths = items.iter().map(|item| item.path.clone()).collect();
         let text_only = !items.is_empty() && items.iter().all(|item| item.has_text());
         let links = text_only
             && items
@@ -189,7 +203,7 @@ impl Shelf {
         let has_selection = self.selected_count() > 0;
         self.items
             .iter()
-            .filter(|item| !has_selection || item.selected)
+            .filter(|item| (!has_selection || item.selected) && !item.is_missing())
             .map(|item| item.path.clone())
             .collect()
     }
@@ -200,9 +214,15 @@ impl Shelf {
             .iter()
             .any(|item| item.path == path && item.selected)
         {
-            self.selection_drag
-                .get_or_init(|| Arc::new(self.transfer(self.export_paths(), false)))
-                .clone()
+            let paths = self.export_paths();
+            let cached = self
+                .selection_drag
+                .get_or_init(|| Arc::new(self.transfer(paths.clone(), false)));
+            if cached.files.0 == paths {
+                cached.clone()
+            } else {
+                Arc::new(self.transfer(paths, false))
+            }
         } else {
             Arc::new(self.transfer(vec![path.to_owned()], false))
         }
@@ -270,9 +290,7 @@ impl Shelf {
         if let Some(items) = self.undo.pop() {
             self.invalidate_transfers();
             for item in items {
-                if item.path.exists()
-                    && !self.items.iter().any(|existing| existing.path == item.path)
-                {
+                if !self.items.iter().any(|existing| existing.path == item.path) {
                     self.items.push(item);
                 }
             }
@@ -290,6 +308,55 @@ mod tests {
     use std::fs;
 
     #[test]
+    fn restores_missing_references_and_refreshes_exports_when_files_return_or_disappear() {
+        let fixture = Fixture::new();
+        let present = fixture.file("present");
+        let missing = fixture.0.path().join("missing.txt");
+        let entry = crate::history::Entry {
+            id: "recent".into(),
+            items: [present.clone(), missing.clone()]
+                .into_iter()
+                .map(|path| crate::history::SavedItem {
+                    uri: url::Url::from_file_path(path).unwrap().into(),
+                    text: None,
+                    selected: true,
+                })
+                .collect(),
+            pinned: false,
+            corner: crate::config::Corner::TopRight,
+            copy_mode: false,
+            collapsed: false,
+        };
+        let mut shelf = Shelf::default();
+        shelf.restore(&entry);
+        assert_eq!(shelf.items.len(), 2);
+        assert_eq!(shelf.items[1].name, "missing.txt");
+        assert!(shelf.items[1].is_missing());
+        let initial = shelf.drag_transfer(&present);
+        assert_eq!(initial.files.0.as_slice(), std::slice::from_ref(&present));
+        assert!(
+            shelf
+                .transfer(vec![missing.clone()], true)
+                .files
+                .0
+                .is_empty()
+        );
+
+        fs::write(&missing, b"back").unwrap();
+        assert!(!shelf.items[1].is_missing());
+        assert_eq!(
+            shelf.drag_transfer(&present).files.0,
+            [present.clone(), missing.clone()]
+        );
+        fs::remove_file(&present).unwrap();
+        assert_eq!(
+            shelf.export_paths().as_slice(),
+            std::slice::from_ref(&missing)
+        );
+        assert_eq!(shelf.drag_transfer(&missing).files.0, [missing]);
+    }
+
+    #[test]
     fn undo_restores_removed_items_without_removing_new_items_or_duplicating_paths() {
         let fixture = Fixture::new();
         let a = fixture.file("a");
@@ -305,7 +372,14 @@ mod tests {
         shelf.remove_with_undo(&c);
         fs::remove_file(&c).unwrap();
         shelf.undo();
-        assert_eq!(shelf.items.len(), 2);
+        assert_eq!(shelf.items.len(), 3);
+        assert!(
+            shelf
+                .items
+                .iter()
+                .any(|item| item.path == c && item.is_missing())
+        );
+        assert!(!shelf.export_paths().contains(&c));
         shelf.clear_with_undo();
         shelf.undo();
         assert!(shelf.items.iter().any(|item| item.path == a));
