@@ -264,32 +264,8 @@ impl cosmic::Application for OrbitApplet {
                             Message::Corner,
                         )
                         .width(Length::Fixed(144.0)),
-                    )))
-                    .push(Self::popup_row(widget::settings::item(
-                        fl!("update-reminder"),
-                        widget::dropdown(
-                            &self.reminders,
-                            Some(self.preferences.update_reminder.index()),
-                            Message::Reminder,
-                        )
-                        .width(Length::Fixed(144.0)),
-                    )))
-                    .push(Self::popup_row(
-                        widget::button::standard(fl!("check-updates")).on_press_maybe(
-                            (!self.checking_update).then_some(Message::CheckUpdates(true)),
-                        ),
-                    ))
-                    .push_maybe(self.available_update.as_ref().map(|version| {
-                        Self::popup_row(
-                            widget::button::link(fl!(
-                                "update-available",
-                                version = version.as_str()
-                            ))
-                            .padding(0)
-                            .on_press(Message::OpenLink(UPDATES_URL)),
-                        )
-                    }));
-                body = body.push(widget::divider::horizontal::default()).push(
+                    )));
+                body = body.push(
                     widget::container(widget::text::caption(fl!("watch-folders")))
                         .padding([0, spacing.space_xxs]),
                 );
@@ -328,6 +304,32 @@ impl cosmic::Application for OrbitApplet {
                 body = body.push(Self::popup_row(
                     widget::button::standard(fl!("watch-folder")).on_press(Message::ChooseWatch),
                 ));
+                body = body
+                    .push(widget::divider::horizontal::default())
+                    .push(Self::popup_row(widget::settings::item(
+                        fl!("update-reminder"),
+                        widget::dropdown(
+                            &self.reminders,
+                            Some(self.preferences.update_reminder.index()),
+                            Message::Reminder,
+                        )
+                        .width(Length::Fixed(144.0)),
+                    )))
+                    .push(Self::popup_row(
+                        widget::button::standard(fl!("check-updates")).on_press_maybe(
+                            (!self.checking_update).then_some(Message::CheckUpdates(true)),
+                        ),
+                    ))
+                    .push_maybe(self.available_update.as_ref().map(|version| {
+                        Self::popup_row(
+                            widget::button::link(fl!(
+                                "update-available",
+                                version = version.as_str()
+                            ))
+                            .padding(0)
+                            .on_press(Message::OpenLink(UPDATES_URL)),
+                        )
+                    }));
             }
             Page::Shortcuts => {
                 let mut shortcuts = widget::column::with_capacity(15)
