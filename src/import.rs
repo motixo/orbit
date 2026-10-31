@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use crate::transfer::{FileList, GNOME_FILES, ORBIT_TEXT, TEXT, URI_LIST, UTF8_TEXT, is_link};
+use crate::transfer::{FileList, GNOME_FILES, ORBIT_TEXT, TEXT, URI_LIST, UTF8_TEXT};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use std::{
     error::Error,
@@ -373,11 +373,9 @@ fn save_text(text: String) -> Result<ImportedFiles, Box<dyn Error + Send + Sync>
         .prefix("orbit-text-")
         .tempdir_in(cache)?;
     // File managers need a local file fallback for collected text.
-    let path = directory.path().join(if is_link(&text) {
-        "Link.txt"
-    } else {
-        "Text.txt"
-    });
+    let path = directory
+        .path()
+        .join(format!("{}.txt", uuid::Uuid::new_v4()));
     std::fs::write(&path, text.as_bytes())?;
     Ok(ImportedFiles {
         files: FileList(vec![path]),

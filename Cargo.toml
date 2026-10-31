@@ -18,6 +18,7 @@ roxmltree = "0.20"
 rust-embed = "8.8"
 tempfile = "3.27"
 url = "2.5"
+uuid = { version = "1.29", features = ["v4"] }
 
 [dependencies.libcosmic]
 git = "https://github.com/pop-os/libcosmic"
