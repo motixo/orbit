@@ -5,6 +5,7 @@ A floating file shelf for the COSMIC desktop, built with Rust and libcosmic.
 The header's **+** opens an independent shelf. From a pinned shelf, the new shelf
 opens pinned beside it. Collect files, text and links with drag and drop or Ctrl+V. Ctrl+O adds
 files; Ctrl+Shift+O adds folders.
+Clear removes selected items, or everything when nothing is selected.
 
 Text and links show a short preview in the list. Ctrl+C copies the selection;
 dragging it out offers plain text and links to apps, with temporary files for

@@ -544,8 +544,10 @@ impl cosmic::Application for Orbit {
                 self.status.clear();
             }
             Message::Clear => {
+                if self.shelf.selected_count() == 0 {
+                    self.pending_imports.clear();
+                }
                 self.shelf.clear();
-                self.pending_imports.clear();
                 self.release_imports();
                 self.status.clear();
             }

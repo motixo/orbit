@@ -165,7 +165,8 @@ impl Shelf {
     }
 
     pub fn clear(&mut self) {
-        self.items.clear();
+        let has_selection = self.selected_count() > 0;
+        self.items.retain(|item| has_selection && !item.selected);
     }
 }
 
@@ -255,6 +256,20 @@ mod tests {
         assert!(!shelf.contains_link("https://example.com/article?a=2#section"));
         assert!(!shelf.contains_link("https://example.com/article?a=1#other"));
         assert!(!shelf.contains_link("https://example.com/article?a=1#section\nAnother line"));
+    }
+
+    #[test]
+    fn clear_removes_only_selected_items_or_everything_without_selection() {
+        let fixture = Fixture::new();
+        let a = fixture.file("a");
+        let b = fixture.file("b");
+        let mut shelf = Shelf::default();
+        shelf.add([a.clone(), b.clone()]);
+        shelf.toggle(&a);
+        shelf.clear();
+        assert_eq!(shelf.export_paths(), [b]);
+        shelf.clear();
+        assert!(shelf.items.is_empty());
     }
 
     #[test]
