@@ -389,7 +389,7 @@ impl cosmic::Application for Orbit {
             Subscription::none()
         };
         let pointer = if let Some(id) = self.pinned {
-            crate::pointer::events(id)
+            crate::pointer::events(id, self.pin_cursor, self.pin_drag_start.is_some())
                 .with(id)
                 .map(|(id, (event, position))| Message::PinPointer(id, event, position))
         } else {

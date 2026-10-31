@@ -8,12 +8,22 @@ use cosmic::iced::{
 };
 use std::{any::TypeId, hash::Hash, time::Duration};
 
-pub fn events(window: window::Id) -> Subscription<(mouse::Event, Point)> {
-    subscription::from_recipe(Pointer { window })
+pub fn events(
+    window: window::Id,
+    position: Point,
+    dragging: bool,
+) -> Subscription<(mouse::Event, Point)> {
+    subscription::from_recipe(Pointer {
+        window,
+        position,
+        dragging,
+    })
 }
 
 struct Pointer {
     window: window::Id,
+    position: Point,
+    dragging: bool,
 }
 
 impl Recipe for Pointer {
@@ -22,16 +32,22 @@ impl Recipe for Pointer {
     fn hash(&self, state: &mut Hasher) {
         TypeId::of::<Self>().hash(state);
         self.window.hash(state);
+        self.dragging.hash(state);
     }
 
     fn stream(self: Box<Self>, input: EventStream) -> stream::BoxStream<'static, Self::Output> {
-        let ticks = subscription::into_recipes(iced::time::every(Duration::from_millis(8)))
-            .into_iter()
-            .next()
-            .expect("frame timer recipe")
-            .stream(stream::empty().boxed())
-            .map(|_| None);
-        let mut position = Point::ORIGIN;
+        let ticks = if self.dragging {
+            subscription::into_recipes(iced::time::every(Duration::from_millis(8)))
+                .into_iter()
+                .next()
+                .expect("frame timer recipe")
+                .stream(stream::empty().boxed())
+                .map(|_| None)
+                .boxed()
+        } else {
+            stream::pending().boxed()
+        };
+        let mut position = self.position;
         let mut pending = false;
 
         stream::select(input.map(Some), ticks)
@@ -70,5 +86,36 @@ impl Recipe for Pointer {
                 future::ready(output)
             })
             .boxed()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn idle_pointer_tracks_position_without_starting_a_timer() {
+        let window = window::Id::unique();
+        let position = Point::new(42.0, 17.0);
+        let input = stream::iter([
+            mouse::Event::CursorMoved { position },
+            mouse::Event::ButtonPressed(mouse::Button::Left),
+        ])
+        .map(move |event| subscription::Event::Interaction {
+            window,
+            event: Event::Mouse(event),
+            status: iced::event::Status::Ignored,
+        })
+        .boxed();
+        let mut events = Box::new(Pointer {
+            window,
+            position: Point::ORIGIN,
+            dragging: false,
+        })
+        .stream(input);
+        assert_eq!(
+            iced::futures::executor::block_on(events.next()),
+            Some((mouse::Event::ButtonPressed(mouse::Button::Left), position))
+        );
     }
 }
