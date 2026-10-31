@@ -79,7 +79,7 @@ pub struct Orbit {
 pub enum Message {
     Choose(bool),
     NewOrbit,
-    Shortcut(crate::shortcuts::Shortcut),
+    Key(iced::keyboard::Event, window::Id),
     NextCorner,
     Config(crate::config::Preferences),
     Incoming(Result<FileList, String>),
@@ -391,12 +391,12 @@ impl cosmic::Application for Orbit {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        let keyboard = iced::event::listen_with(|event, status, _| {
+        let keyboard = iced::event::listen_with(|event, status, window| {
             if status == iced::event::Status::Captured {
                 return None;
             }
             if let iced::Event::Keyboard(event) = event {
-                return crate::shortcuts::Shortcut::from_event(&event).map(Message::Shortcut);
+                return Some(Message::Key(event, window));
             }
             None
         });
@@ -427,10 +427,15 @@ impl cosmic::Application for Orbit {
 
     fn update(&mut self, message: Message) -> Task<cosmic::Action<Message>> {
         match message {
-            Message::Shortcut(shortcut) => {
+            Message::Key(event, window) => {
                 if self.compression_dialog.is_some() {
                     return Task::none();
                 }
+                let layer_surface = self.core.main_window_id() != Some(window);
+                let Some(shortcut) = crate::shortcuts::Shortcut::from_event(&event, layer_surface)
+                else {
+                    return Task::none();
+                };
                 use crate::shortcuts::Action;
                 let message = match self.preferences.shortcuts.action(&shortcut) {
                     Some(Action::New) => Message::NewOrbit,

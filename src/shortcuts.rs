@@ -63,7 +63,7 @@ pub struct Shortcut {
 }
 
 impl Shortcut {
-    pub fn from_event(event: &keyboard::Event) -> Option<Self> {
+    pub fn from_event(event: &keyboard::Event, layer_surface: bool) -> Option<Self> {
         let keyboard::Event::KeyPressed {
             key,
             physical_key,
@@ -74,7 +74,17 @@ impl Shortcut {
         else {
             return None;
         };
-        let key = if let Some(key) = key.to_latin(*physical_key) {
+        // shortcut: correct libcosmic 5a8bd94's layer offset until its SCTK key conversion is fixed.
+        let physical_key = if layer_surface {
+            iced_winit::conversion::physical_to_scancode(*physical_key)
+                .and_then(|code| code.checked_add(8))
+                .map(iced_winit::platform_specific::wayland::keymap::scancode_to_physicalkey)
+                .map(iced_winit::conversion::physical_key)
+                .unwrap_or(*physical_key)
+        } else {
+            *physical_key
+        };
+        let key = if let Some(key) = key.to_latin(physical_key) {
             key.to_ascii_lowercase().to_string()
         } else if let keyboard::Key::Named(named) = key {
             match named {
@@ -299,4 +309,41 @@ pub fn set_global(shortcut: Option<&Shortcut>) -> Result<(), String> {
     config
         .set("custom", custom)
         .map_err(|_| fl!("shortcut-save-error"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use iced_winit::{conversion, platform_specific::wayland::keymap};
+
+    #[test]
+    fn non_latin_shortcuts_match_on_floating_and_layer_surfaces() {
+        let bindings = Bindings::default();
+        for (character, scancode, action) in [
+            ("ز", 46, Action::Copy),
+            ("ر", 47, Action::Paste),
+            ("ش", 30, Action::SelectAll),
+            ("с", 46, Action::Copy),
+        ] {
+            for layer in [false, true] {
+                let physical = if layer {
+                    keymap::raw_keycode_to_physicalkey(scancode)
+                } else {
+                    keymap::scancode_to_physicalkey(scancode)
+                };
+                let key = keyboard::Key::Character(character.into());
+                let event = keyboard::Event::KeyPressed {
+                    key: key.clone(),
+                    modified_key: key,
+                    physical_key: conversion::physical_key(physical),
+                    location: keyboard::Location::Standard,
+                    modifiers: keyboard::Modifiers::CTRL,
+                    text: None,
+                    repeat: false,
+                };
+                let shortcut = Shortcut::from_event(&event, layer).unwrap();
+                assert_eq!(bindings.action(&shortcut), Some(action));
+            }
+        }
+    }
 }

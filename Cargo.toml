@@ -34,6 +34,11 @@ git = "https://github.com/pop-os/libcosmic"
 rev = "5a8bd9482a35ae94c1e54edf77b331c6b970f170"
 features = ["applet", "process", "single-instance", "surface-message", "wayland", "xdg-portal"]
 
+[dependencies.iced_winit]
+git = "https://github.com/pop-os/libcosmic"
+rev = "5a8bd9482a35ae94c1e54edf77b331c6b970f170"
+default-features = false
+
 [profile.dev]
 debug = 1
 

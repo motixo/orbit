@@ -482,7 +482,7 @@ impl OrbitApplet {
         let Some(target) = self.editing else {
             return;
         };
-        let Some(shortcut) = Shortcut::from_event(&event) else {
+        let Some(shortcut) = Shortcut::from_event(&event, true) else {
             return;
         };
         if shortcut.key == "Escape" {
