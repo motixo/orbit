@@ -997,25 +997,17 @@ impl Orbit {
                 widget::menu::items(
                     &HashMap::new(),
                     vec![
-                        widget::menu::Item::CheckBox(
-                            fl!("copy"),
-                            Some(widget::icon::from_name("edit-copy-symbolic").into()),
-                            self.copy_mode,
-                            Tool::Copy,
+                        widget::menu::Item::Entry(
+                            widget::menu::Entry::new(fl!("copy"), Tool::Copy)
+                                .icon(widget::icon::from_name("edit-copy-symbolic").into())
+                                .checked(self.copy_mode),
                         ),
-                        if self.shelf.selected_count() > 0 {
-                            widget::menu::Item::Button(
-                                fl!("compress"),
-                                Some(widget::icon::from_name("package-x-generic-symbolic").into()),
-                                Tool::Compress,
-                            )
-                        } else {
-                            widget::menu::Item::ButtonDisabled(
-                                fl!("compress"),
-                                Some(widget::icon::from_name("package-x-generic-symbolic").into()),
-                                Tool::Compress,
-                            )
-                        },
+                        widget::menu::Item::Entry(
+                            widget::menu::Entry::new(fl!("compress"), Tool::Compress)
+                                .icon(widget::icon::from_name("package-x-generic-symbolic").into())
+                                .checked(false)
+                                .enabled(self.shelf.selected_count() > 0),
+                        ),
                     ],
                 ),
             )])
