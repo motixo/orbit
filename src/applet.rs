@@ -49,6 +49,9 @@ pub enum EditTarget {
 pub enum Message {
     NewOrbit,
     Restore(String),
+    ChooseWatch,
+    WatchChosen(Result<Option<std::path::PathBuf>, String>),
+    RemoveWatch(std::path::PathBuf),
     Launched(bool),
     TogglePopup,
     Closed,
@@ -81,12 +84,14 @@ impl cosmic::Application for OrbitApplet {
     }
 
     fn init(core: cosmic::Core, _: ()) -> (Self, Task<cosmic::Action<Message>>) {
+        let preferences = Preferences::load();
+        let watches = Self::launch_watches(preferences.watch_folders.clone());
         (
             Self {
                 core,
                 popup: None,
                 page: Page::Menu,
-                preferences: Preferences::load(),
+                preferences,
                 modes: vec![fl!("floating"), fl!("pinned")],
                 corners: vec![
                     fl!("top-left"),
@@ -104,7 +109,7 @@ impl cosmic::Application for OrbitApplet {
                 drop_target: widget::Id::unique(),
                 recent: Vec::new(),
             },
-            cosmic::task::message(Message::CheckUpdates(false)),
+            Task::batch([cosmic::task::message(Message::CheckUpdates(false)), watches]),
         )
     }
 
@@ -284,6 +289,45 @@ impl cosmic::Application for OrbitApplet {
                             .on_press(Message::OpenLink(UPDATES_URL)),
                         )
                     }));
+                body = body.push(widget::divider::horizontal::default()).push(
+                    widget::container(widget::text::caption(fl!("watch-folders")))
+                        .padding([0, spacing.space_xxs]),
+                );
+                let mut folders =
+                    widget::column::with_capacity(self.preferences.watch_folders.len())
+                        .spacing(spacing.space_xxs);
+                for path in &self.preferences.watch_folders {
+                    folders = folders.push(Self::popup_row(
+                        widget::row::with_children(vec![
+                            widget::text::body(
+                                path.file_name()
+                                    .unwrap_or(path.as_os_str())
+                                    .to_string_lossy()
+                                    .into_owned(),
+                            )
+                            .width(Length::Fill)
+                            .wrapping(iced::widget::text::Wrapping::None)
+                            .ellipsize(iced::advanced::text::Ellipsize::Middle(
+                                iced::advanced::text::EllipsizeHeightLimit::Lines(1),
+                            ))
+                            .into(),
+                            widget::button::icon(widget::icon::from_name("list-remove-symbolic"))
+                                .name(fl!("remove-folder"))
+                                .on_press(Message::RemoveWatch(path.clone()))
+                                .into(),
+                        ])
+                        .align_y(iced::Alignment::Center),
+                    ));
+                }
+                if !self.preferences.watch_folders.is_empty() {
+                    body = body.push(widget::scrollable(folders).height(
+                        (self.preferences.watch_folders.len().min(3) as f32)
+                            * f32::from(row_height),
+                    ));
+                }
+                body = body.push(Self::popup_row(
+                    widget::button::standard(fl!("watch-folder")).on_press(Message::ChooseWatch),
+                ));
             }
             Page::Shortcuts => {
                 let mut shortcuts = widget::column::with_capacity(15)
@@ -471,7 +515,46 @@ impl cosmic::Application for OrbitApplet {
             }
             Message::Config(mut preferences) => {
                 preferences.shortcuts.complete();
+                let added = preferences
+                    .watch_folders
+                    .iter()
+                    .filter(|path| !self.preferences.watch_folders.contains(path))
+                    .cloned()
+                    .collect();
                 self.preferences = preferences;
+                return Self::launch_watches(added);
+            }
+            Message::ChooseWatch => {
+                return cosmic::task::future(async {
+                    use cosmic::dialog::file_chooser::{self, open::Dialog};
+                    let chosen = match Dialog::new().title(fl!("watch-folder")).open_folder().await
+                    {
+                        Ok(response) => response
+                            .url()
+                            .to_file_path()
+                            .map_err(|_| fl!("watch-error"))
+                            .and_then(|path| path.canonicalize().map_err(|_| fl!("watch-error")))
+                            .map(Some),
+                        Err(file_chooser::Error::Cancelled) => Ok(None),
+                        Err(_) => Err(fl!("watch-error")),
+                    };
+                    Message::WatchChosen(chosen)
+                });
+            }
+            Message::WatchChosen(result) => match result {
+                Ok(Some(path)) if !self.preferences.watch_folders.contains(&path) => {
+                    self.preferences.watch_folders.push(path.clone());
+                    self.save();
+                    return Self::launch_watches(vec![path]);
+                }
+                Err(error) => self.status = error,
+                _ => (),
+            },
+            Message::RemoveWatch(path) => {
+                self.preferences
+                    .watch_folders
+                    .retain(|folder| folder != &path);
+                self.save();
             }
             Message::Edit(target) => {
                 self.editing = Some(target);
@@ -499,6 +582,24 @@ impl cosmic::Application for OrbitApplet {
 }
 
 impl OrbitApplet {
+    fn launch_watches(paths: Vec<std::path::PathBuf>) -> Task<cosmic::Action<Message>> {
+        if paths.is_empty() {
+            return Task::none();
+        }
+        cosmic::task::future(async move {
+            let mut ok = true;
+            for path in paths {
+                ok &= crate::launch::new_orbit(
+                    None,
+                    None,
+                    vec!["--watch".into(), path.into_os_string()],
+                )
+                .await;
+            }
+            Message::Launched(ok)
+        })
+    }
+
     fn launch(
         &mut self,
         arguments: Vec<std::ffi::OsString>,

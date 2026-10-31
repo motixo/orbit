@@ -22,6 +22,7 @@ mod shortcuts;
 mod thumbnail;
 mod transfer;
 mod updates;
+mod watch;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut paths: Vec<_> = std::env::args_os().skip(1).collect();
@@ -52,6 +53,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => (),
     }
+    let watch = if paths.first().is_some_and(|arg| arg == "--watch") {
+        if paths.len() != 2 {
+            return Err("Usage: orbit --new --watch FOLDER".into());
+        }
+        let Some(folder) = watch::Folder::claim(std::path::Path::new(&paths[1]))? else {
+            return Ok(());
+        };
+        paths.clear();
+        independent = true;
+        Some(folder)
+    } else {
+        None
+    };
     let restored = if paths.first().is_some_and(|arg| arg == "--restore") {
         if paths.len() != 2 {
             return Err("Usage: orbit --new --restore ID".into());
@@ -100,7 +114,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pinned = startup.is_some() || preferences.pinned;
     let size = app::SHELF_SIZE as f32;
     let settings = cosmic::app::Settings::default()
-        .no_main_window(pinned)
+        .no_main_window(pinned || watch.is_some())
+        .exit_on_close(watch.is_none())
         .size(cosmic::iced::Size::new(size, size))
         .size_limits(
             cosmic::iced::Limits::NONE
@@ -115,8 +130,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         uris,
         incoming_drop,
         restored,
+        startup_area: ((preferences.pinned || watch.is_some()) && startup.is_none())
+            .then_some(startup_area),
+        watch,
         action: "collect".into(),
-        startup_area: (preferences.pinned && startup.is_none()).then_some(startup_area),
         preferences,
         startup,
     };

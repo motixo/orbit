@@ -77,6 +77,7 @@ pub struct Preferences {
     pub pinned: bool,
     pub corner: Corner,
     pub update_reminder: UpdateReminder,
+    pub watch_folders: Vec<std::path::PathBuf>,
     pub shortcuts: crate::shortcuts::Bindings,
 }
 

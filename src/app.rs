@@ -32,6 +32,7 @@ const PREVIEW_PADDING: u32 = 20;
 
 pub struct Flags {
     pub uris: Vec<String>,
+    pub watch: Option<crate::watch::Folder>,
     pub restored: Option<crate::history::Entry>,
     pub incoming_drop: Option<(Vec<u8>, String)>,
     pub action: String,
@@ -77,6 +78,8 @@ pub struct Orbit {
     pin_collapsed: bool,
     pin_header_height: u32,
     drop_target: widget::Id,
+    watch: Option<crate::watch::Folder>,
+    watch_area: Option<Option<Area>>,
 }
 
 #[derive(Debug, Clone)]
@@ -135,6 +138,8 @@ pub enum Message {
     StartPinDrag,
     PinPreviewReady(window::Id, window::Screenshot),
     PinPointer(window::Id, mouse::Event, iced::Point),
+    WatchFiles(Result<Vec<PathBuf>, String>),
+    WatchArea(Option<Area>),
     Quit,
 }
 
@@ -179,7 +184,8 @@ impl cosmic::Application for Orbit {
             status: String::new(),
             pinned: None,
             pin_placement: None,
-            pin_pending: flags.startup.is_some() || flags.startup_area.is_some(),
+            pin_pending: flags.watch.is_none()
+                && (flags.startup.is_some() || flags.startup_area.is_some()),
             unpin_activation: None,
             pin_anchor: flags
                 .startup
@@ -195,6 +201,8 @@ impl cosmic::Application for Orbit {
             pin_header_height: 49,
             preferences,
             drop_target: widget::Id::unique(),
+            watch: flags.watch,
+            watch_area: None,
         };
         app.set_header_title(fl!("app-title"));
         if let Some(entry) = &flags.restored {
@@ -213,7 +221,13 @@ impl cosmic::Application for Orbit {
             .main_window_id()
             .map(|id| app.set_window_title(fl!("app-title"), id))
             .unwrap_or_else(Task::none);
-        let startup = if let Some(startup) = flags.startup {
+        let startup = if app.watch.is_some() {
+            if let Some(area) = flags.startup_area {
+                cosmic::task::future(async move { Message::WatchArea(area.await.ok().flatten()) })
+            } else {
+                cosmic::task::message(Message::WatchArea(None))
+            }
+        } else if let Some(startup) = flags.startup {
             app.update(Message::PinReady {
                 area: Some(startup.area),
                 near: Some(startup.near),
@@ -438,7 +452,12 @@ impl cosmic::Application for Orbit {
             .core
             .watch_config::<crate::config::Preferences>(crate::config::ID)
             .map(|update| Message::Config(update.config));
-        Subscription::batch([keyboard, layout, pointer, animation, opened, config])
+        let watch = self
+            .watch
+            .as_ref()
+            .map(|watch| watch.subscription())
+            .unwrap_or_else(Subscription::none);
+        Subscription::batch([keyboard, layout, pointer, animation, opened, config, watch])
     }
 
     fn update(&mut self, message: Message) -> Task<cosmic::Action<Message>> {
@@ -513,7 +532,33 @@ impl cosmic::Application for Orbit {
             }
             Message::Config(mut preferences) => {
                 preferences.shortcuts.complete();
+                let removed = self
+                    .watch
+                    .as_ref()
+                    .is_some_and(|watch| !preferences.watch_folders.contains(&watch.path));
                 self.preferences = preferences;
+                if removed {
+                    self.watch = None;
+                    return self.update(Message::Quit);
+                }
+            }
+            Message::WatchArea(area) => {
+                self.watch_area = Some(area);
+                if !self.shelf.items.is_empty() {
+                    return self.show_watched_shelf();
+                }
+            }
+            Message::WatchFiles(files) => {
+                let incoming = match files {
+                    Ok(files) => self.update(Message::Incoming(Ok(FileList(files)))),
+                    Err(error) => {
+                        self.status = fl!("watch-error");
+                        eprintln!("Folder monitor: {error}");
+                        return self.ensure_floating();
+                    }
+                };
+                let show = self.show_watched_shelf();
+                return Task::batch([incoming, show]);
             }
             Message::DropData(bytes, mime) => {
                 return self.begin_import(bytes, mime, Source::Drop);
@@ -820,7 +865,7 @@ impl cosmic::Application for Orbit {
                     }
                     self.release_imports();
                     if self.shelf.items.is_empty() && self.pending_imports.is_empty() {
-                        return iced::exit();
+                        return self.close_shelf();
                     }
                 }
             }
@@ -1101,7 +1146,7 @@ impl cosmic::Application for Orbit {
                     eprintln!("Could not save Orbit: {error}");
                     return Task::none();
                 }
-                return iced::exit();
+                return self.close_shelf();
             }
         }
         Task::none()
@@ -1109,6 +1154,58 @@ impl cosmic::Application for Orbit {
 }
 
 impl Orbit {
+    fn show_watched_shelf(&mut self) -> Task<cosmic::Action<Message>> {
+        if self.watch.is_none()
+            || self.pinned.is_some()
+            || self.core.main_window_id().is_some()
+            || self.pin_pending
+        {
+            return Task::none();
+        }
+        self.pin_anchor = self.preferences.corner.anchor();
+        if self.preferences.pinned {
+            if let Some(area) = &self.watch_area {
+                return self.update(Message::PinReady {
+                    area: area.clone(),
+                    near: None,
+                });
+            }
+            Task::none()
+        } else {
+            self.ensure_floating()
+        }
+    }
+
+    fn close_shelf(&mut self) -> Task<cosmic::Action<Message>> {
+        if self.watch.is_none() {
+            return iced::exit();
+        }
+        let preview = self.update(Message::ClosePreview);
+        let ghost = self.dismiss_pin_preview();
+        let main = self.core.main_window_id();
+        self.core.set_main_window_id(None);
+        let floating = main.map(window::close).unwrap_or_else(Task::none);
+        let pinned = self
+            .pinned
+            .take()
+            .map(destroy_layer_surface)
+            .unwrap_or_else(Task::none);
+        self.pin_placement = None;
+        self.pin_pending = false;
+        self.unpin_activation = None;
+        self.pin_drag_start = None;
+        self.pin_motion = None;
+        self.pin_collapsed = false;
+        self.shelf = Shelf::default();
+        self.pending_imports.clear();
+        self.compression_dialog = None;
+        self.thumbnails.clear();
+        self.focused_item = None;
+        self.copy_mode = false;
+        self.status.clear();
+        Task::batch([preview, ghost, floating, pinned])
+    }
+
     fn header_tools(&self, window: window::Id) -> Element<'_, Message> {
         let mut buttons = vec![self.new_orbit_button()];
         if !self.shelf.items.is_empty() || !self.pending_imports.is_empty() {

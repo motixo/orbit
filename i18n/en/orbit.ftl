@@ -83,3 +83,8 @@ preview-unavailable = No preview
 
 recent = Recent
 history-error = Could not save recent Orbits
+
+watch-folder = Watch folder
+watch-folders = Watched folders
+watch-error = Could not watch folder
+remove-folder = Remove folder

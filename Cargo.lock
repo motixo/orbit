@@ -3623,6 +3623,7 @@ dependencies = [
  "jiff",
  "libcosmic",
  "mime_guess",
+ "notify",
  "percent-encoding",
  "quick-xml",
  "reqwest",
