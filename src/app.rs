@@ -2,10 +2,10 @@
 
 use crate::{
     fl,
-    import::{ImportedFiles, Progress},
+    import::{ImportedFiles, Progress, Source},
     pin::{Area, Motion, Placement, Startup},
     shelf::{Item, Shelf},
-    transfer::{DragFiles, FileList, URI_LIST},
+    transfer::{ClipboardData, FileList, URI_LIST, is_link},
 };
 use cosmic::cctk::sctk::shell::wlr_layer::{Anchor, KeyboardInteractivity, Layer};
 use cosmic::{
@@ -24,7 +24,13 @@ use iced::platform_specific::{
         layer_surface::{destroy_layer_surface, set_anchor, set_margin, set_size},
     },
 };
-use std::path::PathBuf;
+use std::{
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 pub const SHELF_SIZE: u32 = 320;
 const PREVIEW_PADDING: u32 = 20;
@@ -49,10 +55,11 @@ impl cosmic::app::CosmicFlags for Flags {
 pub struct Orbit {
     core: cosmic::Core,
     shelf: Shelf,
-    imported_images: Vec<PathBuf>,
+    imported_items: Vec<PathBuf>,
     pending_imports: Vec<(u64, Progress)>,
     next_import: u64,
     dragged_paths: Vec<PathBuf>,
+    drag_files_requested: Option<Arc<AtomicBool>>,
     hovering: bool,
     status: String,
     pinned: Option<window::Id>,
@@ -86,7 +93,8 @@ pub enum Message {
     Clear,
     Copy,
     Paste,
-    DragStarted(Vec<PathBuf>),
+    PasteData(Option<ClipboardData>),
+    DragStarted(Vec<PathBuf>, Arc<AtomicBool>),
     DragFinished,
     DragCancelled,
     Noop,
@@ -132,10 +140,11 @@ impl cosmic::Application for Orbit {
         let mut app = Self {
             core,
             shelf: Shelf::default(),
-            imported_images: Vec::new(),
+            imported_items: Vec::new(),
             pending_imports: Vec::new(),
             next_import: 0,
             dragged_paths: Vec::new(),
+            drag_files_requested: None,
             hovering: false,
             status: String::new(),
             pinned: None,
@@ -384,23 +393,7 @@ impl cosmic::Application for Orbit {
     fn update(&mut self, message: Message) -> Task<cosmic::Action<Message>> {
         match message {
             Message::DropData(bytes, mime) => {
-                self.hovering = false;
-                let id = self.next_import;
-                self.next_import += 1;
-                self.pending_imports.push((id, Progress::default()));
-                self.status.clear();
-                return cosmic::task::stream(iced::stream::channel(4, async move |mut output| {
-                    let size = bytes.len();
-                    let result = crate::import::receive(bytes, mime.clone(), |progress| {
-                        let _ = output.try_send(Message::DropProgress(id, progress));
-                    })
-                    .await
-                    .map_err(|error| {
-                        crate::import::record_error(&mime, size, error);
-                        fl!("image-import-error")
-                    });
-                    let _ = output.send(Message::DropImported(id, result)).await;
-                }));
+                return self.begin_import(bytes, mime, Source::Drop);
             }
             Message::DropProgress(id, progress) => {
                 if let Some((_, state)) =
@@ -421,13 +414,19 @@ impl cosmic::Application for Orbit {
                     return Task::none();
                 }
                 self.pending_imports.retain(|(key, _)| *key != id);
+                let mut text = None;
                 let files = result.map(|imported| {
                     if let Some(directory) = imported.directory {
-                        self.imported_images.push(directory);
+                        self.imported_items.push(directory);
                     }
+                    text = imported.files.0.first().cloned().zip(imported.text);
                     imported.files
                 });
-                return self.update(Message::Incoming(files));
+                let task = self.update(Message::Incoming(files));
+                if let Some((path, text)) = text {
+                    self.shelf.set_text(&path, text);
+                }
+                return task;
             }
             Message::RemoveImport(id) => {
                 self.pending_imports.retain(|(key, _)| *key != id);
@@ -531,18 +530,22 @@ impl cosmic::Application for Orbit {
                 let paths = self.shelf.export_paths();
                 if !paths.is_empty() {
                     self.status.clear();
-                    return iced::clipboard::write_data(FileList(paths));
+                    return iced::clipboard::write_data(self.shelf.transfer(paths, true));
                 }
             }
             Message::Paste => {
-                return iced::clipboard::read_data::<FileList>().map(|files| {
-                    cosmic::Action::App(Message::Incoming(
-                        files.ok_or_else(|| fl!("unsupported-files")),
-                    ))
-                });
+                return iced::clipboard::read_data::<ClipboardData>()
+                    .map(|data| cosmic::Action::App(Message::PasteData(data)));
             }
-            Message::DragStarted(paths) => {
+            Message::PasteData(data) => {
+                if let Some(ClipboardData(bytes, mime)) = data {
+                    return self.begin_import(bytes, mime, Source::Clipboard);
+                }
+                self.status = fl!("unsupported-content");
+            }
+            Message::DragStarted(paths, files_requested) => {
                 self.dragged_paths = paths;
+                self.drag_files_requested = Some(files_requested);
                 self.hovering = false;
                 self.status.clear();
             }
@@ -550,12 +553,18 @@ impl cosmic::Application for Orbit {
                 self.status.clear();
                 if !self.dragged_paths.is_empty() {
                     // The receiver may still be moving files after acknowledging their URIs.
-                    self.imported_images.retain(|directory| {
-                        !self
-                            .dragged_paths
-                            .iter()
-                            .any(|path| path.starts_with(directory))
-                    });
+                    if self
+                        .drag_files_requested
+                        .take()
+                        .is_some_and(|requested| requested.load(Ordering::Relaxed))
+                    {
+                        self.imported_items.retain(|directory| {
+                            !self
+                                .dragged_paths
+                                .iter()
+                                .any(|path| path.starts_with(directory))
+                        });
+                    }
                     for path in self.dragged_paths.drain(..) {
                         self.shelf.remove(&path);
                     }
@@ -567,6 +576,7 @@ impl cosmic::Application for Orbit {
             }
             Message::DragCancelled => {
                 self.dragged_paths.clear();
+                self.drag_files_requested = None;
                 self.status.clear();
             }
             Message::Noop => (),
@@ -823,15 +833,40 @@ impl cosmic::Application for Orbit {
 
 impl Drop for Orbit {
     fn drop(&mut self) {
-        for directory in &self.imported_images {
+        for directory in &self.imported_items {
             let _ = std::fs::remove_dir_all(directory);
         }
     }
 }
 
 impl Orbit {
+    fn begin_import(
+        &mut self,
+        bytes: Vec<u8>,
+        mime: String,
+        source: Source,
+    ) -> Task<cosmic::Action<Message>> {
+        self.hovering = false;
+        let id = self.next_import;
+        self.next_import += 1;
+        self.pending_imports.push((id, Progress::default()));
+        self.status.clear();
+        cosmic::task::stream(iced::stream::channel(4, async move |mut output| {
+            let size = bytes.len();
+            let result = crate::import::receive(bytes, mime.clone(), source, |progress| {
+                let _ = output.try_send(Message::DropProgress(id, progress));
+            })
+            .await
+            .map_err(|error| {
+                crate::import::record_error(&mime, size, error);
+                fl!("import-error")
+            });
+            let _ = output.send(Message::DropImported(id, result)).await;
+        }))
+    }
+
     fn release_imports(&mut self) {
-        self.imported_images.retain(|directory| {
+        self.imported_items.retain(|directory| {
             let referenced = self
                 .shelf
                 .items
@@ -1017,7 +1052,11 @@ impl Orbit {
                 .map(|mime| (*mime).into())
                 .collect(),
         )
-        .action(DndAction::Copy)
+        .action(if self.dragged_paths.is_empty() {
+            DndAction::Copy
+        } else {
+            DndAction::empty()
+        })
         .preferred_action(DndAction::Copy)
         .on_enter(|_, _, _| Message::Hover(true))
         .on_leave(|| Message::Hover(false))
@@ -1068,7 +1107,7 @@ impl Orbit {
         use iced::advanced::text::{Ellipsize, EllipsizeHeightLimit};
 
         let spacing = cosmic::theme::spacing();
-        let name = progress.name.clone().unwrap_or_else(|| fl!("image-name"));
+        let name = progress.name.clone().unwrap_or_else(|| fl!("item-name"));
         let fraction = progress
             .total
             .filter(|total| *total > 0)
@@ -1144,14 +1183,30 @@ impl Orbit {
         let checkbox = widget::checkbox(item.selected)
             .name(fl!("select-item", name = item.name.as_str()))
             .on_toggle(move |_| Message::Toggle(path.clone()));
-        let parent = item.path.parent().unwrap_or(&item.path).to_string_lossy();
+        let parent = if let Some(text) = &item.text {
+            if is_link(text) {
+                fl!("link-item")
+            } else {
+                text.lines()
+                    .filter(|line| !line.trim().is_empty())
+                    .nth(1)
+                    .map(|line| line.chars().take(160).collect())
+                    .unwrap_or_else(|| fl!("text-item"))
+            }
+        } else {
+            item.path
+                .parent()
+                .unwrap_or(&item.path)
+                .to_string_lossy()
+                .into_owned()
+        };
         let label = widget::column::with_children(vec![
             widget::text::body(&item.name)
                 .width(Length::Fill)
                 .wrapping(iced::widget::text::Wrapping::None)
                 .ellipsize(ellipsize)
                 .into(),
-            widget::text::caption(parent.into_owned())
+            widget::text::caption(parent)
                 .width(Length::Fill)
                 .wrapping(iced::widget::text::Wrapping::None)
                 .ellipsize(ellipsize)
@@ -1161,6 +1216,8 @@ impl Orbit {
         let draggable = widget::row::with_children(vec![
             widget::icon::from_name(if item.directory {
                 "folder"
+            } else if item.text.as_deref().is_some_and(is_link) {
+                "insert-link-symbolic"
             } else {
                 "text-x-generic"
             })
@@ -1214,14 +1271,23 @@ impl Orbit {
         window: window::Id,
     ) -> Element<'a, Message> {
         let label = fl!("drag-items", count = paths.len());
+        let data = self.shelf.transfer(paths.clone(), false);
+        let action = if data.text_only {
+            DndAction::Copy | DndAction::Move
+        } else {
+            DndAction::Move
+        };
         widget::DndSource::with_id(
             content,
             widget::Id::new(format!("orbit-source-{window:?}-{id}")),
         )
         .window(window)
-        .action(DndAction::Move)
-        .on_start(Some(Message::DragStarted(paths.clone())))
-        .drag_content(move || DragFiles(FileList(paths.clone())))
+        .action(action)
+        .on_start(Some(Message::DragStarted(
+            paths.clone(),
+            data.files_requested.clone(),
+        )))
+        .drag_content(move || data.clone())
         .drag_icon(move |_| {
             let icon: Element<'static, ()> = widget::container(widget::text::body(label.clone()))
                 .padding(12)

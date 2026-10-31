@@ -1,11 +1,57 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use cosmic::iced::clipboard::mime::{AllowedMimeTypes, AsMimeTypes};
-use std::{borrow::Cow, path::PathBuf};
+use std::{
+    borrow::Cow,
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 use url::Url;
 
 pub const URI_LIST: &str = "text/uri-list";
-const GNOME_FILES: &str = "x-special/gnome-copied-files";
+pub const GNOME_FILES: &str = "x-special/gnome-copied-files";
+pub const TEXT: &str = "text/plain";
+pub const UTF8_TEXT: &str = "text/plain;charset=utf-8";
+pub const ORBIT_TEXT: &str = "application/x-orbit-text";
+
+#[derive(Clone, Debug)]
+pub struct ClipboardData(pub Vec<u8>, pub String);
+
+impl AllowedMimeTypes for ClipboardData {
+    fn allowed() -> Cow<'static, [String]> {
+        let mut mimes = vec![ORBIT_TEXT.into(), URI_LIST.into(), GNOME_FILES.into()];
+        mimes.extend(
+            crate::import::MIME_TYPES
+                .iter()
+                .filter(|mime| mime.starts_with("image/"))
+                .map(|mime| (*mime).into()),
+        );
+        mimes.extend([UTF8_TEXT.into(), TEXT.into()]);
+        for mime in crate::import::MIME_TYPES {
+            if !mimes.iter().any(|allowed| allowed == mime) {
+                mimes.push((*mime).into());
+            }
+        }
+        Cow::Owned(mimes)
+    }
+}
+
+impl TryFrom<(Vec<u8>, String)> for ClipboardData {
+    type Error = std::convert::Infallible;
+
+    fn try_from((bytes, mime): (Vec<u8>, String)) -> Result<Self, Self::Error> {
+        Ok(Self(bytes, mime))
+    }
+}
+
+pub fn is_link(text: &str) -> bool {
+    !text.trim().contains(['\n', '\r'])
+        && Url::parse(text.trim())
+            .is_ok_and(|url| matches!(url.scheme(), "http" | "https" | "mailto" | "tel" | "ftp"))
+}
 
 #[derive(Clone, Debug)]
 pub struct FileList(pub Vec<PathBuf>);
@@ -75,19 +121,62 @@ impl AsMimeTypes for FileList {
     }
 }
 
-pub struct DragFiles(pub FileList);
+#[derive(Clone, Debug)]
+pub struct Transfer {
+    pub files: FileList,
+    pub text: Option<String>,
+    pub text_only: bool,
+    pub links: bool,
+    pub clipboard: bool,
+    pub files_requested: Arc<AtomicBool>,
+}
 
-impl AsMimeTypes for DragFiles {
+impl AsMimeTypes for Transfer {
     fn available(&self) -> Cow<'static, [String]> {
-        // The drag action carries Move; keep the clipboard's copy format out of the offer.
-        Cow::Owned(vec![URI_LIST.into()])
+        let mut mimes = Vec::new();
+        if self.text_only {
+            mimes.extend([ORBIT_TEXT.into(), UTF8_TEXT.into(), TEXT.into()]);
+        }
+        mimes.push(URI_LIST.into());
+        // Keep the clipboard's copy operation out of native Move drags.
+        if self.clipboard && !self.links {
+            mimes.push(GNOME_FILES.into());
+        }
+        if self.text.is_some() && !self.text_only {
+            mimes.extend([UTF8_TEXT.into(), TEXT.into()]);
+        }
+        Cow::Owned(mimes)
     }
 
     fn as_bytes(&self, mime: &str) -> Option<Cow<'static, [u8]>> {
-        if mime == URI_LIST {
-            self.0.as_bytes(mime)
-        } else {
-            None
+        match mime {
+            ORBIT_TEXT if self.text_only => self
+                .text
+                .as_ref()
+                .map(|text| Cow::Owned(text.as_bytes().to_vec())),
+            TEXT | UTF8_TEXT => self
+                .text
+                .as_ref()
+                .map(|text| Cow::Owned(text.as_bytes().to_vec())),
+            URI_LIST if self.links => self.text.as_ref().map(|text| {
+                Cow::Owned(
+                    text.lines()
+                        .map(str::trim)
+                        .filter(|line| !line.is_empty())
+                        .collect::<Vec<_>>()
+                        .join("\r\n")
+                        .into_bytes(),
+                )
+            }),
+            URI_LIST => {
+                self.files_requested.store(true, Ordering::Relaxed);
+                self.files.as_bytes(mime)
+            }
+            GNOME_FILES if self.clipboard && !self.links => {
+                self.files_requested.store(true, Ordering::Relaxed);
+                self.files.as_bytes(mime)
+            }
+            _ => None,
         }
     }
 }
@@ -95,6 +184,51 @@ impl AsMimeTypes for DragFiles {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_drags_keep_utf8_and_offer_a_file_fallback() {
+        let data = Transfer {
+            files: FileList(vec![PathBuf::from("/tmp/Text.txt")]),
+            text: Some("First line\nسلام\nLast line".into()),
+            text_only: true,
+            links: false,
+            clipboard: false,
+            files_requested: Default::default(),
+        };
+        assert_eq!(
+            data.as_bytes(TEXT).unwrap().as_ref(),
+            "First line\nسلام\nLast line".as_bytes()
+        );
+        assert!(!data.files_requested.load(Ordering::Relaxed));
+        assert!(!data.available().iter().any(|mime| mime == GNOME_FILES));
+        assert_eq!(
+            FileList::try_from((
+                data.as_bytes(URI_LIST).unwrap().into_owned(),
+                URI_LIST.into()
+            ))
+            .unwrap()
+            .0,
+            data.files.0
+        );
+        assert!(data.files_requested.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn link_drags_offer_the_web_address_as_a_uri() {
+        let data = Transfer {
+            files: FileList(vec![PathBuf::from("/tmp/Link.txt")]),
+            text: Some("https://example.com/article".into()),
+            text_only: true,
+            links: true,
+            clipboard: false,
+            files_requested: Default::default(),
+        };
+        assert_eq!(
+            data.as_bytes(URI_LIST).unwrap().as_ref(),
+            b"https://example.com/article"
+        );
+        assert!(!data.files_requested.load(Ordering::Relaxed));
+    }
 
     #[test]
     fn uri_roundtrip_preserves_spaces_unicode_and_newlines() {

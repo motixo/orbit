@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
+use crate::transfer::{FileList, Transfer, is_link};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug)]
@@ -8,6 +9,7 @@ pub struct Item {
     pub name: String,
     pub directory: bool,
     pub selected: bool,
+    pub text: Option<String>,
 }
 
 #[derive(Default)]
@@ -52,10 +54,58 @@ impl Shelf {
                 name,
                 directory: metadata.is_dir(),
                 selected: false,
+                text: None,
             });
             report.added += 1;
         }
         report
+    }
+
+    pub fn set_text(&mut self, path: &Path, text: String) {
+        if let Some(item) = self.items.iter_mut().find(|item| item.path == path) {
+            item.name = text
+                .lines()
+                .map(str::trim)
+                .find(|line| !line.is_empty())
+                .unwrap_or("Text")
+                .chars()
+                .take(160)
+                .collect();
+            item.text = Some(text);
+        }
+    }
+
+    pub fn transfer(&self, paths: Vec<PathBuf>, clipboard: bool) -> Transfer {
+        let items = paths
+            .iter()
+            .filter_map(|path| self.items.iter().find(|item| &item.path == path))
+            .collect::<Vec<_>>();
+        let text_only = !items.is_empty() && items.iter().all(|item| item.text.is_some());
+        let links = text_only
+            && items
+                .iter()
+                .all(|item| item.text.as_deref().is_some_and(is_link));
+        let text = items.iter().any(|item| item.text.is_some()).then(|| {
+            items
+                .iter()
+                .map(|item| {
+                    item.text.clone().unwrap_or_else(|| {
+                        url::Url::from_file_path(&item.path)
+                            .map(|url| url.to_string())
+                            .unwrap_or_else(|_| item.path.to_string_lossy().into_owned())
+                    })
+                })
+                .collect::<Vec<_>>()
+                .join("\n\n")
+        });
+        Transfer {
+            files: FileList(paths),
+            text,
+            text_only,
+            links,
+            clipboard,
+            files_requested: Default::default(),
+        }
     }
 
     pub fn selected_count(&self) -> usize {

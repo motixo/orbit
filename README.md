@@ -3,8 +3,12 @@
 A floating file shelf for the COSMIC desktop, built with Rust and libcosmic.
 
 The header's **+** opens an independent shelf. From a pinned shelf, the new shelf
-opens pinned beside it. Collect files with drag and drop or Ctrl+V. Ctrl+O adds
+opens pinned beside it. Collect files, text and links with drag and drop or Ctrl+V. Ctrl+O adds
 files; Ctrl+Shift+O adds folders.
+
+Text and links show a short preview in the list. Ctrl+C copies the selection;
+dragging it out offers plain text and links to apps, with temporary text files
+for file managers. Text is kept as plain text, including its line breaks.
 
 Drop images directly from a browser. Orbit accepts image data or downloads an
 image URL into a temporary file, which can then be dragged out as a regular file.

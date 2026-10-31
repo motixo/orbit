@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use crate::transfer::{FileList, URI_LIST};
+use crate::transfer::{FileList, GNOME_FILES, ORBIT_TEXT, TEXT, URI_LIST, UTF8_TEXT, is_link};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use std::{
     error::Error,
@@ -10,9 +10,11 @@ use std::{
 use url::Url;
 
 const MAX_IMAGE_SIZE: usize = 50 * 1024 * 1024;
+const MAX_TEXT_SIZE: usize = 1024 * 1024;
 
 // Prefer bytes from the browser: they also work for images that require its session.
 pub const MIME_TYPES: &[&str] = &[
+    ORBIT_TEXT,
     "image/png",
     "image/jpeg",
     "image/webp",
@@ -25,17 +27,25 @@ pub const MIME_TYPES: &[&str] = &[
     "text/html;charset=utf-8",
     "text/html",
     URI_LIST,
+    GNOME_FILES,
     "application/x-moz-file-promise-url",
     "text/x-moz-url-data",
     "text/x-moz-url",
-    "text/plain;charset=utf-8",
-    "text/plain",
+    UTF8_TEXT,
+    TEXT,
 ];
+
+#[derive(Clone, Copy)]
+pub enum Source {
+    Drop,
+    Clipboard,
+}
 
 #[derive(Clone, Debug)]
 pub struct ImportedFiles {
     pub files: FileList,
     pub directory: Option<PathBuf>,
+    pub text: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -48,21 +58,29 @@ pub struct Progress {
 pub async fn receive(
     bytes: Vec<u8>,
     mime: String,
+    source: Source,
     progress: impl FnMut(Progress),
 ) -> Result<ImportedFiles, Box<dyn Error + Send + Sync>> {
     if bytes.is_empty() || bytes.len() > MAX_IMAGE_SIZE {
-        return Err("Invalid image size".into());
+        return Err("Invalid item size".into());
     }
     if mime.starts_with("image/") {
         return save_image(&bytes, None);
     }
-    if mime == URI_LIST
+    if matches!(mime.as_str(), URI_LIST | GNOME_FILES)
         && let Ok(files) = FileList::try_from((bytes.clone(), mime.clone()))
     {
         return Ok(ImportedFiles {
             files,
             directory: None,
+            text: None,
         });
+    }
+    if mime == GNOME_FILES {
+        return Err("Invalid file list".into());
+    }
+    if bytes.len() > MAX_TEXT_SIZE {
+        return Err("Text exceeds 1 MiB".into());
     }
 
     let text = if matches!(
@@ -88,17 +106,31 @@ pub async fn receive(
     } else {
         String::from_utf8(bytes)?
     };
-    let text = if mime.starts_with("text/html") {
-        image_source(&text)?
+    if matches!(mime.as_str(), TEXT | UTF8_TEXT | ORBIT_TEXT) {
+        return save_text(text);
+    }
+    let (text, image) = if mime.starts_with("text/html") {
+        let fragment = browser_fragment(&text)?;
+        if fragment.text.trim().is_empty()
+            && let Some(image) = fragment.image
+        {
+            (image, true)
+        } else if !fragment.outside_link
+            && let Some(link) = fragment.link
+        {
+            return save_text(link);
+        } else {
+            return save_text(fragment.text);
+        }
     } else {
-        text
+        (text, false)
     };
     let mut lines = text
         .trim_start_matches('\u{feff}')
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty() && !line.starts_with('#'));
-    let address = lines.next().ok_or("Missing image URL")?;
+    let address = lines.next().ok_or("Missing URL")?;
     let address = if mime == "downloadurl" {
         address
             .splitn(3, ':')
@@ -108,13 +140,29 @@ pub async fn receive(
         address
     };
     if mime == URI_LIST && lines.next().is_some() {
-        return Err("Expected one image URL".into());
+        return save_text(text.trim().to_owned());
     }
     let mut url = Url::parse(address)?;
+    let mut image = image
+        || (mime == "downloadurl" && text.starts_with("image/"))
+        || mime == "application/x-moz-file-promise-url";
     if url.path() == "/imgres"
-        && let Some((_, image)) = url.query_pairs().find(|(key, _)| key == "imgurl")
+        && let Some((_, address)) = url.query_pairs().find(|(key, _)| key == "imgurl")
     {
-        url = Url::parse(&image)?;
+        url = Url::parse(&address)?;
+        image |= matches!(source, Source::Drop);
+    }
+    if matches!(source, Source::Drop) {
+        image |= url.as_str().starts_with("data:image/");
+        image |= url.path().rsplit('.').next().is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "png" | "jpg" | "jpeg" | "webp" | "gif" | "avif" | "svg" | "bmp" | "tiff"
+            )
+        });
+    }
+    if !image {
+        return save_text(address.to_owned());
     }
     match url.scheme() {
         "http" | "https" => download(url, progress).await,
@@ -139,26 +187,96 @@ pub async fn receive(
     }
 }
 
-fn image_source(html: &str) -> Result<String, Box<dyn Error + Send + Sync>> {
+#[derive(Default)]
+struct Fragment {
+    image: Option<String>,
+    link: Option<String>,
+    text: String,
+    outside_link: bool,
+}
+
+fn browser_fragment(html: &str) -> Result<Fragment, Box<dyn Error + Send + Sync>> {
     use quick_xml::events::Event;
 
     let mut reader = quick_xml::Reader::from_str(html.trim_start_matches('\u{feff}'));
     // Browser fragments contain HTML void elements without XML closing tags.
     reader.config_mut().check_end_names = false;
+    let mut fragment = Fragment::default();
+    let mut in_link = false;
+    let mut links = 0;
+    let mut hidden = false;
     loop {
         match reader.read_event()? {
-            Event::Start(tag) | Event::Empty(tag)
-                if tag.name().as_ref().eq_ignore_ascii_case(b"img") =>
-            {
+            Event::Start(tag) | Event::Empty(tag) => {
+                let name = String::from_utf8_lossy(tag.name().as_ref()).to_ascii_lowercase();
+                if matches!(name.as_str(), "script" | "style") {
+                    hidden = true;
+                }
+                if hidden {
+                    continue;
+                }
+                if matches!(name.as_str(), "br" | "p" | "div" | "li")
+                    && !fragment.text.ends_with('\n')
+                    && !fragment.text.is_empty()
+                {
+                    fragment.text.push('\n');
+                }
+                if name == "a" {
+                    in_link = true;
+                    links += 1;
+                }
                 for attribute in tag.html_attributes() {
                     let attribute = attribute?;
-                    if attribute.key.as_ref().eq_ignore_ascii_case(b"src") {
+                    if (name == "img"
+                        && attribute.key.as_ref().eq_ignore_ascii_case(b"src")
+                        && fragment.image.is_none())
+                        || (name == "a" && attribute.key.as_ref().eq_ignore_ascii_case(b"href"))
+                    {
                         let value = std::str::from_utf8(attribute.value.as_ref())?;
-                        return Ok(quick_xml::escape::unescape(value)?.into_owned());
+                        let value = quick_xml::escape::unescape(value)?.into_owned();
+                        if name == "img" {
+                            fragment.image = Some(value);
+                        } else {
+                            fragment.link = Some(value);
+                        }
                     }
                 }
             }
-            Event::Eof => return Err("Missing image source in browser fragment".into()),
+            Event::End(tag) => {
+                let name = String::from_utf8_lossy(tag.name().as_ref()).to_ascii_lowercase();
+                if matches!(name.as_str(), "script" | "style") {
+                    hidden = false;
+                }
+                if name == "a" {
+                    in_link = false;
+                }
+                if !hidden
+                    && matches!(name.as_str(), "p" | "div" | "li")
+                    && !fragment.text.ends_with('\n')
+                {
+                    fragment.text.push('\n');
+                }
+            }
+            Event::Text(text) if !hidden => {
+                let text = text.html_content()?;
+                fragment.outside_link |= !in_link && !text.trim().is_empty();
+                fragment.text.push_str(&text);
+            }
+            Event::CData(text) if !hidden => {
+                let text = text.html_content()?;
+                fragment.outside_link |= !in_link && !text.trim().is_empty();
+                fragment.text.push_str(&text);
+            }
+            Event::GeneralRef(reference) if !hidden => {
+                let value = format!("&{};", reference.decode()?);
+                let value = quick_xml::escape::unescape(&value)?;
+                fragment.outside_link |= !in_link && !value.trim().is_empty();
+                fragment.text.push_str(&value);
+            }
+            Event::Eof => {
+                fragment.outside_link |= links != 1;
+                return Ok(fragment);
+            }
             _ => (),
         }
     }
@@ -229,20 +347,43 @@ pub fn record_error(mime: &str, size: usize, error: Box<dyn Error + Send + Sync>
         detail.push_str(&format!("{error}\n"));
         cause = error.source();
     }
-    eprintln!("Orbit image import failed:\n{detail}");
-    if let Ok(cache) = image_cache() {
+    eprintln!("Orbit import failed:\n{detail}");
+    if let Ok(cache) = import_cache() {
         let _ = std::fs::create_dir_all(&cache);
         let _ = std::fs::write(cache.join("last-error.log"), detail);
     }
 }
 
-fn image_cache() -> Result<PathBuf, Box<dyn Error + Send + Sync>> {
+fn import_cache() -> Result<PathBuf, Box<dyn Error + Send + Sync>> {
     Ok(std::env::var_os("XDG_CACHE_HOME")
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
         .ok_or("Missing cache directory")?
-        .join("io.github.motixo.Orbit/images"))
+        .join("io.github.motixo.Orbit/items"))
+}
+
+fn save_text(text: String) -> Result<ImportedFiles, Box<dyn Error + Send + Sync>> {
+    if text.len() > MAX_TEXT_SIZE || text.trim().is_empty() || text.contains('\0') {
+        return Err("Invalid text".into());
+    }
+    let cache = import_cache()?;
+    std::fs::create_dir_all(&cache)?;
+    let directory = tempfile::Builder::new()
+        .prefix("orbit-text-")
+        .tempdir_in(cache)?;
+    // File managers need a local file fallback for collected text.
+    let path = directory.path().join(if is_link(&text) {
+        "Link.txt"
+    } else {
+        "Text.txt"
+    });
+    std::fs::write(&path, text.as_bytes())?;
+    Ok(ImportedFiles {
+        files: FileList(vec![path]),
+        directory: Some(directory.keep()),
+        text: Some(text),
+    })
 }
 
 fn save_image(
@@ -272,7 +413,7 @@ fn save_image(
         .and_then(|name| name.to_str())
         .filter(|name| !name.is_empty() && name.len() <= 120)
         .unwrap_or("Image");
-    let cache = image_cache()?;
+    let cache = import_cache()?;
     std::fs::create_dir_all(&cache)?;
     let directory = tempfile::Builder::new()
         .prefix("orbit-image-")
@@ -282,5 +423,34 @@ fn save_image(
     Ok(ImportedFiles {
         files: FileList(vec![path]),
         directory: Some(directory.keep()),
+        text: None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn browser_fragments_preserve_selected_text_and_linked_images() {
+        let fragment =
+            browser_fragment("<p>Hello <b>world</b> &amp; سلام</p><p>Next<br>line</p>").unwrap();
+        assert_eq!(fragment.text.trim(), "Hello world & سلام\nNext\nline");
+        assert!(fragment.outside_link);
+
+        let fragment = browser_fragment(r#"<a href="https://example.com/article"><img src="https://example.com/photo.png?a=1&amp;b=2"></a>"#).unwrap();
+        assert_eq!(
+            fragment.image.as_deref(),
+            Some("https://example.com/photo.png?a=1&b=2")
+        );
+        assert!(fragment.text.is_empty());
+
+        let fragment =
+            browser_fragment(r#"<a href="https://example.com/article">Article</a>"#).unwrap();
+        assert_eq!(
+            fragment.link.as_deref(),
+            Some("https://example.com/article")
+        );
+        assert!(!fragment.outside_link);
+    }
 }

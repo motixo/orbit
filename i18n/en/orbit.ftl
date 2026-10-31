@@ -1,7 +1,7 @@
 app-title = Orbit
 collapse-shelf = Collapse
 expand-shelf = Expand
-empty-title = Drop files here
+empty-title = Drop here
 drop-now = Drop to collect
 add-files = Add files
 add-folders = Add folders
@@ -21,8 +21,11 @@ shelf-count = { $count ->
 }
 added-with-skips = Added { $added } items; { $skipped } unavailable or unsupported items skipped.
 unsupported-files = Choose or copy local files and folders to collect them.
+unsupported-content = Copy files, text or a link.
 dialog-error = Could not open the file chooser: { $error }
 new-orbit-error = Could not open Orbit.
 pin-error = Could not pin Orbit.
-image-name = Image
-image-import-error = Could not add image.
+item-name = Item
+text-item = Text
+link-item = Link
+import-error = Could not add item.
