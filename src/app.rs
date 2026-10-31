@@ -416,6 +416,16 @@ impl cosmic::Application for Orbit {
                 self.pending_imports.retain(|(key, _)| *key != id);
                 let mut text = None;
                 let files = result.map(|imported| {
+                    if imported
+                        .text
+                        .as_deref()
+                        .is_some_and(|text| self.shelf.contains_link(text))
+                    {
+                        if let Some(directory) = imported.directory {
+                            let _ = std::fs::remove_dir_all(directory);
+                        }
+                        return FileList(Vec::new());
+                    }
                     if let Some(directory) = imported.directory {
                         self.imported_items.push(directory);
                     }

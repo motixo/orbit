@@ -9,6 +9,7 @@ files; Ctrl+Shift+O adds folders.
 Text and links show a short preview in the list. Ctrl+C copies the selection;
 dragging it out offers plain text and links to apps, with temporary text files
 for file managers. Text is kept as plain text, including its line breaks.
+Text files use UUID names. Duplicate links are ignored within each shelf.
 
 Drop images directly from a browser. Orbit accepts image data or downloads an
 image URL into a temporary file, which can then be dragged out as a regular file.

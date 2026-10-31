@@ -75,6 +75,20 @@ impl Shelf {
         }
     }
 
+    pub fn contains_link(&self, text: &str) -> bool {
+        if !is_link(text) {
+            return false;
+        }
+        let Ok(url) = url::Url::parse(text.trim()) else {
+            return false;
+        };
+        self.items
+            .iter()
+            .filter_map(|item| item.text.as_deref())
+            .filter(|text| is_link(text))
+            .any(|text| url::Url::parse(text.trim()).is_ok_and(|existing| existing == url))
+    }
+
     pub fn transfer(&self, paths: Vec<PathBuf>, clipboard: bool) -> Transfer {
         let items = paths
             .iter()
@@ -228,6 +242,19 @@ mod tests {
         assert_eq!(shelf.selected_count(), 3);
         shelf.select_all();
         assert_eq!(shelf.selected_count(), 0);
+    }
+
+    #[test]
+    fn link_duplicates_use_normalized_urls_and_keep_distinct_targets() {
+        let fixture = Fixture::new();
+        let path = fixture.file("link.txt");
+        let mut shelf = Shelf::default();
+        shelf.add([path.clone()]);
+        shelf.set_text(&path, "https://example.com/article?a=1#section".into());
+        assert!(shelf.contains_link(" https://EXAMPLE.com:443/article?a=1#section "));
+        assert!(!shelf.contains_link("https://example.com/article?a=2#section"));
+        assert!(!shelf.contains_link("https://example.com/article?a=1#other"));
+        assert!(!shelf.contains_link("https://example.com/article?a=1#section\nAnother line"));
     }
 
     #[test]
