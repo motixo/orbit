@@ -11,6 +11,7 @@ base64 = "0.22.1"
 image = { version = "0.25.10", default-features = false }
 i18n-embed = { version = "0.16", features = ["fluent-system", "desktop-requester"] }
 i18n-embed-fl = "0.10"
+mime_guess = "2.0"
 percent-encoding = "2.3"
 quick-xml = { version = "0.41", features = ["escape-html"] }
 reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls"] }

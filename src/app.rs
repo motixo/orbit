@@ -25,6 +25,7 @@ use iced::platform_specific::{
     },
 };
 use std::{
+    collections::HashMap,
     path::PathBuf,
     sync::{
         Arc,
@@ -55,6 +56,7 @@ impl cosmic::app::CosmicFlags for Flags {
 pub struct Orbit {
     core: cosmic::Core,
     shelf: Shelf,
+    thumbnails: HashMap<PathBuf, Option<widget::image::Handle>>,
     imported_items: Vec<PathBuf>,
     pending_imports: Vec<(u64, Progress)>,
     next_import: u64,
@@ -85,6 +87,7 @@ pub enum Message {
     DropData(Vec<u8>, String),
     DropProgress(u64, Progress),
     DropImported(u64, Result<ImportedFiles, String>),
+    ThumbnailReady(PathBuf, Option<widget::image::Handle>),
     RemoveImport(u64),
     Hover(bool),
     Toggle(PathBuf),
@@ -140,6 +143,7 @@ impl cosmic::Application for Orbit {
         let mut app = Self {
             core,
             shelf: Shelf::default(),
+            thumbnails: HashMap::new(),
             imported_items: Vec::new(),
             pending_imports: Vec::new(),
             next_import: 0,
@@ -166,9 +170,11 @@ impl cosmic::Application for Orbit {
             drop_target: widget::Id::unique(),
         };
         app.set_header_title(fl!("app-title"));
-        if !flags.uris.is_empty() {
-            let _ = app.update(Message::Incoming(files_from_uris(flags.uris)));
-        }
+        let incoming = if !flags.uris.is_empty() {
+            app.update(Message::Incoming(files_from_uris(flags.uris)))
+        } else {
+            Task::none()
+        };
         let title = app
             .core
             .main_window_id()
@@ -182,7 +188,7 @@ impl cosmic::Application for Orbit {
         } else {
             Task::none()
         };
-        (app, Task::batch([title, startup]))
+        (app, Task::batch([title, startup, incoming]))
     }
 
     fn view(&self) -> Element<'_, Message> {
@@ -228,14 +234,15 @@ impl cosmic::Application for Orbit {
             }
             _ => None,
         };
-        if let Some(uris) = incoming {
-            let _ = self.update(Message::Incoming(files_from_uris(uris)));
-        }
-        if self.pinned.is_some() {
+        let incoming = incoming
+            .map(|uris| self.update(Message::Incoming(files_from_uris(uris))))
+            .unwrap_or_else(Task::none);
+        let window = if self.pinned.is_some() {
             Task::none()
         } else {
             self.restore_window(None)
-        }
+        };
+        Task::batch([incoming, window])
     }
 
     fn view_window(&self, id: window::Id) -> Element<'_, Message> {
@@ -402,6 +409,11 @@ impl cosmic::Application for Orbit {
                     *state = progress;
                 }
             }
+            Message::ThumbnailReady(path, thumbnail) => {
+                if let Some(entry) = self.thumbnails.get_mut(&path) {
+                    *entry = thumbnail;
+                }
+            }
             Message::DropImported(id, result) => {
                 if !self.pending_imports.iter().any(|(key, _)| *key == id) {
                     if let Ok(ImportedFiles {
@@ -458,6 +470,7 @@ impl cosmic::Application for Orbit {
                     }
                     Err(message) => message,
                 };
+                return self.load_thumbnails();
             }
             Message::Choose(folders) => {
                 return cosmic::task::future(async move {
@@ -850,6 +863,38 @@ impl Drop for Orbit {
 }
 
 impl Orbit {
+    fn load_thumbnails(&mut self) -> Task<cosmic::Action<Message>> {
+        let mut paths = Vec::new();
+        for item in &self.shelf.items {
+            if !item.directory
+                && item.text.is_none()
+                && crate::thumbnail::kind(&item.path).is_some()
+                && !self.thumbnails.contains_key(&item.path)
+            {
+                self.thumbnails.insert(item.path.clone(), None);
+                paths.push(item.path.clone());
+            }
+        }
+        if paths.is_empty() {
+            return Task::none();
+        }
+        let (output, input) = iced::futures::channel::mpsc::unbounded();
+        let _ = std::thread::Builder::new()
+            .name("orbit-thumbnails".into())
+            .spawn(move || {
+                for path in paths {
+                    let thumbnail = crate::thumbnail::generate(&path);
+                    if output
+                        .unbounded_send(Message::ThumbnailReady(path, thumbnail))
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            });
+        cosmic::task::stream(input)
+    }
+
     fn begin_import(
         &mut self,
         bytes: Vec<u8>,
@@ -876,6 +921,8 @@ impl Orbit {
     }
 
     fn release_imports(&mut self) {
+        self.thumbnails
+            .retain(|path, _| self.shelf.items.iter().any(|item| &item.path == path));
         self.imported_items.retain(|directory| {
             let referenced = self
                 .shelf
@@ -1223,24 +1270,35 @@ impl Orbit {
                 .into(),
         ])
         .width(Length::Fill);
+        let preview: Element<'_, Message> =
+            if let Some(Some(thumbnail)) = self.thumbnails.get(&item.path) {
+                widget::image(thumbnail.clone())
+                    .width(32)
+                    .height(32)
+                    .content_fit(iced::ContentFit::Contain)
+                    .border_radius(cosmic::theme::active().cosmic().corner_radii.radius_s)
+                    .into()
+            } else {
+                widget::container(
+                    widget::icon::from_name(if item.directory {
+                        "folder"
+                    } else if item.text.as_deref().is_some_and(is_link) {
+                        "web-browser-symbolic"
+                    } else if item.text.is_some() {
+                        "text-x-generic-symbolic"
+                    } else {
+                        "text-x-generic"
+                    })
+                    .size(if item.text.is_some() { 20 } else { 32 })
+                    .icon()
+                    .content_fit(iced::ContentFit::Contain),
+                )
+                .center_x(32)
+                .center_y(32)
+                .into()
+            };
         let draggable = widget::row::with_children(vec![
-            widget::container(
-                widget::icon::from_name(if item.directory {
-                    "folder"
-                } else if item.text.as_deref().is_some_and(is_link) {
-                    "web-browser-symbolic"
-                } else if item.text.is_some() {
-                    "text-x-generic-symbolic"
-                } else {
-                    "text-x-generic"
-                })
-                .size(if item.text.is_some() { 20 } else { 32 })
-                .icon()
-                .content_fit(iced::ContentFit::Contain),
-            )
-            .center_x(32)
-            .center_y(32)
-            .into(),
+            preview,
             widget::container(label)
                 .width(Length::Fill)
                 .clip(true)

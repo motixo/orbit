@@ -7,6 +7,7 @@ mod import;
 mod pin;
 mod pointer;
 mod shelf;
+mod thumbnail;
 mod transfer;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

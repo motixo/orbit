@@ -3496,6 +3496,7 @@ dependencies = [
  "i18n-embed-fl",
  "image",
  "libcosmic",
+ "mime_guess",
  "percent-encoding",
  "quick-xml",
  "reqwest",

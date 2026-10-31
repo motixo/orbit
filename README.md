@@ -17,6 +17,10 @@ For linked images, the browser's image source takes precedence over the page URL
 Downloads appear dimmed in the list with a circular progress indicator.
 Images stay in Orbit's cache while the receiving app finishes moving them.
 
+Images and videos show thumbnails generated in the background. Previews use the
+installed desktop tools `glycin-thumbnailer` and `cosmic-player`; unavailable or
+unsupported previews keep the file icon.
+
 Floating shelves stay above normal windows and appear on every workspace using
 COSMIC's sticky window layer.
 
