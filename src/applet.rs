@@ -124,6 +124,7 @@ impl cosmic::Application for OrbitApplet {
                     crate::orbit_icon::animated(
                         self.core.applet.suggested_size(false).0,
                         self.open_orbits,
+                        self.hovering,
                     ),
                     false,
                 )

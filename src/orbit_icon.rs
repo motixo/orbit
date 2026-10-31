@@ -19,16 +19,18 @@ static TRACK: LazyLock<svg::Handle> = LazyLock::new(|| {
     svg::Handle::from_memory(include_bytes!("../resources/icons/orbit-track.svg").as_slice())
 });
 
-pub fn animated<'a, Message: 'a>(size: u16, count: usize) -> Element<'a, Message> {
+pub fn animated<'a, Message: 'a>(size: u16, count: usize, hovering: bool) -> Element<'a, Message> {
     Element::new(OrbitIcon {
         size: size.into(),
         count,
+        hovering,
     })
 }
 
 struct OrbitIcon {
     size: f32,
     count: usize,
+    hovering: bool,
 }
 
 impl<Message> Widget<Message, Theme, Renderer> for OrbitIcon {
@@ -63,7 +65,9 @@ impl<Message> Widget<Message, Theme, Renderer> for OrbitIcon {
         shell: &mut Shell<'_, Message>,
         _: &Rectangle,
     ) {
-        if self.count > 0 && matches!(event, Event::Window(window::Event::RedrawRequested(_))) {
+        if (self.count > 0 || self.hovering)
+            && matches!(event, Event::Window(window::Event::RedrawRequested(_)))
+        {
             shell.request_redraw();
         }
     }
@@ -79,7 +83,15 @@ impl<Message> Widget<Message, Theme, Renderer> for OrbitIcon {
         _: &Rectangle,
     ) {
         let bounds = layout.bounds();
-        let scale = bounds.width / 24.0 * 1.2;
+        let elapsed = tree.state.downcast_ref::<Instant>().elapsed().as_secs_f64();
+        let pulse = if self.hovering {
+            (1.0 - (elapsed.rem_euclid(1.2) as f32 * TAU / 1.2).cos()) / 2.0
+        } else {
+            0.0
+        };
+        let scale = bounds.width / 24.0 * 1.2 * (1.0 - 0.10 * pulse);
+        let mut icon_color = style.icon_color;
+        icon_color.a *= 1.0 - 0.30 * pulse;
         let drawing_bounds = Rectangle {
             x: bounds.center_x() - 12.0 * scale,
             y: bounds.center_y() - 12.0 * scale,
@@ -87,11 +99,10 @@ impl<Message> Widget<Message, Theme, Renderer> for OrbitIcon {
             height: 24.0 * scale,
         };
         renderer.draw_svg(
-            svg::Svg::new(TRACK.clone()).color(style.icon_color),
+            svg::Svg::new(TRACK.clone()).color(icon_color),
             drawing_bounds,
             bounds,
         );
-        let elapsed = tree.state.downcast_ref::<Instant>().elapsed().as_secs_f64();
         let angle = (elapsed.rem_euclid(4.0) as f32) * TAU / 4.0;
         let (tilt_sine, tilt_cosine) = 28.0_f32.to_radians().sin_cos();
         for index in 0..self.count {
@@ -100,7 +111,7 @@ impl<Message> Widget<Message, Theme, Renderer> for OrbitIcon {
             let radius = (1.25 + 0.7 * depth) * scale;
             let x = 8.75 * cosine;
             let y = 4.2 * sine;
-            let mut color = style.icon_color;
+            let mut color = icon_color;
             color.a *= 0.65 + 0.35 * depth;
             renderer.fill_quad(
                 renderer::Quad {
