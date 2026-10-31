@@ -17,6 +17,12 @@
   <supports><control>keyboard</control><control>pointing</control></supports>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.3.0" date="2026-10-31">
+      <description>
+        <p>Copy mode, ZIP and TGZ compression, automatic selection, text and file drags,
+        shortcut fixes, and menu refinements.</p>
+      </description>
+    </release>
     <release version="0.2.0" date="2026-10-31">
       <description>
         <p>Native COSMIC applet, configurable shortcuts and defaults, update reminders,
