@@ -51,6 +51,7 @@ impl Motion {
 pub struct Area {
     pub width: u32,
     pub height: u32,
+    pub output: u32,
 }
 
 pub struct Startup {
@@ -71,7 +72,7 @@ impl Startup {
             .map(str::parse::<u32>)
             .collect::<Result<Vec<_>, _>>()
             .map_err(io::Error::other)?;
-        let [width, height, bits, x, y] = values.as_slice() else {
+        let [width, height, output, bits, x, y] = values.as_slice() else {
             return Err(io::Error::other("Invalid pin startup"));
         };
         let anchor = Anchor::from_bits(*bits)
@@ -81,7 +82,8 @@ impl Startup {
                     && anchor.intersects(Anchor::LEFT | Anchor::RIGHT)
             })
             .ok_or_else(|| io::Error::other("Invalid pin corner"))?;
-        if *width == 0
+        if *output == 0
+            || *width == 0
             || *height == 0
             || *width > i32::MAX as u32
             || *height > i32::MAX as u32
@@ -94,6 +96,7 @@ impl Startup {
             area: Area {
                 width: *width,
                 height: *height,
+                output: *output,
             },
             anchor,
             near: (*x, *y),
@@ -102,9 +105,10 @@ impl Startup {
 
     pub fn encode(&self) -> String {
         format!(
-            "{},{},{},{},{}",
+            "{},{},{},{},{},{}",
             self.area.width,
             self.area.height,
+            self.area.output,
             self.anchor.bits(),
             self.near.0,
             self.near.1
@@ -132,9 +136,7 @@ impl Placement {
             .create(&directory)?;
         let mut hasher = DefaultHasher::new();
         env::var_os("WAYLAND_DISPLAY").hash(&mut hasher);
-        // shortcut: equal-sized outputs share slots; use output IDs for independent monitor layouts.
-        area.width.hash(&mut hasher);
-        area.height.hash(&mut hasher);
+        area.output.hash(&mut hasher);
         let registry = open(directory.join("layout.lock"))?;
         registry.lock()?;
         let lease = open(directory.join(format!("{}.pin", std::process::id())))?;

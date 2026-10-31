@@ -20,6 +20,13 @@ use cosmic::cctk::{
     },
     wayland_protocols::ext::foreign_toplevel_list::v1::client::ext_foreign_toplevel_handle_v1::ExtForeignToplevelHandleV1,
 };
+use std::sync::Mutex;
+
+static ACTIVE_OUTPUT: Mutex<Option<u32>> = Mutex::new(None);
+
+pub fn active_output() -> Option<u32> {
+    *ACTIVE_OUTPUT.lock().unwrap()
+}
 
 pub fn start() -> std::io::Result<()> {
     std::thread::Builder::new()
@@ -63,6 +70,18 @@ struct State {
 
 impl State {
     fn keep_above(&self) {
+        if let Some(toplevel) = self.info.toplevels().find(|info| {
+            info.app_id == crate::app::Orbit::APP_ID && info.state.contains(&WindowState::Activated)
+        }) && let Some(output) = toplevel.output.iter().max_by_key(|output| {
+            toplevel
+                .geometry
+                .get(*output)
+                .map(|geometry| i64::from(geometry.width) * i64::from(geometry.height))
+                .unwrap_or(0)
+        }) && let Some(info) = self.output.info(output)
+        {
+            *ACTIVE_OUTPUT.lock().unwrap() = Some(info.id);
+        }
         if !self.sticky_supported {
             return;
         }
@@ -91,8 +110,12 @@ impl OutputHandler for State {
         &mut self.output
     }
 
-    fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: WlOutput) {}
-    fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: WlOutput) {}
+    fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: WlOutput) {
+        self.keep_above();
+    }
+    fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: WlOutput) {
+        self.keep_above();
+    }
     fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: WlOutput) {}
 }
 

@@ -776,10 +776,13 @@ impl cosmic::Application for Orbit {
                     self.pin_pending = true;
                     return iced::window::monitor_size(main).map(|size| {
                         cosmic::Action::App(Message::PinReady {
-                            area: size.map(|size| Area {
-                                width: size.width as u32,
-                                height: size.height as u32,
-                            }),
+                            area: size.zip(crate::always_on_top::active_output()).map(
+                                |(size, output)| Area {
+                                    width: size.width as u32,
+                                    height: size.height as u32,
+                                    output,
+                                },
+                            ),
                             near: None,
                         })
                     });
