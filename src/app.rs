@@ -1280,14 +1280,14 @@ impl Orbit {
                     .into()
             } else {
                 widget::container(
-                    widget::icon::from_name(if item.directory {
-                        "folder"
+                    (if item.directory {
+                        widget::icon::from_name("folder")
                     } else if item.text.as_deref().is_some_and(is_link) {
-                        "web-browser-symbolic"
+                        widget::icon::from_name("web-browser-symbolic")
                     } else if item.text.is_some() {
-                        "text-x-generic-symbolic"
+                        widget::icon::from_name("text-x-generic-symbolic")
                     } else {
-                        "text-x-generic"
+                        crate::file_icon::for_path(&item.path)
                     })
                     .size(if item.text.is_some() { 20 } else { 32 })
                     .icon()

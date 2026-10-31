@@ -2,6 +2,7 @@
 
 mod always_on_top;
 mod app;
+mod file_icon;
 mod i18n;
 mod import;
 mod pin;

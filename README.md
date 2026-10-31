@@ -20,6 +20,8 @@ Images stay in Orbit's cache while the receiving app finishes moving them.
 Images and videos show thumbnails generated in the background. Previews use the
 installed desktop tools `glycin-thumbnailer` and `cosmic-player`; unavailable or
 unsupported previews keep the file icon.
+Other files use type-specific icons from the desktop's icon theme, with COSMIC
+fallbacks and the system's shared MIME icon mappings.
 
 Floating shelves stay above normal windows and appear on every workspace using
 COSMIC's sticky window layer.
