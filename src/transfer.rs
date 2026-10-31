@@ -18,6 +18,24 @@ pub const MOZ_URL: &str = "text/x-moz-url";
 // shortcut: text-file drags are capped at 1 MiB; stream text if larger snippets are needed.
 const MAX_TEXT_FILE_SIZE: u64 = 1024 * 1024;
 
+pub fn decode_utf16(bytes: &[u8], big_endian: bool) -> Option<String> {
+    let (pairs, remainder) = bytes.as_chunks::<2>();
+    if !remainder.is_empty() {
+        return None;
+    }
+    let units = pairs
+        .iter()
+        .map(|pair| {
+            if big_endian {
+                u16::from_be_bytes(*pair)
+            } else {
+                u16::from_le_bytes(*pair)
+            }
+        })
+        .collect::<Vec<_>>();
+    String::from_utf16(&units).ok()
+}
+
 pub fn is_text_file(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
@@ -45,22 +63,7 @@ impl Text {
                     return None;
                 }
                 let text = if bytes.starts_with(&[0xff, 0xfe]) || bytes.starts_with(&[0xfe, 0xff]) {
-                    let little_endian = bytes[0] == 0xff;
-                    let (pairs, remainder) = bytes[2..].as_chunks::<2>();
-                    if !remainder.is_empty() {
-                        return None;
-                    }
-                    let units = pairs
-                        .iter()
-                        .map(|pair| {
-                            if little_endian {
-                                u16::from_le_bytes(*pair)
-                            } else {
-                                u16::from_be_bytes(*pair)
-                            }
-                        })
-                        .collect::<Vec<_>>();
-                    String::from_utf16(&units).ok()?
+                    decode_utf16(&bytes[2..], bytes[0] == 0xfe)?
                 } else {
                     String::from_utf8(bytes)
                         .ok()?
@@ -397,8 +400,10 @@ mod tests {
             std::fs::write(&path, bytes).unwrap();
             assert_eq!(source.contents().unwrap(), text);
         }
-        std::fs::write(&path, [0xff]).unwrap();
-        assert!(source.contents().is_none());
+        for invalid in [&[0xff][..], &[0xff, 0xfe, 0], &[0xff, 0xfe, 0, 0xd8]] {
+            std::fs::write(&path, invalid).unwrap();
+            assert!(source.contents().is_none());
+        }
         std::fs::write(&path, vec![b'a'; MAX_TEXT_FILE_SIZE as usize + 1]).unwrap();
         assert!(source.contents().is_none());
     }

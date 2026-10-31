@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use crate::transfer::{FileList, GNOME_FILES, ORBIT_TEXT, TEXT, URI_LIST, UTF8_TEXT, is_link};
+use crate::transfer::{
+    FileList, GNOME_FILES, ORBIT_TEXT, TEXT, URI_LIST, UTF8_TEXT, decode_utf16, is_link,
+};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use std::{
     error::Error,
@@ -90,23 +92,7 @@ pub async fn receive(
         "text/x-moz-url" | "text/x-moz-url-data" | "application/x-moz-file-promise-url"
     ) && (bytes.contains(&0) || bytes.starts_with(&[0xfe, 0xff]))
     {
-        if !bytes.len().is_multiple_of(2) {
-            return Err("Invalid browser URL".into());
-        }
-        let big_endian = bytes.starts_with(&[0xfe, 0xff]);
-        let units = bytes
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|pair| {
-                if big_endian {
-                    u16::from_be_bytes([pair[0], pair[1]])
-                } else {
-                    u16::from_le_bytes([pair[0], pair[1]])
-                }
-            })
-            .collect::<Vec<_>>();
-        String::from_utf16(&units)?
+        decode_utf16(&bytes, bytes.starts_with(&[0xfe, 0xff])).ok_or("Invalid browser URL")?
     } else {
         String::from_utf8(bytes)?
     };
