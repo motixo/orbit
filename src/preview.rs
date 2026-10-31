@@ -68,7 +68,9 @@ impl Preview {
                     .into()
             }
             Some(Content::Unavailable) => widget::text::body(fl!("preview-unavailable")).into(),
-            None => widget::indeterminate_circular().into(),
+            None => widget::indeterminate_circular()
+                .cycle_duration(std::time::Duration::ZERO)
+                .into(),
         };
         let content = widget::column::with_children(vec![
             widget::header_bar()
