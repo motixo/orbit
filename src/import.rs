@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use crate::transfer::{FileList, GNOME_FILES, ORBIT_TEXT, TEXT, URI_LIST, UTF8_TEXT};
+use crate::transfer::{FileList, GNOME_FILES, ORBIT_TEXT, TEXT, URI_LIST, UTF8_TEXT, is_link};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use std::{
     error::Error,
@@ -367,6 +367,18 @@ fn save_text(text: String) -> Result<ImportedFiles, Box<dyn Error + Send + Sync>
     if text.len() > MAX_TEXT_SIZE || text.trim().is_empty() || text.contains('\0') {
         return Err("Invalid text".into());
     }
+    let (extension, contents) = if is_link(&text) {
+        let url = Url::parse(text.trim())?;
+        let url = quick_xml::escape::escape(url.as_str());
+        (
+            "html",
+            format!(
+                "<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\"/><meta http-equiv=\"refresh\" content=\"0;url={url}\"/></head></html>\n"
+            ),
+        )
+    } else {
+        ("txt", text.clone())
+    };
     let cache = import_cache()?;
     std::fs::create_dir_all(&cache)?;
     let directory = tempfile::Builder::new()
@@ -375,8 +387,8 @@ fn save_text(text: String) -> Result<ImportedFiles, Box<dyn Error + Send + Sync>
     // File managers need a local file fallback for collected text.
     let path = directory
         .path()
-        .join(format!("{}.txt", uuid::Uuid::new_v4()));
-    std::fs::write(&path, text.as_bytes())?;
+        .join(format!("{}.{extension}", uuid::Uuid::new_v4()));
+    std::fs::write(&path, contents.as_bytes())?;
     Ok(ImportedFiles {
         files: FileList(vec![path]),
         directory: Some(directory.keep()),
@@ -428,6 +440,34 @@ fn save_image(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saved_link_redirects_to_the_original_url_without_injecting_markup() {
+        let text = "https://example.com/?q=\"'><img src=x>&next=1#section";
+        let imported = save_text(text.into()).unwrap();
+        let path = &imported.files.0[0];
+        let html = std::fs::read_to_string(path).unwrap();
+        std::fs::remove_dir_all(imported.directory.as_ref().unwrap()).unwrap();
+
+        assert_eq!(path.extension().unwrap(), "html");
+        assert_eq!(imported.text.as_deref(), Some(text));
+        let document =
+            roxmltree::Document::parse(html.strip_prefix("<!DOCTYPE html>\n").unwrap()).unwrap();
+        let refresh = document
+            .descendants()
+            .find(|node| node.attribute("http-equiv") == Some("refresh"))
+            .unwrap();
+        assert_eq!(
+            refresh.attribute("content").unwrap(),
+            format!("0;url={}", Url::parse(text).unwrap())
+        );
+        assert!(
+            document
+                .descendants()
+                .filter(|node| node.is_element())
+                .all(|node| matches!(node.tag_name().name(), "html" | "head" | "meta"))
+        );
+    }
 
     #[test]
     fn browser_fragments_preserve_selected_text_and_linked_images() {

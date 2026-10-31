@@ -229,7 +229,7 @@ mod tests {
     #[test]
     fn link_drags_offer_local_files_and_a_native_browser_url() {
         let data = Transfer {
-            files: FileList(vec![PathBuf::from("/tmp/Link.txt")]),
+            files: FileList(vec![PathBuf::from("/tmp/Link.html")]),
             text: Some("https://example.com/article".into()),
             text_only: true,
             links: true,
