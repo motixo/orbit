@@ -242,11 +242,11 @@ impl Transfer {
         if self.links && self.files.0.len() == 1 {
             mimes.push(MOZ_URL.into());
         }
-        if !content_only || self.links {
+        if !content_only {
             mimes.push(URI_LIST.into());
         }
-        // Keep the clipboard's copy operation out of native Move drags.
-        if !content_only && self.clipboard && !self.links {
+        // File managers get local files without making browser inputs prefer file URIs.
+        if content_only || self.clipboard && !self.links {
             mimes.push(GNOME_FILES.into());
         }
         if self.text.is_some() && !self.text_only {
@@ -270,20 +270,18 @@ impl Transfer {
                         .collect(),
                 )
             }),
-            URI_LIST if self.links && (self.clipboard || content_only) => {
-                self.plain_text().map(|text| {
-                    Cow::Owned(
-                        text.lines()
-                            .map(str::trim)
-                            .filter(|line| !line.is_empty())
-                            .collect::<Vec<_>>()
-                            .join("\r\n")
-                            .into_bytes(),
-                    )
-                })
-            }
+            URI_LIST if self.links && self.clipboard => self.plain_text().map(|text| {
+                Cow::Owned(
+                    text.lines()
+                        .map(str::trim)
+                        .filter(|line| !line.is_empty())
+                        .collect::<Vec<_>>()
+                        .join("\r\n")
+                        .into_bytes(),
+                )
+            }),
             URI_LIST if !content_only => self.file_bytes(mime),
-            GNOME_FILES if !content_only && self.clipboard && !self.links => self.file_bytes(mime),
+            GNOME_FILES if content_only || self.clipboard && !self.links => self.file_bytes(mime),
             _ => None,
         }
     }
@@ -324,6 +322,16 @@ mod tests {
         };
         assert!(!drag.available().iter().any(|mime| mime == URI_LIST));
         assert!(drag.as_bytes(URI_LIST).is_none());
+        assert!(drag.available().iter().any(|mime| mime == GNOME_FILES));
+        assert_eq!(
+            FileList::try_from((
+                drag.as_bytes(GNOME_FILES).unwrap().into_owned(),
+                GNOME_FILES.into()
+            ))
+            .unwrap()
+            .0,
+            drag.transfer.files.0
+        );
         assert_eq!(
             drag.as_bytes(TEXT).unwrap().as_ref(),
             "First line\nسلام\nLast line".as_bytes()
@@ -365,9 +373,17 @@ mod tests {
             transfer: Arc::new(data),
             content_only: true,
         };
+        assert!(!drag.available().iter().any(|mime| mime == URI_LIST));
+        assert!(drag.as_bytes(URI_LIST).is_none());
+        assert!(drag.available().iter().any(|mime| mime == GNOME_FILES));
         assert_eq!(
-            drag.as_bytes(URI_LIST).unwrap().as_ref(),
-            b"https://example.com/article"
+            FileList::try_from((
+                drag.as_bytes(GNOME_FILES).unwrap().into_owned(),
+                GNOME_FILES.into()
+            ))
+            .unwrap()
+            .0,
+            drag.transfer.files.0
         );
         assert_eq!(
             drag.as_bytes(TEXT).unwrap().as_ref(),

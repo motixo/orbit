@@ -1635,11 +1635,9 @@ impl Orbit {
     ) -> Element<'a, Message> {
         let data = self.shelf.drag_transfer(path, content_only);
         let label = fl!("drag-items", count = data.files.0.len());
-        let action = if content_only {
-            DndAction::Copy | DndAction::Move
-        } else if self.copy_mode && data.has_local_files {
+        let action = if self.copy_mode && data.has_local_files {
             DndAction::Copy
-        } else if data.text_only && !data.has_local_files {
+        } else if content_only || data.text_only && !data.has_local_files {
             DndAction::Copy | DndAction::Move
         } else {
             DndAction::Move
