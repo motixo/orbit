@@ -31,6 +31,7 @@ impl Preview {
             size: iced::Size::new(640.0, 480.0),
             min_size: Some(iced::Size::new(320.0, 240.0)),
             decorations: false,
+            transparent: true,
             platform_specific: window::settings::PlatformSpecific {
                 application_id: <crate::app::Orbit as cosmic::Application>::APP_ID.into(),
                 ..Default::default()
@@ -69,7 +70,7 @@ impl Preview {
             Some(Content::Unavailable) => widget::text::body(fl!("preview-unavailable")).into(),
             None => widget::indeterminate_circular().into(),
         };
-        widget::column::with_children(vec![
+        let content = widget::column::with_children(vec![
             widget::header_bar()
                 .title(&self.name)
                 .on_drag(Message::DragPreview)
@@ -81,8 +82,28 @@ impl Preview {
                 .center_y(Length::Fill)
                 .into(),
         ])
-        .height(Length::Fill)
-        .into()
+        .height(Length::Fill);
+        widget::container(content)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding(1)
+            .clip(true)
+            .class(cosmic::theme::Container::custom(|theme| {
+                let cosmic = theme.cosmic();
+                widget::container::Style {
+                    background: Some(cosmic.background(false).base.into()),
+                    border: iced::Border {
+                        color: cosmic.bg_divider().into(),
+                        width: 1.0,
+                        radius: cosmic
+                            .radius_s()
+                            .map(|radius| if radius < 4.0 { radius } else { radius + 4.0 })
+                            .into(),
+                    },
+                    ..Default::default()
+                }
+            }))
+            .into()
     }
 }
 
