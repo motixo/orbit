@@ -27,7 +27,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: main
+          ref: ${{ env.TAG }}
       - uses: actions/checkout@v7
         with:
           ref: ${{ env.TAG }}
@@ -66,7 +66,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: main
+          ref: ${{ env.TAG }}
       - uses: actions/download-artifact@v8
         with:
           pattern: packages-*
