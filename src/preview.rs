@@ -4,7 +4,7 @@ use crate::{app::Message, fl, transfer::Transfer};
 use cosmic::{
     iced::{self, Length, window},
     prelude::*,
-    widget,
+    widget::{self, text_editor},
 };
 use std::{path::Path, sync::Arc};
 
@@ -13,8 +13,18 @@ const LOADER_SIZE: f32 = 32.0;
 #[derive(Clone, Debug)]
 pub enum Content {
     Image(widget::image::Handle),
-    Text(String),
+    Text(text_editor::Content),
     Unavailable,
+}
+
+impl Content {
+    pub fn interact(&mut self, action: text_editor::Action) {
+        if !action.is_edit()
+            && let Self::Text(text) = self
+        {
+            text.perform(action);
+        }
+    }
 }
 
 pub struct Preview {
@@ -69,8 +79,62 @@ impl Preview {
                 .content_fit(iced::ContentFit::Contain)
                 .into(),
             Some(Content::Text(text)) => {
-                widget::scrollable(widget::selectable_text::body(text).width(Length::Fill))
+                let id = self.id;
+                let editor = text_editor::text_editor(text)
                     .height(Length::Fill)
+                    .font(cosmic::font::default())
+                    .size(14.0)
+                    .line_height(iced::advanced::text::LineHeight::Absolute(21.0.into()))
+                    .padding(0)
+                    .context_menu(false)
+                    .on_action(move |action| Message::PreviewText(id, action))
+                    .key_binding(|key| {
+                        use text_editor::Binding;
+                        match Binding::from_key_press(key) {
+                            binding @ Some(
+                                Binding::Copy
+                                | Binding::SelectAll
+                                | Binding::Move(_)
+                                | Binding::Select(_)
+                                | Binding::SelectWord
+                                | Binding::SelectLine
+                                | Binding::Unfocus,
+                            ) => binding,
+                            _ => None,
+                        }
+                    })
+                    .style(|theme, status| text_editor::Style {
+                        background: iced::Color::TRANSPARENT.into(),
+                        border: iced::Border::default(),
+                        value: theme.cosmic().background(theme.transparent).on.into(),
+                        ..<cosmic::Theme as text_editor::Catalog>::style(
+                            theme,
+                            &Default::default(),
+                            status,
+                        )
+                    });
+                let menu = [
+                    (
+                        fl!("copy"),
+                        text.selection().map(|_| Message::CopyPreview(id)),
+                    ),
+                    (
+                        fl!("select-all"),
+                        Some(Message::PreviewText(id, text_editor::Action::SelectAll)),
+                    ),
+                ]
+                .into_iter()
+                .map(|(label, message)| {
+                    let button: Element<'static, Message> =
+                        widget::menu::menu_button(vec![widget::text(label).into()])
+                            .on_press_maybe(message)
+                            .into();
+                    widget::menu::Tree::from(button)
+                })
+                .collect();
+                widget::context_menu(editor, Some(menu))
+                    .window_id(id)
+                    .on_surface_action(Message::Surface)
                     .into()
             }
             Some(Content::Unavailable) => widget::text::body(fl!("preview-unavailable")).into(),
@@ -123,7 +187,7 @@ impl Preview {
 
 pub fn load(path: &Path, text: Option<String>) -> Content {
     if let Some(text) = text {
-        return Content::Text(text);
+        return Content::Text(text_editor::Content::with_text(&text));
     }
     if crate::thumbnail::kind(path).is_some() {
         return crate::thumbnail::generate(path, 1024)
@@ -132,7 +196,7 @@ pub fn load(path: &Path, text: Option<String>) -> Content {
     }
     crate::transfer::Text::File(path.to_owned())
         .contents()
-        .map(|text| Content::Text(text.into_owned()))
+        .map(|text| Content::Text(text_editor::Content::with_text(&text)))
         .unwrap_or(Content::Unavailable)
 }
 
@@ -145,11 +209,30 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("snippet.txt");
         std::fs::write(&path, "hello").unwrap();
-        assert!(matches!(load(&path, None), Content::Text(text) if text == "hello"));
+        assert!(matches!(load(&path, None), Content::Text(text) if text.text() == "hello"));
         assert!(
-            matches!(load(&path, Some("https://example.com".into())), Content::Text(text) if text == "https://example.com")
+            matches!(load(&path, Some("https://example.com".into())), Content::Text(text) if text.text() == "https://example.com")
         );
         std::fs::write(&path, [0, 1, 2]).unwrap();
         assert!(matches!(load(&path, None), Content::Unavailable));
+    }
+
+    #[test]
+    fn preview_selects_multiple_lines_without_editing() {
+        let original = "first line\nخط دوم\nlast line";
+        let mut content = Content::Text(text_editor::Content::with_text(original));
+        content.interact(text_editor::Action::Move(
+            text_editor::Motion::DocumentStart,
+        ));
+        content.interact(text_editor::Action::Select(
+            text_editor::Motion::DocumentEnd,
+        ));
+        content.interact(text_editor::Action::Edit(text_editor::Edit::Delete));
+        content.interact(text_editor::Action::Edit(text_editor::Edit::Insert('x')));
+        let Content::Text(text) = content else {
+            panic!("Expected text preview");
+        };
+        assert_eq!(text.selection().as_deref(), Some(original));
+        assert_eq!(text.text(), original);
     }
 }
