@@ -31,7 +31,7 @@ pub const SHELF_SIZE: u32 = 320;
 const PREVIEW_PADDING: u32 = 20;
 
 pub struct Flags {
-    pub receive: bool,
+    pub share: bool,
     pub uris: Vec<String>,
     pub watch: Option<crate::watch::Folder>,
     pub restored: Option<crate::history::Entry>,
@@ -111,7 +111,7 @@ pub enum Message {
     CopyPreview(window::Id),
     ClosePreview,
     DragPreview,
-    Share(bool),
+    Share,
     ShareReady(window::Id, Result<Arc<crate::share::Bundle>, String>),
     RefreshDevices,
     DevicesReady(window::Id, Result<Vec<crate::kdeconnect::Device>, String>),
@@ -276,14 +276,14 @@ impl cosmic::Application for Orbit {
         } else {
             Task::none()
         };
-        let receive = if flags.receive {
-            app.update(Message::Share(true))
+        let share = if flags.share {
+            app.update(Message::Share)
         } else {
             Task::none()
         };
         (
             app,
-            Task::batch([title, startup, incoming, thumbnails, receive]),
+            Task::batch([title, startup, incoming, thumbnails, share]),
         )
     }
 
@@ -744,14 +744,11 @@ impl cosmic::Application for Orbit {
                 self.focused_item = Some(path);
             }
             Message::FocusItem(path) => self.focused_item = Some(path),
-            Message::Share(receive) => {
+            Message::Share => {
                 if let Some(share) = &self.share {
                     return window::gain_focus(share.id);
                 }
                 let paths = self.shelf.export_paths();
-                if paths.is_empty() && !receive {
-                    return Task::none();
-                }
                 let items = self
                     .shelf
                     .items
@@ -760,7 +757,7 @@ impl cosmic::Application for Orbit {
                     .cloned()
                     .collect();
                 let transfer = Arc::new(self.shelf.transfer(paths, false));
-                let (share, open) = crate::share::Share::open(receive);
+                let (share, open) = crate::share::Share::open();
                 let id = share.id;
                 self.share = Some(share);
                 let (output, input) = iced::futures::channel::mpsc::unbounded();
@@ -790,9 +787,7 @@ impl cosmic::Application for Orbit {
                     match result {
                         Ok(bundle) => {
                             share.bundle = Some(bundle);
-                            if share.receive {
-                                return self.update(Message::StartQr);
-                            }
+                            return self.update(Message::StartQr);
                         }
                         Err(error) => {
                             eprintln!("Could not prepare sharing: {error}");
@@ -1601,7 +1596,7 @@ impl Orbit {
                 (
                     fl!("share"),
                     "send-to-symbolic",
-                    (!self.shelf.export_paths().is_empty()).then_some(Message::Share(false)),
+                    Some(Message::Share),
                     false,
                 ),
             ]

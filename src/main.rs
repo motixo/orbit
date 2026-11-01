@@ -35,7 +35,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match paths.first().and_then(|arg| arg.to_str()) {
         Some("--help" | "-h") => {
             println!(
-                "Orbit — a file shelf for COSMIC\n\nUsage: orbit [FILE_OR_FOLDER ...]\n       orbit --new\n       orbit --receive\n       orbit --applet\n       orbit --version"
+                "Orbit — a file shelf for COSMIC\n\nUsage: orbit [FILE_OR_FOLDER ...]\n       orbit --new\n       orbit --share\n       orbit --applet\n       orbit --version"
             );
             return Ok(());
         }
@@ -71,10 +71,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         None
     };
-    let receive = paths.first().is_some_and(|arg| arg == "--receive");
-    if receive {
+    let share = paths.first().is_some_and(|arg| arg == "--share");
+    if share {
         if paths.len() != 1 {
-            return Err("Usage: orbit --new --receive".into());
+            return Err("Usage: orbit --share".into());
         }
         paths.clear();
         independent = true;
@@ -140,7 +140,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     cache::start_cleanup()?;
     let startup_area = always_on_top::start()?;
     let flags = app::Flags {
-        receive,
+        share,
         uris,
         incoming_drop,
         restored,

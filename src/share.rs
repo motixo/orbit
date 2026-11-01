@@ -80,7 +80,6 @@ pub struct Share {
     pub devices: Option<Result<Vec<crate::kdeconnect::Device>, String>>,
     pub busy: bool,
     pub status: String,
-    pub receive: bool,
     pub addresses: Vec<crate::phone::Address>,
     pub address: usize,
     pub qr_busy: bool,
@@ -92,7 +91,7 @@ pub struct Share {
 }
 
 impl Share {
-    pub fn open(receive: bool) -> (Self, Task<cosmic::Action<Message>>) {
+    pub fn open() -> (Self, Task<cosmic::Action<Message>>) {
         let (id, open) = cosmic::surface::action::app_window::<crate::app::Orbit>(
             |_| cosmic::surface::action::LiveSettings::default(),
             |_| window::Settings {
@@ -115,7 +114,6 @@ impl Share {
                 devices: None,
                 busy: false,
                 status: String::new(),
-                receive,
                 addresses: Vec::new(),
                 address: 0,
                 qr_busy: false,
@@ -196,7 +194,11 @@ impl Share {
                     .into(),
             );
         }
-        if !self.receive && self.session.is_none() {
+        if self
+            .bundle
+            .as_ref()
+            .is_some_and(|bundle| !bundle.files.is_empty())
+        {
             controls.push(widget::divider::horizontal::default().into());
             controls.push(widget::text::heading(fl!("kde-connect")).into());
             match &self.devices {
@@ -229,11 +231,7 @@ impl Share {
             controls.push(widget::text::body(&self.status).into());
         }
         let mut header = widget::header_bar()
-            .title(if self.receive {
-                fl!("receive")
-            } else {
-                fl!("share")
-            })
+            .title(fl!("share"))
             .on_drag(Message::DragShare)
             .on_close(Message::CloseShare);
         if self.session.is_some() {

@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
-Name=Orbit
-Exec=orbit --receive
+Name=Orbit Share
+Exec=orbit --share
 Icon=io.github.motixo.Orbit
 Terminal=false
 NoDisplay=true
