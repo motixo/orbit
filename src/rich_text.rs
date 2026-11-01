@@ -69,12 +69,14 @@ struct Cell {
     rows: usize,
     alignment: Alignment,
     background: Option<[f32; 4]>,
+    css: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 struct Table {
     range: Range<usize>,
     rows: Vec<Vec<Cell>>,
+    css: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -125,6 +127,7 @@ impl Table {
         Some(Self {
             range: start - range.start..end - range.start,
             rows,
+            css: self.css.clone(),
         })
     }
 }
@@ -379,7 +382,10 @@ impl Document {
                 break;
             };
             self.write_gap(html, offset..table.range.start, clipboard, paragraphs);
-            html.push_str("<table style=\"display:inline-table;border-collapse:collapse\">");
+            html.push_str(&format!(
+                "<table style=\"display:inline-table;{}\">",
+                quick_xml::escape::escape(&table.css)
+            ));
             for row in &table.rows {
                 html.push_str("<tr>");
                 for cell in row {
@@ -400,7 +406,7 @@ impl Document {
                             )
                         })
                         .unwrap_or_default();
-                    html.push_str(&format!("<{tag} colspan=\"{}\" rowspan=\"{}\" style=\"border:1px solid #888;padding:6px;text-align:{alignment};white-space:pre-wrap;{background}\">", cell.columns, cell.rows));
+                    html.push_str(&format!("<{tag} colspan=\"{}\" rowspan=\"{}\" style=\"text-align:{alignment};white-space:pre-wrap;{background}{}\">", cell.columns, cell.rows, quick_xml::escape::escape(&cell.css)));
                     self.write_flow(
                         html,
                         cell.range.clone(),
@@ -647,6 +653,7 @@ impl Document {
                             document.tables.push(Table {
                                 range: document.text.len()..document.text.len(),
                                 rows: Vec::new(),
+                                css: table_css(&attributes),
                             });
                         }
                         let current_table = stack
@@ -678,7 +685,11 @@ impl Document {
                                         .unwrap_or(1)
                                         .clamp(1, 64)
                                 };
-                                let mut alignment = Alignment::Left;
+                                let mut alignment = if name == "th" {
+                                    Alignment::Center
+                                } else {
+                                    Alignment::Left
+                                };
                                 for (key, value) in &attributes {
                                     let value = if key == "align" {
                                         Some(value.as_str())
@@ -694,10 +705,11 @@ impl Document {
                                         None
                                     };
                                     if let Some(value) = value {
-                                        alignment = match value {
+                                        alignment = match value.to_ascii_lowercase().as_str() {
                                             "center" => Alignment::Center,
                                             "right" | "end" => Alignment::Right,
-                                            _ => Alignment::Left,
+                                            "left" | "start" => Alignment::Left,
+                                            _ => alignment,
                                         };
                                     }
                                 }
@@ -709,6 +721,7 @@ impl Document {
                                     rows: span("rowspan"),
                                     alignment,
                                     background: style.background,
+                                    css: table_css(&attributes),
                                 });
                                 cell = Some((index, row, column));
                             }
@@ -1174,6 +1187,55 @@ fn css_size(value: &str, base: f32) -> Option<f32> {
     None
 }
 
+fn table_css(attributes: &[(String, String)]) -> String {
+    let border = |name: &str| {
+        matches!(
+            name,
+            "border" | "border-top" | "border-right" | "border-bottom" | "border-left"
+        )
+    };
+    let mut css = String::new();
+    for (_, value) in attributes.iter().filter(|(key, _)| key == "style") {
+        for declaration in value.split(';') {
+            let Some((name, value)) = declaration.split_once(':') else {
+                continue;
+            };
+            let name = name.trim().to_ascii_lowercase();
+            let value = value.trim().trim_end_matches("!important").trim();
+            let supported = border(&name)
+                || ["-width", "-style", "-color"]
+                    .iter()
+                    .any(|suffix| name.strip_suffix(suffix).is_some_and(border))
+                || matches!(
+                    name.as_str(),
+                    "border-collapse"
+                        | "border-spacing"
+                        | "padding"
+                        | "padding-top"
+                        | "padding-right"
+                        | "padding-bottom"
+                        | "padding-left"
+                        | "width"
+                        | "height"
+                        | "table-layout"
+                        | "vertical-align"
+                );
+            if supported
+                && !value.is_empty()
+                && value.len() <= 128
+                && value.chars().all(|ch| {
+                    ch.is_ascii_alphanumeric()
+                        || ch.is_ascii_whitespace()
+                        || ".,%#()-/".contains(ch)
+                })
+            {
+                css.push_str(&format!("{name}:{value};"));
+            }
+        }
+    }
+    css
+}
+
 fn flow_tag(name: &str) -> bool {
     matches!(
         name,
@@ -1370,5 +1432,34 @@ mod tests {
             caption.text
         );
         assert_eq!(caption.tables.len(), 1);
+    }
+
+    #[test]
+    fn table_exports_keep_source_borders_and_spacing_without_adding_a_grid() {
+        let plain =
+            Document::from_html("<table><tr><th>Heading</th><td>Value</td></tr></table>").unwrap();
+        for html in [plain.html(), plain.clipboard_html()] {
+            assert!(!html.contains("border"));
+            assert!(!html.contains("padding"));
+            assert_eq!(Document::from_html(&html).unwrap().tables, plain.tables);
+        }
+        assert_eq!(plain.tables[0].rows[0][0].alignment, Alignment::Center);
+        let styled = Document::from_html("<table style='border-collapse:separate;border-spacing:8px'><tr><th style='border-bottom:2px solid rgb(10,20,30);padding:4px 8px;width:120px;text-align:RIGHT;border-image:url(https://example.com/ignored.png)'>Heading</th></tr></table>").unwrap();
+        for html in [styled.html(), styled.clipboard_html()] {
+            assert!(html.contains("border-collapse:separate;border-spacing:8px;"));
+            assert!(
+                html.contains("border-bottom:2px solid rgb(10,20,30);padding:4px 8px;width:120px;")
+            );
+            assert!(html.contains("text-align:right"));
+            assert!(!html.contains("url("));
+            assert_eq!(Document::from_html(&html).unwrap().tables, styled.tables);
+        }
+        let selection = styled.slice(styled.tables[0].range.clone());
+        assert_eq!(
+            Document::from_html(&selection.clipboard_html())
+                .unwrap()
+                .tables,
+            selection.tables
+        );
     }
 }
