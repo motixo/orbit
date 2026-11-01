@@ -378,7 +378,6 @@ mod tests {
         let actions = data.drag_actions(false);
         assert!(actions.contains(DndAction::Copy));
         assert!(actions.contains(DndAction::Move));
-        assert_eq!(actions & DndAction::Copy, DndAction::Copy);
         assert_eq!(data.drag_actions(true), DndAction::Copy);
         assert!(data.available().iter().any(|mime| mime == URI_LIST));
         let cached = Transfer {
