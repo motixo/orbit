@@ -1628,7 +1628,8 @@ impl Orbit {
                 .shelf
                 .items
                 .iter()
-                .map(|item| (item.order, self.item_view(item, window)))
+                .zip(self.shelf.drag_transfers())
+                .map(|(item, data)| (item.order, self.item_view(item, window, data)))
                 .chain(
                     self.pending_imports
                         .iter()
@@ -1812,7 +1813,12 @@ impl Orbit {
             .into()
     }
 
-    fn item_view<'a>(&'a self, item: &'a Item, window: window::Id) -> Element<'a, Message> {
+    fn item_view<'a>(
+        &'a self,
+        item: &'a Item,
+        window: window::Id,
+        data: Arc<Transfer>,
+    ) -> Element<'a, Message> {
         use iced::advanced::text::{Ellipsize, EllipsizeHeightLimit};
 
         let spacing = cosmic::theme::spacing();
@@ -1910,8 +1916,8 @@ impl Orbit {
             .into()
         } else if item.has_text() {
             widget::row::with_children(vec![
-                self.drag_source(preview, &item.path, window, false),
-                self.drag_source(label, &item.path, window, true),
+                self.drag_source(preview, &item.path, window, false, data.clone()),
+                self.drag_source(label, &item.path, window, true, data),
             ])
             .spacing(spacing.space_s)
             .align_y(Alignment::Center)
@@ -1927,6 +1933,7 @@ impl Orbit {
                 &item.path,
                 window,
                 false,
+                data,
             )
         };
         let path = item.path.clone();
@@ -1962,8 +1969,8 @@ impl Orbit {
         path: &std::path::Path,
         window: window::Id,
         prefer_content: bool,
+        data: Arc<Transfer>,
     ) -> Element<'a, Message> {
-        let data = self.shelf.drag_transfer(path);
         let content_only = prefer_content && data.text_only;
         let label = if content_only {
             fl!("drag-content", count = data.files.0.len())

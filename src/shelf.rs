@@ -230,6 +230,26 @@ impl Shelf {
         }
     }
 
+    pub fn drag_transfers(&self) -> Vec<Arc<Transfer>> {
+        let selection = self
+            .items
+            .iter()
+            .find(|item| item.selected)
+            .map(|item| self.drag_transfer(&item.path));
+        self.items
+            .iter()
+            .map(|item| {
+                if item.selected
+                    && let Some(selection) = &selection
+                {
+                    selection.clone()
+                } else {
+                    Arc::new(self.transfer(vec![item.path.clone()], false))
+                }
+            })
+            .collect()
+    }
+
     pub fn toggle(&mut self, path: &Path) {
         self.invalidate_transfers();
         if let Some(item) = self.items.iter_mut().find(|item| item.path == path) {
@@ -419,6 +439,34 @@ mod tests {
             }
         );
         assert!(shelf.items[2].directory);
+    }
+
+    #[test]
+    fn rendered_drags_share_one_selection_snapshot_and_refresh_missing_files() {
+        let fixture = Fixture::new();
+        let a = fixture.file("a");
+        let b = fixture.file("b");
+        let c = fixture.file("c");
+        let mut shelf = Shelf::default();
+        shelf.add([a.clone(), b.clone(), c.clone()]);
+        shelf.toggle(&c);
+        let initial = shelf.drag_transfers();
+        assert!(Arc::ptr_eq(&initial[0], &initial[1]));
+        assert_eq!(initial[0].files.0, [a.clone(), b.clone()]);
+        assert_eq!(initial[2].files.0.as_slice(), std::slice::from_ref(&c));
+
+        fs::remove_file(&b).unwrap();
+        let refreshed = shelf.drag_transfers();
+        assert!(Arc::ptr_eq(&refreshed[0], &refreshed[1]));
+        assert!(!Arc::ptr_eq(&initial[0], &refreshed[0]));
+        assert_eq!(refreshed[0].files.0.as_slice(), std::slice::from_ref(&a));
+        assert_eq!(refreshed[2].files.0.as_slice(), std::slice::from_ref(&c));
+
+        fs::write(&b, b"back").unwrap();
+        let restored = shelf.drag_transfers();
+        assert!(Arc::ptr_eq(&restored[0], &restored[1]));
+        assert_eq!(restored[0].files.0, [a, b]);
+        assert_eq!(restored[2].files.0, [c]);
     }
 
     #[test]
