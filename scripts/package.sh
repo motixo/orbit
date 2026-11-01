@@ -21,7 +21,7 @@ trap 'rm -rf "$orbit_work"' EXIT HUP INT TERM
 orbit_root=$orbit_work/root
 orbit_appid=io.github.motixo.Orbit
 install -Dm0755 "$orbit_binary" "$orbit_root/usr/bin/orbit"
-for orbit_desktop in "$orbit_appid" "$orbit_appid.Applet"; do
+for orbit_desktop in "$orbit_appid" "$orbit_appid.Applet" "$orbit_appid.Preview"; do
     install -Dm0644 "$orbit_source/resources/$orbit_desktop.desktop" "$orbit_root/usr/share/applications/$orbit_desktop.desktop"
 done
 install -Dm0644 "$orbit_source/resources/$orbit_appid.metainfo.xml" "$orbit_root/usr/share/metainfo/$orbit_appid.metainfo.xml"
@@ -84,6 +84,7 @@ cp -a "$orbit_root/." "%{buildroot}/"
 /usr/bin/orbit
 /usr/share/applications/$orbit_appid.desktop
 /usr/share/applications/$orbit_appid.Applet.desktop
+/usr/share/applications/$orbit_appid.Preview.desktop
 /usr/share/metainfo/$orbit_appid.metainfo.xml
 /usr/share/icons/hicolor/scalable/apps/$orbit_appid.svg
 /usr/share/icons/hicolor/symbolic/apps/$orbit_appid-symbolic.svg

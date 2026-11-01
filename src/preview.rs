@@ -37,7 +37,7 @@ impl Preview {
                 decorations: false,
                 transparent: true,
                 platform_specific: window::settings::PlatformSpecific {
-                    application_id: <crate::app::Orbit as cosmic::Application>::APP_ID.into(),
+                    application_id: "io.github.motixo.Orbit.Preview".into(),
                     ..Default::default()
                 },
                 ..Default::default()

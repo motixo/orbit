@@ -20,6 +20,7 @@ install -Dm0644 "resources/$orbit_appid.desktop" "$orbit_prefix/share/applicatio
 install -Dm0644 "resources/$orbit_appid.metainfo.xml" "$orbit_prefix/share/metainfo/$orbit_appid.metainfo.xml"
 install -Dm0644 "resources/icons/hicolor/scalable/apps/$orbit_appid.svg" "$orbit_prefix/share/icons/hicolor/scalable/apps/$orbit_appid.svg"
 install -Dm0644 "resources/$orbit_appid.Applet.desktop" "$orbit_prefix/share/applications/$orbit_appid.Applet.desktop"
+install -Dm0644 "resources/$orbit_appid.Preview.desktop" "$orbit_prefix/share/applications/$orbit_appid.Preview.desktop"
 install -Dm0644 "resources/icons/hicolor/symbolic/apps/$orbit_appid-symbolic.svg" "$orbit_prefix/share/icons/hicolor/symbolic/apps/$orbit_appid-symbolic.svg"
 if command -v gtk-update-icon-cache >/dev/null 2>&1; then
     gtk-update-icon-cache -f -t "$orbit_prefix/share/icons/hicolor"
