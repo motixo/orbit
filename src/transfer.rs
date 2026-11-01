@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use cosmic::iced::clipboard::mime::{AllowedMimeTypes, AsMimeTypes};
+use cosmic::iced::clipboard::{
+    dnd::DndAction,
+    mime::{AllowedMimeTypes, AsMimeTypes},
+};
 use std::{
     borrow::Cow,
     io::Read,
@@ -198,6 +201,15 @@ pub struct Transfer {
 }
 
 impl Transfer {
+    pub fn drag_actions(&self, copy_mode: bool) -> DndAction {
+        if copy_mode && self.has_local_files {
+            DndAction::Copy
+        } else {
+            // Attachment targets accept Copy; file managers can still select Move.
+            DndAction::Copy | DndAction::Move
+        }
+    }
+
     fn plain_text(&self) -> Option<String> {
         self.text
             .as_ref()?
@@ -327,6 +339,30 @@ impl Transfer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_file_drags_allow_copy_only_targets_and_keep_copy_mode() {
+        let data = Transfer {
+            files: FileList(vec![PathBuf::from("/tmp/Photo.png")]),
+            text: None,
+            text_only: false,
+            has_local_files: true,
+            links: false,
+            clipboard: false,
+            cached: Vec::new(),
+        };
+        let actions = data.drag_actions(false);
+        assert!(actions.contains(DndAction::Copy));
+        assert!(actions.contains(DndAction::Move));
+        assert_eq!(actions & DndAction::Copy, DndAction::Copy);
+        assert_eq!(data.drag_actions(true), DndAction::Copy);
+        assert!(data.available().iter().any(|mime| mime == URI_LIST));
+        let cached = Transfer {
+            has_local_files: false,
+            ..data
+        };
+        assert_eq!(cached.drag_actions(true), DndAction::Copy | DndAction::Move);
+    }
 
     #[test]
     fn content_drags_keep_paragraphs_styles_and_item_boundaries() {

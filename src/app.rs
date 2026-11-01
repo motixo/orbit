@@ -1970,13 +1970,7 @@ impl Orbit {
         } else {
             fl!("drag-files", count = data.files.0.len())
         };
-        let action = if self.copy_mode && data.has_local_files {
-            DndAction::Copy
-        } else if content_only || data.text_only && !data.has_local_files {
-            DndAction::Copy | DndAction::Move
-        } else {
-            DndAction::Move
-        };
+        let action = data.drag_actions(self.copy_mode);
         let content = widget::mouse_area(content)
             .on_press(Message::FocusItem(path.to_owned()))
             .on_double_click(Message::Preview(Some(path.to_owned())));
