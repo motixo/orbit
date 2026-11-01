@@ -111,13 +111,13 @@ pub async fn receive(
         {
             (image, true)
         } else if !fragment.outside_link
-            && !fragment.list
+            && !fragment.structured
             && let Some(link) = fragment.link
         {
             return save_text(link);
         } else {
             let document = crate::rich_text::Document::from_html(&text)?;
-            if is_link(&document.text) {
+            if !fragment.structured && is_link(&document.text) {
                 return save_text(document.text);
             }
             let html = format!("<!DOCTYPE html><meta charset=\"utf-8\">{}", document.html());
@@ -194,7 +194,7 @@ struct Fragment {
     link: Option<String>,
     text: String,
     outside_link: bool,
-    list: bool,
+    structured: bool,
 }
 
 fn browser_fragment(html: &str) -> Result<Fragment, Box<dyn Error + Send + Sync>> {
@@ -217,7 +217,7 @@ fn browser_fragment(html: &str) -> Result<Fragment, Box<dyn Error + Send + Sync>
                 if hidden {
                     continue;
                 }
-                fragment.list |= matches!(name.as_str(), "ul" | "ol");
+                fragment.structured |= matches!(name.as_str(), "ul" | "ol" | "table");
                 if matches!(name.as_str(), "br" | "p" | "div" | "li")
                     && !fragment.text.ends_with('\n')
                     && !fragment.text.is_empty()
@@ -487,5 +487,8 @@ mod tests {
             Some("https://example.com/article")
         );
         assert!(!fragment.outside_link);
+
+        let fragment = browser_fragment("<table><tr><td><a href='https://example.com'>https://example.com</a></td></tr></table>").unwrap();
+        assert!(fragment.structured);
     }
 }

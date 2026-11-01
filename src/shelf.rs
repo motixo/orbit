@@ -161,9 +161,11 @@ impl Shelf {
         let paths = items.iter().map(|item| item.path.clone()).collect();
         let text_only = !items.is_empty() && items.iter().all(|item| item.has_text());
         let links = text_only
-            && items
-                .iter()
-                .all(|item| item.text.as_deref().is_some_and(is_link));
+            && items.iter().all(|item| {
+                item.text.as_deref().is_some_and(|text| {
+                    is_link(text) && crate::rich_text::Document::read(&item.path, text).is_none()
+                })
+            });
         let text = items.iter().any(|item| item.has_text()).then(|| {
             items
                 .iter()
@@ -493,6 +495,25 @@ mod tests {
         assert!(!shelf.contains_link("https://example.com/article?a=2#section"));
         assert!(!shelf.contains_link("https://example.com/article?a=1#other"));
         assert!(!shelf.contains_link("https://example.com/article?a=1#section\nAnother line"));
+    }
+
+    #[test]
+    fn a_table_containing_one_url_still_transfers_as_formatted_text() {
+        use cosmic::iced::clipboard::mime::AsMimeTypes;
+        let fixture = Fixture::new();
+        let path = fixture.file("table.html");
+        let document = crate::rich_text::Document::from_html(
+            "<table><tr><td>https://example.com</td></tr></table>",
+        )
+        .unwrap();
+        fs::write(&path, document.html()).unwrap();
+        let mut shelf = Shelf::default();
+        shelf.add([path.clone()]);
+        shelf.set_import(&path, Some(document.text), None);
+        let transfer = shelf.transfer(vec![path], true);
+        assert!(!transfer.links);
+        let html = transfer.as_bytes(crate::rich_text::HTML).unwrap();
+        assert!(std::str::from_utf8(&html).unwrap().contains("<table "));
     }
 
     #[test]
