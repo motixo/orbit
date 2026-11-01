@@ -132,6 +132,7 @@ pub enum Message {
     QrAddress(usize),
     StopQr,
     CopyShareLink,
+    ShareInfo(bool),
     PhoneEvent(window::Id, u64, crate::phone::Event),
     FocusItem(PathBuf),
     Copy,
@@ -493,6 +494,13 @@ impl cosmic::Application for Orbit {
         } else {
             Subscription::none()
         };
+        let sharing = if self.share.as_ref().is_some_and(|share| {
+            share.qr.is_some() && share.connected.is_animating(std::time::Instant::now())
+        }) {
+            iced::time::every(std::time::Duration::from_millis(16)).map(|_| Message::Noop)
+        } else {
+            Subscription::none()
+        };
         let opened = iced::window::open_events().map(Message::WindowOpened);
         let config = self
             .core
@@ -513,7 +521,7 @@ impl cosmic::Application for Orbit {
             Subscription::none()
         };
         Subscription::batch([
-            keyboard, layout, pointer, animation, opened, config, watch, presence,
+            keyboard, layout, pointer, animation, sharing, opened, config, watch, presence,
         ])
     }
 
@@ -528,7 +536,13 @@ impl cosmic::Application for Orbit {
                             ..
                         }
                     ) {
-                        return self.update(Message::CloseShare);
+                        return self.update(
+                            if self.share.as_ref().is_some_and(|share| share.info_open) {
+                                Message::ShareInfo(false)
+                            } else {
+                                Message::CloseShare
+                            },
+                        );
                     }
                     return Task::none();
                 }
@@ -881,14 +895,24 @@ impl cosmic::Application for Orbit {
                     share.session = None;
                     share.qr = None;
                     share.qr_busy = false;
-                    share.connected = false;
+                    share.info_open = false;
+                    share.connected = iced::Animation::new(false)
+                        .duration(crate::orbit_icon::TRANSITION_DURATION)
+                        .easing(iced::animation::Easing::EaseInOut);
                     share.status.clear();
                 }
             }
             Message::CopyShareLink => {
-                if let Some(session) = self.share.as_ref().and_then(|share| share.session.as_ref())
+                if let Some(share) = &mut self.share
+                    && let Some(session) = &share.session
                 {
+                    share.info_open = false;
                     return iced::clipboard::write(session.url.clone());
+                }
+            }
+            Message::ShareInfo(open) => {
+                if let Some(share) = &mut self.share {
+                    share.info_open = open && share.session.is_some();
                 }
             }
             Message::PhoneEvent(id, generation, event) => {
@@ -898,7 +922,7 @@ impl cosmic::Application for Orbit {
                 {
                     match event {
                         crate::phone::Event::Connected(connected) => {
-                            share.connected = connected;
+                            share.connected.go_mut(connected, std::time::Instant::now());
                         }
                         crate::phone::Event::Received(imported) => {
                             share.status = fl!("share-received");

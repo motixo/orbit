@@ -87,7 +87,8 @@ pub struct Share {
     pub session: Option<Arc<crate::phone::Session>>,
     pub qr: Option<widget::qr_code::Data>,
     pub generation: u64,
-    pub connected: bool,
+    pub connected: iced::Animation<bool>,
+    pub info_open: bool,
 }
 
 impl Share {
@@ -121,67 +122,70 @@ impl Share {
                 session: None,
                 qr: None,
                 generation: 0,
-                connected: false,
+                connected: iced::Animation::new(false)
+                    .duration(crate::orbit_icon::TRANSITION_DURATION)
+                    .easing(iced::animation::Easing::EaseInOut),
+                info_open: false,
             },
             cosmic::task::message(cosmic::Action::Surface(open)),
         )
     }
 
     pub fn view(&self) -> Element<'_, Message> {
+        let spacing = cosmic::theme::spacing();
         let ready = self.bundle.is_some() && !self.busy && !self.qr_busy;
         let mut controls = Vec::new();
-        if let (Some(session), Some(qr)) = (&self.session, &self.qr) {
-            controls.push(
-                widget::container(crate::orbit_icon::binary())
-                    .center_x(Length::Fill)
-                    .into(),
-            );
-            if self.addresses.len() > 1 {
-                controls.push(
-                    widget::dropdown(&self.addresses, Some(self.address), Message::QrAddress)
-                        .width(Length::Fill)
-                        .into(),
-                );
+        if let Some(qr) = &self.qr {
+            let visibility: f32 = self
+                .connected
+                .interpolate(1.0, 0.0, std::time::Instant::now());
+            let mut animation = iced::widget::Stack::new()
+                .push(
+                    widget::container(crate::orbit_icon::binary(self.connected.value()))
+                        .height(272.0 + 62.4 * visibility),
+                )
+                .width(Length::Fill);
+            if visibility > 0.0 {
+                animation = animation.push(iced::widget::responsive(move |size| {
+                    let qr_size = ((size.width - 192.0) * 1.15).clamp(112.0, 192.0) * visibility;
+                    let code = widget::container(iced::widget::themer(
+                        Some(iced::Theme::Light),
+                        widget::qr_code::QRCode::<iced::Theme>::new(qr)
+                            .total_size(qr_size)
+                            .style(move |_| widget::qr_code::Style {
+                                cell: iced::Color::BLACK.scale_alpha(visibility),
+                                background: iced::Color::TRANSPARENT,
+                            }),
+                    ))
+                    .class(cosmic::theme::Container::custom(move |theme| {
+                        widget::container::Style {
+                            background: Some(iced::Color::WHITE.scale_alpha(visibility).into()),
+                            border: iced::Border {
+                                radius: theme
+                                    .cosmic()
+                                    .radius_s()
+                                    .map(|radius| radius * visibility)
+                                    .into(),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        }
+                    }));
+                    widget::container(code)
+                        .center_x(Length::Fill)
+                        .align_bottom(Length::Fill)
+                        .padding(8.0 * visibility)
+                        .into()
+                }));
             }
+            controls.push(animation.into());
             controls.push(
-                widget::container(iced::widget::themer(
-                    Some(iced::Theme::Light),
-                    widget::qr_code::QRCode::<iced::Theme>::new(qr)
-                        .total_size(240)
-                        .style(|_| widget::qr_code::Style {
-                            cell: iced::Color::BLACK,
-                            background: iced::Color::WHITE,
-                        }),
-                ))
-                .center_x(Length::Fill)
-                .padding(8)
-                .into(),
-            );
-            controls.push(
-                widget::text::caption(if self.connected {
+                widget::container(widget::text::caption(if self.connected.value() {
                     fl!("share-connected")
                 } else {
                     fl!("share-waiting")
-                })
-                .into(),
-            );
-            controls.push(widget::text::caption(fl!("share-network-hint")).into());
-            controls.push(
-                widget::selectable_text::caption(&session.url)
-                    .width(Length::Fill)
-                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
-                    .into(),
-            );
-            controls.push(
-                widget::row::with_children(vec![
-                    widget::button::standard(fl!("copy-link"))
-                        .on_press(Message::CopyShareLink)
-                        .into(),
-                    widget::button::standard(fl!("stop-sharing"))
-                        .on_press(Message::StopQr)
-                        .into(),
-                ])
-                .spacing(cosmic::theme::spacing().space_xxs)
+                }))
+                .center_x(Length::Fill)
                 .into(),
             );
         } else {
@@ -221,24 +225,34 @@ impl Share {
         if self.bundle.is_none() && self.status.is_empty() || self.busy || self.qr_busy {
             controls.push(widget::indeterminate_circular().size(24.0).into());
         }
-        if !self.status.is_empty() {
+        if !self.status.is_empty() && self.session.is_none() {
             controls.push(widget::text::body(&self.status).into());
         }
+        let mut header = widget::header_bar()
+            .title(if self.receive {
+                fl!("receive")
+            } else {
+                fl!("share")
+            })
+            .on_drag(Message::DragShare)
+            .on_close(Message::CloseShare);
+        if self.session.is_some() {
+            header = header.start(self.info());
+        }
         let content = widget::column::with_children(vec![
-            widget::header_bar()
-                .title(if self.receive {
-                    fl!("receive")
-                } else {
-                    fl!("share")
-                })
-                .on_drag(Message::DragShare)
-                .on_close(Message::CloseShare)
-                .into(),
+            header.into(),
             widget::scrollable(
                 widget::column::with_children(controls)
                     .width(Length::Fill)
-                    .spacing(cosmic::theme::spacing().space_s)
-                    .padding(cosmic::theme::spacing().space_s),
+                    .spacing(spacing.space_s)
+                    .padding([
+                        spacing.space_s,
+                        if self.qr.is_some() {
+                            0
+                        } else {
+                            spacing.space_s
+                        },
+                    ]),
             )
             .width(Length::Fill)
             .height(Length::Fill)
@@ -266,6 +280,52 @@ impl Share {
                 }
             }))
             .into()
+    }
+
+    fn info(&self) -> Element<'_, Message> {
+        let button = widget::button::icon(widget::icon::from_name("dialog-information-symbolic"))
+            .name(fl!("share-info"))
+            .on_press(Message::ShareInfo(!self.info_open));
+        let mut popover = widget::popover(button)
+            .position(widget::popover::Position::Bottom)
+            .on_close(Message::ShareInfo(false));
+        if self.info_open
+            && let Some(session) = &self.session
+        {
+            let mut fields = vec![
+                widget::text::caption(fl!("share-network-hint")).into(),
+                widget::selectable_text::caption(&session.url)
+                    .width(Length::Fill)
+                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
+                    .into(),
+            ];
+            if self.addresses.len() > 1 {
+                fields.push(
+                    widget::dropdown(&self.addresses, Some(self.address), Message::QrAddress)
+                        .width(Length::Fill)
+                        .into(),
+                );
+            }
+            if !self.status.is_empty() {
+                fields.push(widget::text::caption(&self.status).into());
+            }
+            fields.push(
+                widget::button::standard(fl!("copy-link"))
+                    .on_press(Message::CopyShareLink)
+                    .into(),
+            );
+            popover = popover.popup(
+                widget::container(
+                    widget::column::with_children(fields)
+                        .width(Length::Fill)
+                        .spacing(cosmic::theme::spacing().space_s),
+                )
+                .width(300)
+                .padding(cosmic::theme::spacing().space_s)
+                .class(cosmic::theme::Container::Card),
+            );
+        }
+        popover.into()
     }
 }
 

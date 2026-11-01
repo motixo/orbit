@@ -3,42 +3,50 @@
 use cosmic::{
     Element, Renderer, Theme,
     iced::{
-        Animation, Border, Color, Event, Length, Point, Rectangle, Size,
+        Animation, Border, Color, Event, Length, Point, Rectangle, Size, Vector,
         advanced::{
-            Clipboard, Layout, Shell, Widget, layout, mouse,
+            Clipboard, Layout, Shell, Widget,
+            graphics::geometry::{self, Frame, Path, Stroke, gradient},
+            layout, mouse,
             renderer::{self, Renderer as _},
             svg::{self, Renderer as _},
             widget::{Tree, tree},
         },
         animation::Easing,
-        gradient, window,
+        window,
     },
 };
-use std::{f32::consts::TAU, sync::LazyLock, time::Instant};
+use std::{
+    f32::consts::TAU,
+    sync::LazyLock,
+    time::{Duration, Instant},
+};
 
 static TRACK: LazyLock<svg::Handle> = LazyLock::new(|| {
     svg::Handle::from_memory(include_bytes!("../resources/icons/orbit-track.svg").as_slice())
 });
 
-const BINARY_SIZE: Size = Size::new(208.0, 112.0);
+const BINARY_SIZE: Size = Size::new(416.0, 272.0);
+const BINARY_SCALE: f32 = 2.1;
+const WAITING_RADIUS: f32 = 110.4;
 const ECCENTRICITY: f32 = 0.6;
-static BINARY_TRACKS: LazyLock<[svg::Handle; 2]> = LazyLock::new(binary_tracks);
+pub const TRANSITION_DURATION: Duration = Duration::from_millis(1500);
 
 pub fn animated<'a, Message: 'a>(size: u16, count: usize, hovering: bool) -> Element<'a, Message> {
     Element::new(OrbitIcon {
         size: Size::new(size.into(), size.into()),
         count,
         hovering,
-        binary: false,
+        binary: None,
     })
 }
 
-pub fn binary<'a, Message: 'a>() -> Element<'a, Message> {
+pub fn binary<'a, Message: 'a>(connected: bool) -> Element<'a, Message> {
     Element::new(OrbitIcon {
         size: BINARY_SIZE,
         count: 2,
         hovering: false,
-        binary: true,
+        binary: Some(connected),
     })
 }
 
@@ -46,13 +54,16 @@ struct OrbitIcon {
     size: Size,
     count: usize,
     hovering: bool,
-    binary: bool,
+    binary: Option<bool>,
 }
 
 struct State {
     started: Instant,
     pulse_started: Instant,
     hover: Animation<bool>,
+    joined: Animation<bool>,
+    half_turns: Animation<f32>,
+    binary_cache: geometry::Cache<Renderer>,
 }
 
 impl State {
@@ -61,6 +72,13 @@ impl State {
             started: now,
             pulse_started: now,
             hover: Animation::new(false).quick().easing(Easing::EaseInOut),
+            joined: Animation::new(false)
+                .duration(TRANSITION_DURATION)
+                .easing(Easing::EaseInOut),
+            half_turns: Animation::new(1.0)
+                .duration(TRANSITION_DURATION)
+                .easing(Easing::EaseInOut),
+            binary_cache: geometry::Cache::new(),
         }
     }
 
@@ -70,6 +88,13 @@ impl State {
                 self.pulse_started = now;
             }
             self.hover.go_mut(hovering, now);
+        }
+    }
+
+    fn set_connected(&mut self, connected: bool, now: Instant) {
+        if connected != self.joined.value() {
+            self.joined.go_mut(connected, now);
+            self.half_turns.go_mut(self.half_turns.value() + 1.0, now);
         }
     }
 
@@ -91,28 +116,35 @@ impl<Message> Widget<Message, Theme, Renderer> for OrbitIcon {
         let now = Instant::now();
         let mut state = State::new(now);
         state.set_hover(self.hovering, now);
+        state.set_connected(self.binary.unwrap_or(false), now);
         tree::State::new(state)
     }
 
     fn diff(&mut self, tree: &mut Tree) {
-        tree.state
-            .downcast_mut::<State>()
-            .set_hover(self.hovering, Instant::now());
+        let state = tree.state.downcast_mut::<State>();
+        let now = Instant::now();
+        state.set_hover(self.hovering, now);
+        state.set_connected(self.binary.unwrap_or(false), now);
     }
 
     fn size(&self) -> Size<Length> {
         Size::new(
-            Length::Fixed(self.size.width),
+            if self.binary.is_some() {
+                Length::Fill
+            } else {
+                Length::Fixed(self.size.width)
+            },
             Length::Fixed(self.size.height),
         )
     }
 
     fn layout(&mut self, _: &mut Tree, _: &Renderer, limits: &layout::Limits) -> layout::Node {
-        layout::Node::new(limits.resolve(
-            Length::Fixed(self.size.width),
-            Length::Fixed(self.size.height),
-            self.size,
-        ))
+        let width = if self.binary.is_some() {
+            Length::Fill
+        } else {
+            Length::Fixed(self.size.width)
+        };
+        layout::Node::new(limits.resolve(width, Length::Fixed(self.size.height), self.size))
     }
 
     fn update(
@@ -149,8 +181,22 @@ impl<Message> Widget<Message, Theme, Renderer> for OrbitIcon {
         let state = tree.state.downcast_ref::<State>();
         let now = Instant::now();
         let elapsed = now.duration_since(state.started).as_secs_f64();
-        if self.binary {
-            draw_binary(renderer, style, bounds, elapsed);
+        if self.binary.is_some() {
+            use geometry::Renderer as _;
+            // Repaint the full area so antialiased edges leave no trails.
+            state.binary_cache.clear();
+            let geometry = state.binary_cache.draw(renderer, bounds.size(), |frame| {
+                draw_binary(
+                    frame,
+                    style,
+                    elapsed,
+                    state.joined.interpolate(0.0, 1.0, now),
+                    state.half_turns.interpolate_with(|turns| turns, now),
+                );
+            });
+            renderer.with_translation(Vector::new(bounds.x, bounds.y), |renderer| {
+                renderer.draw_geometry(geometry);
+            });
             return;
         }
         let pulse = state.pulse(now);
@@ -176,26 +222,37 @@ impl<Message> Widget<Message, Theme, Renderer> for OrbitIcon {
             let radius = (1.25 + 0.7 * depth) * scale;
             let x = 8.75 * cosine;
             let y = 4.2 * sine;
-            let mut color = icon_color;
-            color.a *= 0.65 + 0.35 * depth;
-            renderer.fill_quad(
-                renderer::Quad {
-                    bounds: Rectangle {
-                        x: bounds.center_x() + (x * tilt_cosine - y * tilt_sine) * scale - radius,
-                        y: bounds.center_y() + (x * tilt_sine + y * tilt_cosine) * scale - radius,
-                        width: radius * 2.0,
-                        height: radius * 2.0,
-                    },
-                    border: Border {
-                        radius: radius.into(),
-                        ..Border::default()
-                    },
-                    ..renderer::Quad::default()
-                },
-                color,
+            draw_dot(
+                renderer,
+                icon_color,
+                Point::new(
+                    bounds.center_x() + (x * tilt_cosine - y * tilt_sine) * scale,
+                    bounds.center_y() + (x * tilt_sine + y * tilt_cosine) * scale,
+                ),
+                radius,
+                depth,
             );
         }
     }
+}
+
+fn draw_dot(renderer: &mut Renderer, color: Color, center: Point, radius: f32, depth: f32) {
+    renderer.fill_quad(
+        renderer::Quad {
+            bounds: Rectangle {
+                x: center.x - radius,
+                y: center.y - radius,
+                width: radius * 2.0,
+                height: radius * 2.0,
+            },
+            border: Border {
+                radius: radius.into(),
+                ..Border::default()
+            },
+            ..renderer::Quad::default()
+        },
+        color.scale_alpha(0.65 + 0.35 * depth),
+    );
 }
 
 fn binary_point(anomaly: f32) -> Point {
@@ -206,20 +263,21 @@ fn binary_point(anomaly: f32) -> Point {
     )
 }
 
-fn binary_position(mean: f32) -> Point {
+fn binary_position(mean: f32, joined: f32) -> Point {
     let mean = mean.rem_euclid(TAU);
     let mut anomaly = mean;
     for _ in 0..8 {
         anomaly -=
             (anomaly - ECCENTRICITY * anomaly.sin() - mean) / (1.0 - ECCENTRICITY * anomaly.cos());
     }
-    binary_point(anomaly)
+    binary_point(mean + (anomaly - mean) * joined)
 }
 
-fn project_binary(point: Point) -> (Point, f32) {
-    let (inclination_sine, inclination_cosine) = 58.0_f32.to_radians().sin_cos();
-    let (roll_sine, roll_cosine) = (-22.0_f32).to_radians().sin_cos();
-    let perspective = 260.0 / (260.0 - point.y * inclination_sine);
+fn project_binary(point: Point, orbit: usize) -> (Point, f32) {
+    let (inclination, roll): (f32, f32) = [(60.0, -28.0), (53.0, 28.0)][orbit];
+    let (inclination_sine, inclination_cosine) = inclination.to_radians().sin_cos();
+    let (roll_sine, roll_cosine) = roll.to_radians().sin_cos();
+    let perspective = 140.0 / (140.0 - point.y * inclination_sine);
     (
         Point::new(
             (point.x * roll_cosine - point.y * inclination_cosine * roll_sine) * perspective,
@@ -229,77 +287,98 @@ fn project_binary(point: Point) -> (Point, f32) {
     )
 }
 
-fn binary_tracks() -> [svg::Handle; 2] {
-    use std::fmt::Write;
-    [false, true].map(|front| {
-        let mut source = format!(
-            r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {} {}">"#,
-            BINARY_SIZE.width, BINARY_SIZE.height,
-        );
-        for direction in [-1.0, 1.0] {
-            let start = if (direction > 0.0) == front { 0.0 } else { TAU / 2.0 };
-            source.push_str(r#"<polyline fill="none" stroke="white" stroke-width=".8" stroke-linecap="round" points=""#);
-            for index in 0..=64 {
-                let point = binary_point(start + TAU / 2.0 * index as f32 / 64.0);
-                let (point, _) = project_binary(Point::new(point.x * direction, point.y * direction));
-                let _ = write!(source, "{:.3},{:.3} ", point.x + BINARY_SIZE.width / 2.0, point.y + BINARY_SIZE.height / 2.0);
-            }
-            source.push_str(r#""/>"#);
-        }
-        source.push_str("</svg>");
-        svg::Handle::from_memory(source.into_bytes())
-    })
+fn transition_position(point: Point, orbit: usize, joined: f32, size: Size) -> (Point, f32) {
+    let direction = if orbit == 0 { 1.0 } else { -1.0 };
+    let circle = Point::new(
+        if orbit == 0 { 0.0 } else { size.width }
+            + direction * WAITING_RADIUS * (point.x / 44.0 + ECCENTRICITY),
+        size.height / 2.0
+            + direction * WAITING_RADIUS * point.y
+                / (44.0 * (1.0 - ECCENTRICITY * ECCENTRICITY).sqrt()),
+    );
+    let (target, perspective) =
+        project_binary(Point::new(point.x * direction, point.y * direction), orbit);
+    (
+        Point::new(
+            circle.x + (size.width / 2.0 + target.x * BINARY_SCALE - circle.x) * joined,
+            circle.y + (size.height / 2.0 + target.y * BINARY_SCALE - circle.y) * joined,
+        ),
+        1.0 + (perspective - 1.0) * joined,
+    )
 }
 
-fn draw_binary(renderer: &mut Renderer, style: &renderer::Style, bounds: Rectangle, elapsed: f64) {
-    let scale = (bounds.width / BINARY_SIZE.width).min(bounds.height / BINARY_SIZE.height);
-    let drawing_bounds = Rectangle {
-        x: bounds.center_x() - BINARY_SIZE.width * scale / 2.0,
-        y: bounds.center_y() - BINARY_SIZE.height * scale / 2.0,
-        width: BINARY_SIZE.width * scale,
-        height: BINARY_SIZE.height * scale,
-    };
-    let point = binary_position(elapsed.rem_euclid(6.0) as f32 * TAU / 6.0);
-    let mut stars = [
-        project_binary(point),
-        project_binary(Point::new(-point.x, -point.y)),
-    ];
+fn star_position(
+    mean: f32,
+    orbit: usize,
+    joined: f32,
+    half_turns: f32,
+    size: Size,
+) -> (Point, f32) {
+    let phase = half_turns.rem_euclid(2.0) * orbit as f32 * TAU / 2.0;
+    transition_position(binary_position(mean + phase, joined), orbit, joined, size)
+}
+
+fn draw_binary(
+    frame: &mut Frame<Renderer>,
+    style: &renderer::Style,
+    elapsed: f64,
+    joined: f32,
+    half_turns: f32,
+) {
+    let size = frame.size();
+    let mean = elapsed.rem_euclid(6.0) as f32 * TAU / 6.0;
+    let mut stars: [_; 2] =
+        std::array::from_fn(|orbit| star_position(mean, orbit, joined, half_turns, size));
     stars.sort_by(|a, b| a.1.total_cmp(&b.1));
     for (index, (point, perspective)) in stars.into_iter().enumerate() {
-        renderer.draw_svg(
-            svg::Svg::new(BINARY_TRACKS[index].clone())
-                .color(style.icon_color)
-                .opacity(if index == 0 { 0.20_f32 } else { 0.45_f32 }),
-            drawing_bounds,
-            bounds,
-        );
-        let radius = 6.0 * perspective * scale;
-        let color = style.icon_color;
-        let shadow = Color {
-            r: color.r * 0.45,
-            g: color.g * 0.45,
-            b: color.b * 0.45,
-            ..color
-        };
-        let surface = gradient::Linear::new(std::f32::consts::FRAC_PI_4)
-            .add_stop(0.0, color)
-            .add_stop(0.4, color)
-            .add_stop(1.0, shadow);
-        renderer.fill_quad(
-            renderer::Quad {
-                bounds: Rectangle {
-                    x: bounds.center_x() + point.x * scale - radius,
-                    y: bounds.center_y() + point.y * scale - radius,
-                    width: radius * 2.0,
-                    height: radius * 2.0,
+        for orbit in 0..2 {
+            let front = index == 1;
+            let start = if (orbit == 0) == front {
+                0.0
+            } else {
+                TAU / 2.0
+            };
+            let path = Path::new(|builder| {
+                for step in 0..=64 {
+                    let (point, _) = transition_position(
+                        binary_point(start + TAU / 2.0 * step as f32 / 64.0),
+                        orbit,
+                        joined,
+                        size,
+                    );
+                    if step == 0 {
+                        builder.move_to(point);
+                    } else {
+                        builder.line_to(point);
+                    }
+                }
+            });
+            let (middle, perspective) =
+                transition_position(binary_point(start + TAU / 4.0), orbit, joined, size);
+            let (opposite, _) =
+                transition_position(binary_point(start + 3.0 * TAU / 4.0), orbit, joined, size);
+            let (far, near) = if front {
+                (opposite, middle)
+            } else {
+                (middle, opposite)
+            };
+            let gradient = gradient::Linear::new(far, near)
+                .add_stop(0.0, style.icon_color.scale_alpha(0.45 - 0.2 * joined))
+                .add_stop(1.0, style.icon_color.scale_alpha(0.45 + 0.2 * joined));
+            frame.stroke(
+                &path,
+                Stroke {
+                    style: geometry::Style::Gradient(gradient.into()),
+                    width: 1.35 * perspective,
+                    ..Stroke::default()
                 },
-                border: Border {
-                    radius: radius.into(),
-                    ..Border::default()
-                },
-                ..renderer::Quad::default()
-            },
-            surface,
+            );
+        }
+        let depth = ((perspective - 0.8) / 0.5).clamp(0.0, 1.0);
+        let radius = (9.0 - 1.5 * joined) * perspective;
+        frame.fill(
+            &Path::circle(point, radius),
+            style.icon_color.scale_alpha(0.65 + 0.35 * depth),
         );
     }
 }
@@ -311,18 +390,86 @@ mod tests {
 
     #[test]
     fn elliptic_motion_has_a_shared_focus_and_accelerates_near_it() {
-        let periapsis = binary_position(0.0);
-        let apoapsis = binary_position(TAU / 2.0);
+        let periapsis = binary_position(0.0, 1.0);
+        let apoapsis = binary_position(TAU / 2.0, 1.0);
         assert!((periapsis.x - 44.0 * (1.0 - ECCENTRICITY)).abs() < 0.0001);
         assert!((apoapsis.x + 44.0 * (1.0 + ECCENTRICITY)).abs() < 0.0001);
         let step = 0.001;
-        let fast = periapsis.distance(binary_position(step));
-        let slow = apoapsis.distance(binary_position(TAU / 2.0 + step));
+        let fast = periapsis.distance(binary_position(step, 1.0));
+        let slow = apoapsis.distance(binary_position(TAU / 2.0 + step, 1.0));
         assert!(fast > slow * 3.0);
-        assert!(periapsis.distance(binary_position(TAU)) < 0.0001);
-        let (_, near) = project_binary(Point::new(0.0, 30.0));
-        let (_, far) = project_binary(Point::new(0.0, -30.0));
+        assert!(periapsis.distance(binary_position(TAU, 1.0)) < 0.0001);
+        let (_, near) = project_binary(Point::new(0.0, 30.0), 0);
+        let (_, far) = project_binary(Point::new(0.0, -30.0), 0);
         assert!(near > 1.0 && far < 1.0);
+    }
+
+    #[test]
+    fn separate_circles_converge_to_the_first_layout_and_reverse_smoothly() {
+        let size = Size::new(340.0, 240.0);
+        for orbit in 0..2 {
+            let center = Point::new(if orbit == 0 { 0.0 } else { size.width }, size.height / 2.0);
+            for step in 0..16 {
+                let mean = TAU * step as f32 / 16.0;
+                let point = binary_position(mean, 0.0);
+                let (separate, depth) = transition_position(point, orbit, 0.0, size);
+                assert!((center.distance(separate) - 110.4).abs() < 0.0001);
+                assert_eq!(depth, 1.0);
+                let (next, _) =
+                    transition_position(binary_position(mean + TAU / 16.0, 0.0), orbit, 0.0, size);
+                assert!((separate.distance(next) - 220.8 * (TAU / 32.0).sin()).abs() < 0.0001);
+                let direction = if orbit == 0 { 1.0 } else { -1.0 };
+                let (target, _) =
+                    project_binary(Point::new(point.x * direction, point.y * direction), orbit);
+                let (joined, _) = transition_position(point, orbit, 1.0, size);
+                assert!(
+                    joined.distance(Point::new(
+                        size.width / 2.0 + target.x * BINARY_SCALE,
+                        size.height / 2.0 + target.y * BINARY_SCALE
+                    )) < 0.0001
+                );
+            }
+        }
+        let now = Instant::now();
+        let mut state = State::new(now);
+        state.set_connected(true, now);
+        let halfway = now + TRANSITION_DURATION / 2;
+        let progress: f32 = state.joined.interpolate(0.0, 1.0, halfway);
+        assert!(progress > 0.0 && progress < 1.0);
+        state.set_connected(false, halfway);
+        let reversed: f32 = state.joined.interpolate(0.0, 1.0, halfway);
+        assert!((reversed - progress).abs() < 0.0001);
+    }
+
+    #[test]
+    fn phase_keeps_advancing_through_connection_changes_and_interruptions() {
+        let started = Instant::now();
+        let mut state = State::new(started);
+        let mut elapsed = Duration::ZERO;
+        let mut previous = 1.0;
+        for (connected, milliseconds) in [(true, 300), (false, 300), (true, 1500), (false, 1500)] {
+            state.set_connected(connected, started + elapsed);
+            for step in (0..=milliseconds).step_by(10) {
+                let now = started + elapsed + Duration::from_millis(step);
+                let phase = state.half_turns.interpolate_with(|turns| turns, now);
+                assert!(phase >= previous);
+                previous = phase;
+            }
+            elapsed += Duration::from_millis(milliseconds);
+        }
+        assert_eq!(previous.rem_euclid(2.0), 1.0);
+    }
+
+    #[test]
+    fn waiting_orbits_always_keep_a_dot_in_view() {
+        let size = Size::new(340.0, 240.0);
+        for step in 0..360 {
+            let mean = TAU * step as f32 / 360.0;
+            assert!((0..2).any(|orbit| {
+                let (point, _) = star_position(mean, orbit, 0.0, 1.0, size);
+                point.x >= -0.0001 && point.x <= size.width + 0.0001
+            }));
+        }
     }
 
     #[test]
