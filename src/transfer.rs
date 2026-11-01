@@ -294,7 +294,7 @@ impl Transfer {
                                 .unwrap_or_else(|| {
                                     format!(
                                         "<div style=\"white-space:pre-wrap\">{}</div>",
-                                        quick_xml::escape::escape(&*text)
+                                        crate::rich_text::html_text(&text)
                                     )
                                 }),
                         )

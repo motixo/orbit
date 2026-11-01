@@ -9,6 +9,11 @@ pub const HTML: &str = "text/html";
 pub const HTML_UTF8: &str = "text/html;charset=utf-8";
 pub const MAX_HTML: usize = 8 * 1024 * 1024;
 
+pub fn html_text(text: &str) -> String {
+    let text = text.replace("\r\n", "\n").replace('\r', "\n");
+    quick_xml::escape::escape(text).replace('\n', "<br>")
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Style {
     bold: bool,
@@ -180,7 +185,7 @@ impl Document {
             html.push_str(&format!(
                 "<span style=\"{}\">{}</span>",
                 quick_xml::escape::escape(&css),
-                quick_xml::escape::escape(&self.text[run.range.clone()])
+                html_text(&self.text[run.range.clone()])
             ));
         }
         html.push_str("</span>");
@@ -663,6 +668,25 @@ fn block(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clipboard_html_keeps_line_breaks_without_whitespace_styles() {
+        use cosmic::iced::clipboard::mime::AsMimeTypes;
+
+        let document = Document::from_html("<b>First</b><br><br>Second &amp; last").unwrap();
+        let html = String::from_utf8(document.as_bytes(HTML).unwrap().into_owned()).unwrap();
+        assert_eq!(html.matches("<br>").count(), 2);
+        let normal = html.replace("white-space:pre-wrap", "white-space:normal");
+        assert_eq!(Document::from_html(&normal).unwrap(), document);
+        assert_eq!(
+            document.as_bytes(crate::transfer::TEXT).unwrap().as_ref(),
+            document.text.as_bytes()
+        );
+        assert_eq!(
+            html_text("First\r\n\r\nLast <line>"),
+            "First<br><br>Last &lt;line&gt;"
+        );
+    }
 
     #[test]
     fn clipboard_line_breaks_survive_import_and_reopening() {
