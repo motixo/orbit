@@ -320,7 +320,7 @@ impl Share {
                 )
                 .width(300)
                 .padding(cosmic::theme::spacing().space_s)
-                .class(cosmic::theme::Container::Card),
+                .class(cosmic::theme::Container::Dialog(true)),
             );
         }
         popover.into()
