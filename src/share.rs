@@ -129,6 +129,11 @@ impl Share {
         let ready = self.bundle.is_some() && !self.busy && !self.qr_busy;
         let mut controls = Vec::new();
         if let (Some(session), Some(qr)) = (&self.session, &self.qr) {
+            controls.push(
+                widget::container(crate::orbit_icon::crossed(64))
+                    .center_x(Length::Fill)
+                    .into(),
+            );
             if self.addresses.len() > 1 {
                 controls.push(
                     widget::dropdown(&self.addresses, Some(self.address), Message::QrAddress)

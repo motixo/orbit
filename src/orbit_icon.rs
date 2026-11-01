@@ -25,6 +25,16 @@ pub fn animated<'a, Message: 'a>(size: u16, count: usize, hovering: bool) -> Ele
         size: size.into(),
         count,
         hovering,
+        crossed: false,
+    })
+}
+
+pub fn crossed<'a, Message: 'a>(size: u16) -> Element<'a, Message> {
+    Element::new(OrbitIcon {
+        size: size.into(),
+        count: 1,
+        hovering: false,
+        crossed: true,
     })
 }
 
@@ -32,6 +42,7 @@ struct OrbitIcon {
     size: f32,
     count: usize,
     hovering: bool,
+    crossed: bool,
 }
 
 struct State {
@@ -132,7 +143,8 @@ impl<Message> Widget<Message, Theme, Renderer> for OrbitIcon {
         let now = Instant::now();
         let elapsed = now.duration_since(state.started).as_secs_f64();
         let pulse = state.pulse(now);
-        let scale = bounds.width / 24.0 * 1.2 * (1.0 - 0.10 * pulse);
+        let scale =
+            bounds.width / 24.0 * if self.crossed { 1.0 } else { 1.2 } * (1.0 - 0.10 * pulse);
         let mut icon_color = style.icon_color;
         icon_color.a *= 1.0 - 0.30 * pulse;
         let drawing_bounds = Rectangle {
@@ -141,37 +153,51 @@ impl<Message> Widget<Message, Theme, Renderer> for OrbitIcon {
             width: 24.0 * scale,
             height: 24.0 * scale,
         };
-        renderer.draw_svg(
-            svg::Svg::new(TRACK.clone()).color(icon_color),
-            drawing_bounds,
-            bounds,
-        );
         let angle = (elapsed.rem_euclid(4.0) as f32) * TAU / 4.0;
-        let (tilt_sine, tilt_cosine) = 28.0_f32.to_radians().sin_cos();
-        for index in 0..self.count {
-            let (sine, cosine) = (angle + TAU * index as f32 / self.count as f32).sin_cos();
-            let depth = (cosine + 1.0) / 2.0;
-            let radius = (1.25 + 0.7 * depth) * scale;
-            let x = 8.75 * cosine;
-            let y = 4.2 * sine;
-            let mut color = icon_color;
-            color.a *= 0.65 + 0.35 * depth;
-            renderer.fill_quad(
-                renderer::Quad {
-                    bounds: Rectangle {
-                        x: bounds.center_x() + (x * tilt_cosine - y * tilt_sine) * scale - radius,
-                        y: bounds.center_y() + (x * tilt_sine + y * tilt_cosine) * scale - radius,
-                        width: radius * 2.0,
-                        height: radius * 2.0,
-                    },
-                    border: Border {
-                        radius: radius.into(),
-                        ..Border::default()
-                    },
-                    ..renderer::Quad::default()
-                },
-                color,
+        let rotations: &[f32] = if self.crossed { &[0.0, -56.0] } else { &[0.0] };
+        for &rotation in rotations {
+            renderer.draw_svg(
+                svg::Svg::new(TRACK.clone())
+                    .color(icon_color)
+                    .rotation(rotation.to_radians()),
+                drawing_bounds,
+                bounds,
             );
+        }
+        for &rotation in rotations {
+            let angle = if rotation == 0.0 {
+                angle
+            } else {
+                TAU / 2.0 - angle
+            };
+            let (tilt_sine, tilt_cosine) = (28.0 + rotation).to_radians().sin_cos();
+            for index in 0..self.count {
+                let (sine, cosine) = (angle + TAU * index as f32 / self.count as f32).sin_cos();
+                let depth = (cosine + 1.0) / 2.0;
+                let radius = (1.25 + 0.7 * depth) * scale;
+                let x = 8.75 * cosine;
+                let y = 4.2 * sine;
+                let mut color = icon_color;
+                color.a *= 0.65 + 0.35 * depth;
+                renderer.fill_quad(
+                    renderer::Quad {
+                        bounds: Rectangle {
+                            x: bounds.center_x() + (x * tilt_cosine - y * tilt_sine) * scale
+                                - radius,
+                            y: bounds.center_y() + (x * tilt_sine + y * tilt_cosine) * scale
+                                - radius,
+                            width: radius * 2.0,
+                            height: radius * 2.0,
+                        },
+                        border: Border {
+                            radius: radius.into(),
+                            ..Border::default()
+                        },
+                        ..renderer::Quad::default()
+                    },
+                    color,
+                );
+            }
         }
     }
 }
