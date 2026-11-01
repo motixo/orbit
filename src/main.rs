@@ -18,6 +18,7 @@ mod pin;
 mod pointer;
 mod presence;
 mod preview;
+mod rich_text;
 mod shelf;
 mod shortcuts;
 mod thumbnail;

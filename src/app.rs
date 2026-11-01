@@ -105,6 +105,7 @@ pub enum Message {
     Preview(Option<PathBuf>),
     PreviewLoaded(window::Id, crate::preview::Content),
     PreviewText(window::Id, widget::text_editor::Action),
+    PreviewSelection(window::Id, std::ops::Range<usize>),
     CopyPreview(window::Id),
     ClosePreview,
     DragPreview,
@@ -765,10 +766,28 @@ impl cosmic::Application for Orbit {
             Message::CopyPreview(id) => {
                 if let Some(preview) = &self.preview
                     && preview.id == id
-                    && let Some(crate::preview::Content::Text(text)) = &preview.content
-                    && let Some(selection) = text.selection()
                 {
-                    return iced::clipboard::write(selection);
+                    match &preview.content {
+                        Some(crate::preview::Content::Text(text)) => {
+                            if let Some(selection) = text.selection() {
+                                return iced::clipboard::write(selection);
+                            }
+                        }
+                        Some(crate::preview::Content::Rich(text)) => {
+                            if let Some(selection) = text.selected() {
+                                return iced::clipboard::write_data(selection);
+                            }
+                        }
+                        _ => (),
+                    }
+                }
+            }
+            Message::PreviewSelection(id, selection) => {
+                if let Some(preview) = &mut self.preview
+                    && preview.id == id
+                    && let Some(crate::preview::Content::Rich(text)) = &mut preview.content
+                {
+                    text.select(selection);
                 }
             }
             Message::ClosePreview => {

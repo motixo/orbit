@@ -8,6 +8,7 @@ description = "A floating file shelf for the COSMIC desktop"
 
 [dependencies]
 base64 = "0.22.1"
+csscolorparser = "0.8.4"
 flate2 = "1.1"
 image = { version = "0.25.10", default-features = false }
 i18n-embed = { version = "0.16", features = ["fluent-system", "desktop-requester"] }
@@ -28,6 +29,7 @@ tempfile = "3.27"
 tar = "0.4"
 url = "2.5"
 uuid = { version = "1.29", features = ["v4"] }
+unicode-segmentation = "1.13.3"
 zbus = { version = "5.19", default-features = false, features = ["tokio"] }
 zip = { version = "3", default-features = false, features = ["deflate-flate2", "jiff-02"] }
 

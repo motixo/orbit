@@ -17,7 +17,6 @@ const MAX_TEXT_SIZE: usize = 1024 * 1024;
 
 // Prefer bytes from the browser: they also work for images that require its session.
 pub const MIME_TYPES: &[&str] = &[
-    ORBIT_TEXT,
     "image/png",
     "image/jpeg",
     "image/webp",
@@ -29,6 +28,7 @@ pub const MIME_TYPES: &[&str] = &[
     "downloadurl",
     "text/html;charset=utf-8",
     "text/html",
+    ORBIT_TEXT,
     URI_LIST,
     GNOME_FILES,
     "application/x-moz-file-promise-url",
@@ -83,8 +83,13 @@ pub async fn receive(
     if mime == GNOME_FILES {
         return Err("Invalid file list".into());
     }
-    if bytes.len() > MAX_TEXT_SIZE {
-        return Err("Text exceeds 1 MiB".into());
+    let text_limit = if mime.starts_with("text/html") {
+        crate::rich_text::MAX_HTML
+    } else {
+        MAX_TEXT_SIZE
+    };
+    if bytes.len() > text_limit {
+        return Err("Text is too large".into());
     }
 
     let text = if matches!(
@@ -106,11 +111,17 @@ pub async fn receive(
         {
             (image, true)
         } else if !fragment.outside_link
+            && !fragment.list
             && let Some(link) = fragment.link
         {
             return save_text(link);
         } else {
-            return save_text(fragment.text);
+            let document = crate::rich_text::Document::from_html(&text)?;
+            if is_link(&document.text) {
+                return save_text(document.text);
+            }
+            let html = format!("<!DOCTYPE html><meta charset=\"utf-8\">{}", document.html());
+            return save_snippet(document.text, "html", html);
         }
     } else {
         (text, false)
@@ -183,6 +194,7 @@ struct Fragment {
     link: Option<String>,
     text: String,
     outside_link: bool,
+    list: bool,
 }
 
 fn browser_fragment(html: &str) -> Result<Fragment, Box<dyn Error + Send + Sync>> {
@@ -205,6 +217,7 @@ fn browser_fragment(html: &str) -> Result<Fragment, Box<dyn Error + Send + Sync>
                 if hidden {
                     continue;
                 }
+                fragment.list |= matches!(name.as_str(), "ul" | "ol");
                 if matches!(name.as_str(), "br" | "p" | "div" | "li")
                     && !fragment.text.ends_with('\n')
                     && !fragment.text.is_empty()
@@ -345,9 +358,6 @@ pub fn record_error(mime: &str, size: usize, error: Box<dyn Error + Send + Sync>
 }
 
 fn save_text(text: String) -> Result<ImportedFiles, Box<dyn Error + Send + Sync>> {
-    if text.len() > MAX_TEXT_SIZE || text.trim().is_empty() || text.contains('\0') {
-        return Err("Invalid text".into());
-    }
     let (extension, contents) = if is_link(&text) {
         let url = Url::parse(text.trim())?;
         let url = quick_xml::escape::escape(url.as_str());
@@ -360,6 +370,21 @@ fn save_text(text: String) -> Result<ImportedFiles, Box<dyn Error + Send + Sync>
     } else {
         ("txt", text.clone())
     };
+    save_snippet(text, extension, contents)
+}
+
+fn save_snippet(
+    text: String,
+    extension: &str,
+    contents: String,
+) -> Result<ImportedFiles, Box<dyn Error + Send + Sync>> {
+    if text.len() > MAX_TEXT_SIZE
+        || contents.len() > crate::rich_text::MAX_HTML
+        || text.trim().is_empty()
+        || text.contains('\0')
+    {
+        return Err("Invalid text".into());
+    }
     let directory = crate::cache::Directory::new("orbit-text-")?;
     // File managers need a local file fallback for collected text.
     let path = directory

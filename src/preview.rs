@@ -14,6 +14,7 @@ const LOADER_SIZE: f32 = 32.0;
 pub enum Content {
     Image(widget::image::Handle),
     Text(text_editor::Content),
+    Rich(crate::rich_text::Preview),
     Unavailable,
 }
 
@@ -23,6 +24,10 @@ impl Content {
             && let Self::Text(text) = self
         {
             text.perform(action);
+        } else if action == text_editor::Action::SelectAll
+            && let Self::Rich(text) = self
+        {
+            text.select_all();
         }
     }
 }
@@ -113,30 +118,9 @@ impl Preview {
                             status,
                         )
                     });
-                let menu = [
-                    (
-                        fl!("copy"),
-                        text.selection().map(|_| Message::CopyPreview(id)),
-                    ),
-                    (
-                        fl!("select-all"),
-                        Some(Message::PreviewText(id, text_editor::Action::SelectAll)),
-                    ),
-                ]
-                .into_iter()
-                .map(|(label, message)| {
-                    let button: Element<'static, Message> =
-                        widget::menu::menu_button(vec![widget::text(label).into()])
-                            .on_press_maybe(message)
-                            .into();
-                    widget::menu::Tree::from(button)
-                })
-                .collect();
-                widget::context_menu(editor, Some(menu))
-                    .window_id(id)
-                    .on_surface_action(Message::Surface)
-                    .into()
+                self.text_menu(editor.into(), text.selection().is_some())
             }
+            Some(Content::Rich(text)) => self.text_menu(text.view(self.id), text.has_selection()),
             Some(Content::Unavailable) => widget::text::body(fl!("preview-unavailable")).into(),
             None => iced::widget::responsive(|size| {
                 iced::widget::pin(widget::indeterminate_circular().size(LOADER_SIZE))
@@ -183,11 +167,35 @@ impl Preview {
             }))
             .into()
     }
+
+    fn text_menu<'a>(&self, content: Element<'a, Message>, selected: bool) -> Element<'a, Message> {
+        let id = self.id;
+        let menu = [
+            (fl!("copy"), selected.then_some(Message::CopyPreview(id))),
+            (
+                fl!("select-all"),
+                Some(Message::PreviewText(id, text_editor::Action::SelectAll)),
+            ),
+        ]
+        .into_iter()
+        .map(|(label, message)| {
+            let button: Element<'static, Message> =
+                widget::menu::menu_button(vec![widget::text(label).into()])
+                    .on_press_maybe(message)
+                    .into();
+            widget::menu::Tree::from(button)
+        })
+        .collect();
+        widget::context_menu(content, Some(menu))
+            .window_id(id)
+            .on_surface_action(Message::Surface)
+            .into()
+    }
 }
 
 pub fn load(path: &Path, text: Option<String>) -> Content {
     if let Some(text) = text {
-        return Content::Text(text_editor::Content::with_text(&text));
+        return text_content(path, &text);
     }
     if crate::thumbnail::kind(path).is_some() {
         return crate::thumbnail::generate(path, 1024)
@@ -196,8 +204,14 @@ pub fn load(path: &Path, text: Option<String>) -> Content {
     }
     crate::transfer::Text::File(path.to_owned())
         .contents()
-        .map(|text| Content::Text(text_editor::Content::with_text(&text)))
+        .map(|text| text_content(path, &text))
         .unwrap_or(Content::Unavailable)
+}
+
+fn text_content(path: &Path, text: &str) -> Content {
+    crate::rich_text::Document::read(path, text)
+        .map(|document| Content::Rich(crate::rich_text::Preview::new(document)))
+        .unwrap_or_else(|| Content::Text(text_editor::Content::with_text(text)))
 }
 
 #[cfg(test)]
@@ -234,5 +248,25 @@ mod tests {
         };
         assert_eq!(text.selection().as_deref(), Some(original));
         assert_eq!(text.text(), original);
+    }
+
+    #[test]
+    fn formatted_files_reopen_with_their_styles_and_copy_selection() {
+        let document =
+            crate::rich_text::Document::from_html("<b>First</b><br><i>Second</i>").unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("snippet.html");
+        std::fs::write(&path, document.html()).unwrap();
+        let mut content = load(&path, Some(document.text.clone()));
+        content.interact(text_editor::Action::SelectAll);
+        content.interact(text_editor::Action::Edit(text_editor::Edit::Delete));
+        let Content::Rich(mut preview) = content else {
+            panic!("Expected formatted preview");
+        };
+        assert_eq!(preview.selected().unwrap(), document);
+        preview.select(6..12);
+        let selected = preview.selected().unwrap();
+        assert_eq!(selected.text, "Second");
+        assert!(selected.html().contains("font-style:italic"));
     }
 }

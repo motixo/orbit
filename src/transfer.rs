@@ -81,14 +81,22 @@ pub struct ClipboardData(pub Vec<u8>, pub String);
 
 impl AllowedMimeTypes for ClipboardData {
     fn allowed() -> Cow<'static, [String]> {
-        let mut mimes = vec![ORBIT_TEXT.into(), URI_LIST.into(), GNOME_FILES.into()];
+        let mut mimes = Vec::new();
         mimes.extend(
             crate::import::MIME_TYPES
                 .iter()
                 .filter(|mime| mime.starts_with("image/"))
                 .map(|mime| (*mime).into()),
         );
-        mimes.extend([UTF8_TEXT.into(), TEXT.into()]);
+        mimes.extend([
+            crate::rich_text::HTML_UTF8.into(),
+            crate::rich_text::HTML.into(),
+            ORBIT_TEXT.into(),
+            URI_LIST.into(),
+            GNOME_FILES.into(),
+            UTF8_TEXT.into(),
+            TEXT.into(),
+        ]);
         for mime in crate::import::MIME_TYPES {
             if !mimes.iter().any(|allowed| allowed == mime) {
                 mimes.push((*mime).into());
@@ -237,6 +245,18 @@ impl Transfer {
     fn available_for(&self, content_only: bool) -> Cow<'static, [String]> {
         let mut mimes = Vec::new();
         if self.text_only {
+            if !self.links
+                && (content_only || self.clipboard)
+                && self.files.0.iter().any(|path| {
+                    path.extension()
+                        .is_some_and(|extension| extension.eq_ignore_ascii_case("html"))
+                })
+            {
+                mimes.extend([
+                    crate::rich_text::HTML_UTF8.into(),
+                    crate::rich_text::HTML.into(),
+                ]);
+            }
             mimes.extend([ORBIT_TEXT.into(), UTF8_TEXT.into(), TEXT.into()]);
         }
         if self.links && self.files.0.len() == 1 {
@@ -257,6 +277,32 @@ impl Transfer {
 
     fn bytes_for(&self, mime: &str, content_only: bool) -> Option<Cow<'static, [u8]>> {
         match mime {
+            crate::rich_text::HTML | crate::rich_text::HTML_UTF8
+                if self.text_only && (content_only || self.clipboard) =>
+            {
+                let text = self.text.as_ref()?;
+                let html = self
+                    .files
+                    .0
+                    .iter()
+                    .zip(text)
+                    .map(|(path, text)| {
+                        let text = text.contents()?;
+                        Some(
+                            crate::rich_text::Document::read(path, &text)
+                                .map(|document| document.html())
+                                .unwrap_or_else(|| {
+                                    format!(
+                                        "<div style=\"white-space:pre-wrap\">{}</div>",
+                                        quick_xml::escape::escape(&*text)
+                                    )
+                                }),
+                        )
+                    })
+                    .collect::<Option<Vec<_>>>()?
+                    .join("<br>");
+                Some(Cow::Owned(html.into_bytes()))
+            }
             ORBIT_TEXT if self.text_only => {
                 self.plain_text().map(|text| Cow::Owned(text.into_bytes()))
             }
