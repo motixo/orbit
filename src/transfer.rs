@@ -16,6 +16,7 @@ pub const URI_LIST: &str = "text/uri-list";
 pub const GNOME_FILES: &str = "x-special/gnome-copied-files";
 pub const TEXT: &str = "text/plain";
 pub const UTF8_TEXT: &str = "text/plain;charset=utf-8";
+const UTF8_STRING: &str = "UTF8_STRING";
 pub const ORBIT_TEXT: &str = "application/x-orbit-text";
 pub const MOZ_URL: &str = "text/x-moz-url";
 // shortcut: text-file drags are capped at 1 MiB; stream text if larger snippets are needed.
@@ -172,10 +173,17 @@ impl TryFrom<(Vec<u8>, String)> for FileList {
 
 impl AsMimeTypes for FileList {
     fn available(&self) -> Cow<'static, [String]> {
-        Self::allowed()
+        let mut mimes = Self::allowed().into_owned();
+        if self.path_text().is_some() {
+            mimes.extend([TEXT.into(), UTF8_TEXT.into(), UTF8_STRING.into()]);
+        }
+        Cow::Owned(mimes)
     }
 
     fn as_bytes(&self, mime: &str) -> Option<Cow<'static, [u8]>> {
+        if matches!(mime, TEXT | UTF8_TEXT | UTF8_STRING) {
+            return self.path_text().map(|text| Cow::Owned(text.into_bytes()));
+        }
         let mut data = match mime {
             URI_LIST => String::new(),
             GNOME_FILES => String::from("copy\n"),
@@ -186,6 +194,16 @@ impl AsMimeTypes for FileList {
             data.push_str("\r\n");
         }
         Some(Cow::Owned(data.into_bytes()))
+    }
+}
+
+impl FileList {
+    fn path_text(&self) -> Option<String> {
+        self.0
+            .iter()
+            .map(|path| path.to_str().filter(|path| !path.contains(['\r', '\n'])))
+            .collect::<Option<Vec<_>>>()
+            .map(|paths| paths.join("\r\n"))
     }
 }
 
@@ -270,6 +288,9 @@ impl Transfer {
         }
         if !content_only {
             mimes.push(URI_LIST.into());
+            if self.text.is_none() && self.files.path_text().is_some() {
+                mimes.extend([TEXT.into(), UTF8_TEXT.into(), UTF8_STRING.into()]);
+            }
         }
         // File managers get local files without making browser inputs prefer file URIs.
         if content_only || self.clipboard && !self.links {
@@ -309,7 +330,10 @@ impl Transfer {
             ORBIT_TEXT if self.text_only => {
                 self.plain_text().map(|text| Cow::Owned(text.into_bytes()))
             }
-            TEXT | UTF8_TEXT => self.plain_text().map(|text| Cow::Owned(text.into_bytes())),
+            TEXT | UTF8_TEXT | UTF8_STRING => self
+                .plain_text()
+                .map(|text| Cow::Owned(text.into_bytes()))
+                .or_else(|| (!content_only).then(|| self.file_bytes(mime)).flatten()),
             MOZ_URL if self.links && self.files.0.len() == 1 => self.plain_text().map(|text| {
                 let url = text.trim();
                 Cow::Owned(
@@ -362,6 +386,39 @@ mod tests {
             ..data
         };
         assert_eq!(cached.drag_actions(true), DndAction::Copy | DndAction::Move);
+    }
+
+    #[test]
+    fn file_drags_offer_native_path_text_alongside_file_uris() {
+        let data = Arc::new(Transfer {
+            files: FileList(vec![
+                "/tmp/عکس من.png".into(),
+                "/tmp/second image.png".into(),
+            ]),
+            text: None,
+            text_only: false,
+            has_local_files: true,
+            links: false,
+            clipboard: false,
+            cached: Vec::new(),
+        });
+        let drag = Drag {
+            transfer: data.clone(),
+            content_only: false,
+        };
+        for mime in [TEXT, UTF8_TEXT, UTF8_STRING] {
+            assert!(drag.available().iter().any(|offered| offered == mime));
+            assert_eq!(
+                drag.as_bytes(mime).unwrap().as_ref(),
+                "/tmp/عکس من.png\r\n/tmp/second image.png".as_bytes()
+            );
+        }
+        let files = FileList::try_from((
+            drag.as_bytes(URI_LIST).unwrap().into_owned(),
+            URI_LIST.into(),
+        ))
+        .unwrap();
+        assert_eq!(files.0, data.files.0);
     }
 
     #[test]
@@ -560,6 +617,8 @@ mod tests {
                 files.0
             );
         }
+        assert!(files.as_bytes(TEXT).is_none());
+        assert!(!files.available().iter().any(|mime| mime == TEXT));
     }
 
     #[test]
@@ -605,6 +664,8 @@ mod tests {
             b"/tmp/file\xff".to_vec(),
         ))]);
         let encoded = files.as_bytes(URI_LIST).unwrap().into_owned();
+        assert!(files.as_bytes(TEXT).is_none());
+        assert!(!files.available().iter().any(|mime| mime == TEXT));
         assert_eq!(
             FileList::try_from((encoded, URI_LIST.into())).unwrap().0,
             files.0
