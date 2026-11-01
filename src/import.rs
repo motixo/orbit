@@ -63,7 +63,7 @@ pub async fn receive(
     bytes: Vec<u8>,
     mime: String,
     source: Source,
-    progress: impl FnMut(Progress),
+    mut progress: impl FnMut(Progress),
 ) -> Result<ImportedFiles, Box<dyn Error + Send + Sync>> {
     if bytes.is_empty() || bytes.len() > MAX_IMAGE_SIZE {
         return Err("Invalid item size".into());
@@ -112,14 +112,16 @@ pub async fn receive(
             (image, true)
         } else if !fragment.outside_link
             && !fragment.structured
+            && fragment.image.is_none()
             && let Some(link) = fragment.link
         {
             return save_text(link);
         } else {
-            let document = crate::rich_text::Document::from_html(&text)?;
-            if !fragment.structured && is_link(&document.text) {
+            let mut document = crate::rich_text::Document::from_html(&text)?;
+            if document.images.is_empty() && !fragment.structured && is_link(&document.text) {
                 return save_text(document.text);
             }
+            embed_images(&mut document, &mut progress).await;
             let html = format!("<!DOCTYPE html><meta charset=\"utf-8\">{}", document.html());
             return save_snippet(document.text, "html", html);
         }
@@ -167,23 +169,7 @@ pub async fn receive(
     }
     match url.scheme() {
         "http" | "https" => download(url, progress).await,
-        "data" => {
-            let (metadata, encoded) = url
-                .as_str()
-                .strip_prefix("data:")
-                .and_then(|data| data.split_once(','))
-                .ok_or("Invalid image URL")?;
-            if !metadata.starts_with("image/") {
-                return Err("Unsupported image URL".into());
-            }
-            let bytes = percent_encoding::percent_decode_str(encoded).collect::<Vec<_>>();
-            let bytes = if metadata.ends_with(";base64") {
-                STANDARD.decode(bytes)?
-            } else {
-                bytes
-            };
-            save_image(&bytes, None)
-        }
+        "data" => save_image(&decode_image_url(url.as_str())?, None),
         _ => Err("Unsupported image URL".into()),
     }
 }
@@ -287,8 +273,19 @@ fn browser_fragment(html: &str) -> Result<Fragment, Box<dyn Error + Send + Sync>
 
 async fn download(
     url: Url,
-    mut progress: impl FnMut(Progress),
+    progress: impl FnMut(Progress),
 ) -> Result<ImportedFiles, Box<dyn Error + Send + Sync>> {
+    let (bytes, name) =
+        download_bytes(url, MAX_IMAGE_SIZE, Duration::from_secs(30), progress).await?;
+    save_image(&bytes, name.as_deref())
+}
+
+async fn download_bytes(
+    url: Url,
+    limit: usize,
+    timeout: Duration,
+    mut progress: impl FnMut(Progress),
+) -> Result<(Vec<u8>, Option<String>), Box<dyn Error + Send + Sync>> {
     let mut state = Progress {
         name: image_name(&url),
         ..Default::default()
@@ -297,15 +294,15 @@ async fn download(
     let client = reqwest::Client::builder()
         .user_agent(concat!("Orbit/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(30))
+        .timeout(timeout)
         .redirect(reqwest::redirect::Policy::limited(5))
         .build()?;
     let mut response = client.get(url).send().await?.error_for_status()?;
     if response
         .content_length()
-        .is_some_and(|length| length > MAX_IMAGE_SIZE as u64)
+        .is_some_and(|length| length > limit as u64)
     {
-        return Err("Image exceeds 50 MiB".into());
+        return Err("Image is too large".into());
     }
     state.name = image_name(response.url()).or(state.name);
     state.total = response.content_length().filter(|length| *length > 0);
@@ -313,8 +310,8 @@ async fn download(
     let mut bytes = Vec::new();
     let mut last_update = Instant::now();
     while let Some(chunk) = response.chunk().await? {
-        if chunk.len() > MAX_IMAGE_SIZE - bytes.len() {
-            return Err("Image exceeds 50 MiB".into());
+        if chunk.len() > limit - bytes.len() {
+            return Err("Image is too large".into());
         }
         bytes.extend_from_slice(&chunk);
         state.received = bytes.len() as u64;
@@ -324,7 +321,60 @@ async fn download(
         }
     }
     progress(state.clone());
-    save_image(&bytes, state.name.as_deref())
+    Ok((bytes, state.name))
+}
+
+pub fn decode_image_url(source: &str) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
+    let (metadata, encoded) = source
+        .strip_prefix("data:")
+        .and_then(|data| data.split_once(','))
+        .ok_or("Invalid image URL")?;
+    if !metadata.starts_with("image/") || encoded.len() > MAX_IMAGE_SIZE * 4 {
+        return Err("Unsupported image URL".into());
+    }
+    let bytes = percent_encoding::percent_decode_str(encoded).collect::<Vec<_>>();
+    let bytes = if metadata.ends_with(";base64") {
+        STANDARD.decode(bytes)?
+    } else {
+        bytes
+    };
+    if bytes.is_empty() || bytes.len() > MAX_IMAGE_SIZE {
+        return Err("Invalid image size".into());
+    }
+    Ok(bytes)
+}
+
+async fn embed_images(
+    document: &mut crate::rich_text::Document,
+    mut progress: impl FnMut(Progress),
+) {
+    let mut remaining = crate::rich_text::MAX_HTML.saturating_sub(document.html().len() + 128);
+    let started = Instant::now();
+    for image in &mut document.images {
+        if image.source.starts_with("data:") {
+            continue;
+        }
+        let Some(timeout) = Duration::from_secs(30).checked_sub(started.elapsed()) else {
+            break;
+        };
+        let Ok(url) = Url::parse(&image.source) else {
+            continue;
+        };
+        let limit = remaining.saturating_sub(64) / 4 * 3;
+        if limit == 0 {
+            break;
+        }
+        // Keep the original URL if the browser's session is needed to fetch an image.
+        if let Ok((bytes, _)) = download_bytes(url, limit, timeout, &mut progress).await
+            && let Ok((_, mime)) = image_format(&bytes)
+        {
+            let source = format!("data:{mime};base64,{}", STANDARD.encode(bytes));
+            if source.len() <= remaining {
+                remaining -= source.len();
+                image.source = source;
+            }
+        }
+    }
 }
 
 fn image_name(url: &Url) -> Option<String> {
@@ -405,21 +455,7 @@ fn save_image(
     if bytes.is_empty() || bytes.len() > MAX_IMAGE_SIZE {
         return Err("Invalid image size".into());
     }
-    let extension = if let Ok(format) = image::guess_format(bytes) {
-        format.extensions_str()[0]
-    } else {
-        let svg = roxmltree::Document::parse_with_options(
-            std::str::from_utf8(bytes)?,
-            roxmltree::ParsingOptions {
-                nodes_limit: 100_000,
-                ..Default::default()
-            },
-        )?;
-        if svg.root_element().tag_name().name() != "svg" {
-            return Err("Not an image".into());
-        }
-        "svg"
-    };
+    let (extension, _) = image_format(bytes)?;
     let stem = name
         .and_then(|name| Path::new(name).file_stem())
         .and_then(|name| name.to_str())
@@ -433,6 +469,26 @@ fn save_image(
         directory: Some(directory),
         text: None,
     })
+}
+
+fn image_format(
+    bytes: &[u8],
+) -> Result<(&'static str, &'static str), Box<dyn Error + Send + Sync>> {
+    if let Ok(format) = image::guess_format(bytes) {
+        Ok((format.extensions_str()[0], format.to_mime_type()))
+    } else {
+        let svg = roxmltree::Document::parse_with_options(
+            std::str::from_utf8(bytes)?,
+            roxmltree::ParsingOptions {
+                nodes_limit: 100_000,
+                ..Default::default()
+            },
+        )?;
+        if svg.root_element().tag_name().name() != "svg" {
+            return Err("Not an image".into());
+        }
+        Ok(("svg", "image/svg+xml"))
+    }
 }
 
 #[cfg(test)]
@@ -490,5 +546,29 @@ mod tests {
 
         let fragment = browser_fragment("<table><tr><td><a href='https://example.com'>https://example.com</a></td></tr></table>").unwrap();
         assert!(fragment.structured);
+    }
+
+    #[test]
+    fn mixed_clipboard_content_keeps_embedded_images_in_the_saved_file() {
+        let bytes = STANDARD.decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=").unwrap();
+        assert_eq!(image_format(&bytes).unwrap().1, "image/png");
+        let source = format!("data:image/png;base64,{}", STANDARD.encode(&bytes));
+        assert_eq!(decode_image_url(&source).unwrap(), bytes);
+        assert!(decode_image_url("data:text/html;base64,YWJj").is_err());
+        let html = format!("<p>Before<img src='{source}' alt='Photo'>After</p>");
+        let imported = cosmic::iced::futures::executor::block_on(receive(
+            html.into_bytes(),
+            crate::rich_text::HTML.into(),
+            Source::Clipboard,
+            |_| {},
+        ))
+        .unwrap();
+        let path = &imported.files.0[0];
+        let stored = std::fs::read_to_string(path).unwrap();
+        assert!(stored.contains(&source));
+        let document =
+            crate::rich_text::Document::read(path, imported.text.as_deref().unwrap()).unwrap();
+        assert_eq!(document.images.len(), 1);
+        assert!(document.clipboard_html().contains(&source));
     }
 }

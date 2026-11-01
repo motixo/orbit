@@ -92,6 +92,89 @@ struct Block {
     end_index: usize,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct InlineImage {
+    range: Range<usize>,
+    pub source: String,
+    width: Option<f32>,
+    height: Option<f32>,
+}
+
+impl InlineImage {
+    fn preview(&self, pixels: &mut u64) -> Option<(cosmic::widget::icon::Handle, iced::Size)> {
+        let bytes = crate::import::decode_image_url(&self.source).ok()?;
+        let (handle, size) = if let Ok(reader) =
+            image::ImageReader::new(std::io::Cursor::new(&bytes)).with_guessed_format()
+            && let Ok((width, height)) = reader.into_dimensions()
+        {
+            (
+                cosmic::widget::icon::from_raster_bytes(bytes),
+                iced::Size::new(width as f32, height as f32),
+            )
+        } else {
+            let svg = roxmltree::Document::parse_with_options(
+                std::str::from_utf8(&bytes).ok()?,
+                roxmltree::ParsingOptions {
+                    nodes_limit: 100_000,
+                    ..Default::default()
+                },
+            )
+            .ok()?;
+            let root = svg.root_element();
+            if root.tag_name().name() != "svg" {
+                return None;
+            }
+            let view_box: Vec<f32> = root
+                .attribute("viewBox")
+                .unwrap_or_default()
+                .split(|ch: char| ch.is_ascii_whitespace() || ch == ',')
+                .filter(|value| !value.is_empty())
+                .filter_map(|value| value.parse().ok())
+                .collect();
+            let width = root
+                .attribute("width")
+                .and_then(|value| value.parse().ok().or_else(|| css_size(value, 300.0)))
+                .or_else(|| view_box.get(2).copied())
+                .unwrap_or(300.0);
+            let height = root
+                .attribute("height")
+                .and_then(|value| value.parse().ok().or_else(|| css_size(value, 150.0)))
+                .or_else(|| view_box.get(3).copied())
+                .unwrap_or(150.0);
+            (
+                cosmic::widget::icon::from_svg_bytes(bytes),
+                iced::Size::new(width, height),
+            )
+        };
+        if !size.width.is_finite()
+            || !size.height.is_finite()
+            || size.width <= 0.0
+            || size.height <= 0.0
+            || size.width > 16384.0
+            || size.height > 16384.0
+        {
+            return None;
+        }
+        *pixels = pixels.checked_sub(size.width.ceil() as u64 * size.height.ceil() as u64)?;
+        let width = self.width.unwrap_or_else(|| {
+            self.height
+                .map(|height| height * size.width / size.height)
+                .unwrap_or(size.width)
+        });
+        let height = self.height.unwrap_or(width * size.height / size.width);
+        Some((handle, iced::Size::new(width, height)))
+    }
+}
+
+fn image_source(value: &str) -> Option<String> {
+    let url = url::Url::parse(value.trim()).ok()?;
+    (matches!(url.scheme(), "http" | "https")
+        && url.username().is_empty()
+        && url.password().is_none()
+        || url.scheme() == "data" && url.as_str().starts_with("data:image/"))
+    .then(|| url.into())
+}
+
 impl Table {
     fn shift(&mut self, offset: usize) {
         self.range = self.range.start + offset..self.range.end + offset;
@@ -138,19 +221,28 @@ pub struct Document {
     runs: Vec<Run>,
     tables: Vec<Table>,
     blocks: Vec<Block>,
+    pub images: Vec<InlineImage>,
 }
 
 #[derive(Clone, Debug)]
 pub struct Preview {
     document: Arc<Document>,
     selection: Range<usize>,
+    images: Vec<Option<(cosmic::widget::icon::Handle, iced::Size)>>,
 }
 
 impl Preview {
     pub fn new(document: Document) -> Self {
+        let mut pixels = 40_000_000;
+        let images = document
+            .images
+            .iter()
+            .map(|image| image.preview(&mut pixels))
+            .collect();
         Self {
             document: Arc::new(document),
             selection: 0..0,
+            images,
         }
     }
 
@@ -197,6 +289,7 @@ impl Document {
             runs,
             tables: Vec::new(),
             blocks: Vec::new(),
+            images: Vec::new(),
         }
     }
 
@@ -215,6 +308,12 @@ impl Document {
                 .extend(document.tables.into_iter().map(|mut table| {
                     table.shift(offset);
                     table
+                }));
+            joined
+                .images
+                .extend(document.images.into_iter().map(|mut image| {
+                    image.range = image.range.start + offset..image.range.end + offset;
+                    image
                 }));
             let block_offset = joined.blocks.len();
             joined
@@ -287,6 +386,15 @@ impl Document {
                 .filter_map(|table| table.slice(&range))
                 .collect(),
             blocks,
+            images: self
+                .images
+                .iter()
+                .filter(|image| image.range.start >= range.start && image.range.end <= range.end)
+                .map(|image| InlineImage {
+                    range: image.range.start - range.start..image.range.end - range.start,
+                    ..image.clone()
+                })
+                .collect(),
         }
     }
 
@@ -459,6 +567,32 @@ impl Document {
     }
 
     fn write_html(&self, html: &mut String, range: Range<usize>) {
+        let mut offset = range.start;
+        for image in self
+            .images
+            .iter()
+            .filter(|image| image.range.start >= range.start && image.range.end <= range.end)
+        {
+            self.write_runs(html, offset..image.range.start);
+            html.push_str(&format!(
+                "<img src=\"{}\" alt=\"{}\"{}{}>",
+                quick_xml::escape::escape(&image.source),
+                quick_xml::escape::escape(&self.text[image.range.clone()]),
+                image
+                    .width
+                    .map(|width| format!(" width=\"{width}\""))
+                    .unwrap_or_default(),
+                image
+                    .height
+                    .map(|height| format!(" height=\"{height}\""))
+                    .unwrap_or_default(),
+            ));
+            offset = image.range.end;
+        }
+        self.write_runs(html, offset..range.end);
+    }
+
+    fn write_runs(&self, html: &mut String, range: Range<usize>) {
         let first = self
             .runs
             .partition_point(|run| run.range.end <= range.start);
@@ -778,6 +912,36 @@ impl Document {
                         if name == "br" {
                             document.push("\n", &style);
                         }
+                        if name == "img" {
+                            let alt = attributes
+                                .iter()
+                                .find(|(key, _)| key == "alt")
+                                .map(|(_, value)| value.replace(['\r', '\n'], " "))
+                                .filter(|value| !value.trim().is_empty())
+                                .unwrap_or_else(|| "[Image]".into());
+                            let start = document.text.len();
+                            document.push(&alt, &style);
+                            if let Some(source) = attributes
+                                .iter()
+                                .find(|(key, _)| key == "src")
+                                .and_then(|(_, value)| image_source(value))
+                            {
+                                let dimension = |key: &str| {
+                                    attributes
+                                        .iter()
+                                        .find(|(name, _)| name == key)
+                                        .and_then(|(_, value)| value.parse::<f32>().ok())
+                                        .filter(|value| value.is_finite() && *value > 0.0)
+                                        .map(|value| value.min(16384.0))
+                                };
+                                document.images.push(InlineImage {
+                                    range: start..document.text.len(),
+                                    source,
+                                    width: dimension("width"),
+                                    height: dimension("height"),
+                                });
+                            }
+                        }
                         if let Some(index) = flow {
                             document.blocks[index].content_start = document.text.len();
                         }
@@ -893,6 +1057,7 @@ impl Document {
                 || document.runs.len() > 8192
                 || document.blocks.len() > 8192
                 || table_elements > 8192
+                || document.images.len() > 128
             {
                 return Err("Formatted text is too large".into());
             }
@@ -1461,5 +1626,34 @@ mod tests {
                 .tables,
             selection.tables
         );
+    }
+
+    #[test]
+    fn inline_images_survive_export_selection_and_join_without_unsafe_attributes() {
+        let document = Document::from_html("<p>Before <img src='https://example.com/photo.png?a=1&amp;b=2' alt='A &amp; B' width='160' height='90' onerror='alert(1)'> after</p><table><tr><td><img src='data:image/png;base64,YWJj' alt='Cell'></td></tr></table>").unwrap();
+        assert!(document.text.contains("Before A & B after"));
+        assert_eq!(document.images.len(), 2);
+        for html in [document.html(), document.clipboard_html()] {
+            assert!(html.contains("photo.png?a=1&amp;b=2"));
+            assert!(html.contains("width=\"160\" height=\"90\""));
+            assert!(!html.contains("onerror"));
+            let restored = Document::from_html(&html).unwrap();
+            assert_eq!(restored.text, document.text);
+            assert_eq!(restored.images, document.images);
+        }
+        let image = &document.images[0];
+        let selection = document.slice(image.range.clone());
+        assert_eq!(selection.images[0].range, 0..selection.text.len());
+        assert!(selection.clipboard_html().starts_with("<span"));
+        let joined = Document::join(vec![Document::plain("Prefix"), selection]);
+        assert_eq!(joined.images[0].range.start, "Prefix\n\n".len());
+        assert_eq!(
+            Document::from_html(&joined.html()).unwrap().images,
+            joined.images
+        );
+
+        let unsafe_images = Document::from_html("<p><img src='file:///etc/passwd' alt='Local'><img src='javascript:alert(1)' alt='Script'><img src='data:text/html;base64,YWJj'><span hidden><img src='https://example.com/hidden'></span></p>").unwrap();
+        assert!(unsafe_images.images.is_empty());
+        assert!(unsafe_images.html().contains("LocalScript[Image]"));
     }
 }

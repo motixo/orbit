@@ -45,8 +45,15 @@ struct Line {
 struct CellBounds {
     bounds: Rectangle,
     lines: Range<usize>,
+    images: Range<usize>,
     header: bool,
     background: Option<[f32; 4]>,
+}
+
+struct ImageBounds {
+    range: Range<usize>,
+    bounds: Rectangle,
+    handle: widget::icon::Handle,
 }
 
 #[derive(Default)]
@@ -55,6 +62,7 @@ struct State {
     width: f32,
     lines: Vec<Line>,
     cells: Vec<CellBounds>,
+    images: Vec<ImageBounds>,
     height: f32,
     focused: bool,
     dragging: bool,
@@ -65,6 +73,17 @@ struct State {
 
 impl State {
     fn hit(&self, point: Point) -> usize {
+        if let Some(image) = self
+            .images
+            .iter()
+            .find(|image| image.bounds.contains(point))
+        {
+            return if point.x < image.bounds.center_x() {
+                image.range.start
+            } else {
+                image.range.end
+            };
+        }
         let lines = self
             .cells
             .iter()
@@ -106,12 +125,59 @@ impl State {
 
     fn append(
         &mut self,
+        preview: &Preview,
+        range: Range<usize>,
+        bounds: Rectangle,
+        alignment: Option<Alignment>,
+        last: bool,
+    ) -> f32 {
+        let mut offset = range.start;
+        let mut top = bounds.y;
+        for (image, content) in preview.document.images.iter().zip(&preview.images) {
+            let Some((handle, size)) = content else {
+                continue;
+            };
+            if image.range.start < range.start || image.range.end > range.end {
+                continue;
+            }
+            top += self.append_text(
+                &preview.document,
+                offset..image.range.start,
+                Rectangle { y: top, ..bounds },
+                alignment,
+                false,
+            );
+            let scale = (bounds.width / size.width).min(1.0);
+            let size = Size::new(size.width * scale, size.height * scale);
+            self.images.push(ImageBounds {
+                range: image.range.clone(),
+                bounds: Rectangle::new(Point::new(bounds.x, top), size),
+                handle: handle.clone(),
+            });
+            top += size.height + 8.0;
+            offset = image.range.end;
+        }
+        top += self.append_text(
+            &preview.document,
+            offset..range.end,
+            Rectangle { y: top, ..bounds },
+            alignment,
+            last,
+        );
+        top - bounds.y
+    }
+
+    fn append_text(
+        &mut self,
         document: &Document,
         range: Range<usize>,
         bounds: Rectangle,
         alignment: Option<Alignment>,
         last: bool,
     ) -> f32 {
+        if range.is_empty() && !last {
+            return 0.0;
+        }
         let mut offset = range.start;
         let mut top = bounds.y;
         let mut lines = document.text[range.clone()].split('\n').peekable();
@@ -204,7 +270,7 @@ impl State {
         top - bounds.y
     }
 
-    fn table(&mut self, document: &Document, table: &Table, top: f32, width: f32) -> f32 {
+    fn table(&mut self, preview: &Preview, table: &Table, top: f32, width: f32) -> f32 {
         let mut occupied: Vec<usize> = Vec::new();
         let mut placements = Vec::new();
         for (row_index, row) in table.rows.iter().enumerate() {
@@ -234,8 +300,9 @@ impl State {
             let cell_width = cell.columns as f32 * column_width;
             let padding = 6.0_f32.min(cell_width / 4.0);
             let first_line = self.lines.len();
+            let first_image = self.images.len();
             let height = self.append(
-                document,
+                preview,
                 cell.range.clone(),
                 Rectangle::new(
                     Point::new(left + padding, 0.0),
@@ -252,6 +319,7 @@ impl State {
             self.cells.push(CellBounds {
                 bounds: Rectangle::new(Point::new(left, 0.0), Size::new(cell_width, 0.0)),
                 lines: first_line..self.lines.len(),
+                images: first_image..self.images.len(),
                 header: cell.header,
                 background: cell.background,
             });
@@ -266,6 +334,9 @@ impl State {
                 positions[(*row + cell.rows).min(heights.len())] - positions[*row];
             for line in &mut self.lines[bounds.lines.clone()] {
                 line.top += bounds.bounds.y + 6.0;
+            }
+            for image in &mut self.images[bounds.images.clone()] {
+                image.bounds.y += bounds.bounds.y + 6.0;
             }
         }
         positions.last().copied().unwrap_or(top)
@@ -302,24 +373,25 @@ impl Widget<Message, Theme, Renderer> for View<'_> {
             state.document = Some(document.clone());
             state.lines.clear();
             state.cells.clear();
+            state.images.clear();
             let mut offset = 0;
             let mut top = 0.0;
             for table in &document.tables {
                 top += state.append(
-                    document,
+                    self.preview,
                     offset..table.range.start,
                     Rectangle::new(Point::new(0.0, top), Size::new(width, 0.0)),
                     None,
                     false,
                 );
-                top = state.table(document, table, top, width);
+                top = state.table(self.preview, table, top, width);
                 offset = table.range.end;
                 if document.text.as_bytes().get(offset) == Some(&b'\n') {
                     offset += 1;
                 }
             }
             top += state.append(
-                document,
+                self.preview,
                 offset..document.text.len(),
                 Rectangle::new(Point::new(0.0, top), Size::new(width, 0.0)),
                 None,
@@ -436,6 +508,22 @@ impl Widget<Message, Theme, Renderer> for View<'_> {
                             }
                         }
                     }
+                }
+            }
+            for image in &state.images {
+                let bounds = image.bounds + (layout.position() - Point::ORIGIN);
+                if !bounds.intersects(&clip) {
+                    continue;
+                }
+                widget::icon::draw(renderer, &image.handle, bounds);
+                if selected.start < image.range.end && selected.end > image.range.start {
+                    renderer.fill_quad(
+                        renderer::Quad {
+                            bounds,
+                            ..Default::default()
+                        },
+                        iced::Color::from(theme.cosmic().accent.base).scale_alpha(0.35),
+                    );
                 }
             }
         });
@@ -671,7 +759,9 @@ mod tests {
         )
         .unwrap();
         let mut state = State::default();
-        let height = state.table(&document, &document.tables[0], 0.0, 300.0);
+        let preview = Preview::new(document);
+        let document = &preview.document;
+        let height = state.table(&preview, &document.tables[0], 0.0, 300.0);
         assert_eq!(state.cells.len(), 3);
         assert_eq!(state.cells[0].bounds.width, 150.0);
         assert_eq!(state.cells[1].bounds.x, 150.0);
@@ -683,5 +773,32 @@ mod tests {
             let index = state.hit(bounds.bounds.position() + Vector::new(8.0, 8.0));
             assert!(index >= cell.range.start && index <= cell.range.end);
         }
+    }
+
+    #[test]
+    fn image_preview_keeps_aspect_ratio_and_selection_offsets() {
+        let document = Document::from_html("Before<img src='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=' width='200' height='100'>After").unwrap();
+        let preview = Preview::new(document);
+        let mut state = State::default();
+        let height = state.append(
+            &preview,
+            0..preview.document.text.len(),
+            Rectangle::new(Point::ORIGIN, Size::new(100.0, 0.0)),
+            None,
+            true,
+        );
+        assert_eq!(state.images.len(), 1);
+        let image = &state.images[0];
+        assert_eq!(image.bounds.size(), Size::new(100.0, 50.0));
+        assert_eq!(
+            state.hit(image.bounds.position() + Vector::new(1.0, 1.0)),
+            image.range.start
+        );
+        assert_eq!(
+            state.hit(image.bounds.position() + Vector::new(99.0, 1.0)),
+            image.range.end
+        );
+        assert!(height > image.bounds.height);
+        assert!(state.lines.last().unwrap().top > image.bounds.y);
     }
 }
