@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Orbit
+Exec=orbit --receive
+Icon=io.github.motixo.Orbit
+Terminal=false
+NoDisplay=true
+StartupNotify=true
