@@ -22,6 +22,23 @@ pub struct Style {
     background: Option<[f32; 4]>,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+enum Whitespace {
+    #[default]
+    Lines,
+    Normal,
+    Pre,
+}
+
+struct HtmlFrame {
+    name: String,
+    style: Style,
+    hidden: bool,
+    whitespace: Whitespace,
+    block: bool,
+    start: usize,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 struct Run {
     range: Range<usize>,
@@ -175,7 +192,7 @@ impl Document {
         let mut reader = quick_xml::Reader::from_str(html.trim_start_matches('\u{feff}'));
         reader.config_mut().check_end_names = false;
         let mut document = Self::default();
-        let mut stack: Vec<(String, Style, bool, bool)> = Vec::new();
+        let mut stack: Vec<HtmlFrame> = Vec::new();
         let mut lists: Vec<(bool, i32)> = Vec::new();
         loop {
             match reader.read_event()? {
@@ -184,9 +201,9 @@ impl Document {
                         return Err("HTML nesting exceeds 256 levels".into());
                     }
                     let name = String::from_utf8_lossy(tag.name().as_ref()).to_ascii_lowercase();
-                    let (mut style, mut hidden, mut pre) = stack
+                    let (mut style, mut hidden, mut whitespace) = stack
                         .last()
-                        .map(|(_, style, hidden, pre)| (style.clone(), *hidden, *pre))
+                        .map(|frame| (frame.style.clone(), frame.hidden, frame.whitespace))
                         .unwrap_or_default();
                     let mut attributes = Vec::new();
                     for attribute in tag.html_attributes() {
@@ -204,7 +221,10 @@ impl Document {
                         "script" | "style" | "head" | "iframe" | "object" | "template"
                     );
                     hidden |= attributes.iter().any(|(key, _)| key == "hidden");
-                    pre |= name == "pre";
+                    if name == "pre" {
+                        whitespace = Whitespace::Pre;
+                    }
+                    let mut is_block = block(&name);
                     match name.as_str() {
                         "b" | "strong" => style.bold = true,
                         "i" | "em" => style.italic = true,
@@ -277,12 +297,23 @@ impl Document {
                                                 style.strike = value.contains("line-through");
                                             }
                                             "white-space" => {
-                                                pre = matches!(
-                                                    value,
-                                                    "pre" | "pre-wrap" | "break-spaces"
-                                                )
+                                                whitespace = match value {
+                                                    "pre" | "pre-wrap" | "break-spaces" => {
+                                                        Whitespace::Pre
+                                                    }
+                                                    "pre-line" => Whitespace::Lines,
+                                                    "normal" | "nowrap" => Whitespace::Normal,
+                                                    _ => whitespace,
+                                                }
                                             }
-                                            "display" if value == "none" => hidden = true,
+                                            "display" => match value {
+                                                "none" => hidden = true,
+                                                "block" | "list-item" | "flex" | "grid"
+                                                | "table" | "flow-root" => is_block = true,
+                                                "inline" | "inline-block" | "inline-flex"
+                                                | "inline-grid" | "contents" => is_block = false,
+                                                _ => (),
+                                            },
                                             "visibility" if value == "hidden" => hidden = true,
                                             _ => (),
                                         }
@@ -293,9 +324,9 @@ impl Document {
                         }
                     }
                     if !hidden {
-                        if block(&name)
+                        if is_block
                             && !(matches!(name.as_str(), "p" | "div")
-                                && stack.last().is_some_and(|(tag, _, _, _)| tag == "li")
+                                && stack.last().is_some_and(|frame| frame.name == "li")
                                 && document.marker_only())
                         {
                             document.break_line(&style);
@@ -350,63 +381,87 @@ impl Document {
                             | "track"
                             | "col"
                     ) {
-                        stack.push((name, style, hidden, pre));
+                        stack.push(HtmlFrame {
+                            name,
+                            style,
+                            hidden,
+                            whitespace,
+                            block: is_block,
+                            start: document.text.len(),
+                        });
                     }
                 }
                 Event::End(tag) => {
                     let name = String::from_utf8_lossy(tag.name().as_ref()).to_ascii_lowercase();
-                    if let Some(index) = stack.iter().rposition(|(tag, _, _, _)| *tag == name) {
-                        let (_, style, hidden, _) = &stack[index];
-                        if !hidden && block(&name) {
-                            document.break_line(style);
+                    if let Some(index) = stack.iter().rposition(|frame| frame.name == name) {
+                        let frame = &stack[index];
+                        if !frame.hidden && frame.block {
+                            if document.text.len() == frame.start {
+                                document.push("\n", &frame.style);
+                            } else {
+                                document.break_line(&frame.style);
+                            }
                         }
-                        if !hidden && matches!(name.as_str(), "ul" | "ol") {
+                        if !frame.hidden && matches!(name.as_str(), "ul" | "ol") {
                             lists.pop();
                         }
                         stack.truncate(index);
                     }
                 }
                 Event::Text(text) => {
-                    if !stack.last().is_some_and(|(_, _, hidden, _)| *hidden) {
+                    if !stack.last().is_some_and(|frame| frame.hidden) {
                         let style = stack
                             .last()
-                            .map(|(_, style, _, _)| style.clone())
+                            .map(|frame| frame.style.clone())
                             .unwrap_or_default();
                         let value = text.html_content()?;
                         // Browser HTML indentation is not a visible blank list item.
                         if !(value.trim().is_empty()
-                            && stack.last().is_some_and(|(name, _, _, _)| {
-                                matches!(name.as_str(), "ul" | "ol")
-                            }))
+                            && stack
+                                .last()
+                                .is_some_and(|frame| matches!(frame.name.as_str(), "ul" | "ol")))
                         {
                             document.push_text(
                                 &value,
                                 &style,
-                                stack.last().is_some_and(|(_, _, _, pre)| *pre),
+                                stack
+                                    .last()
+                                    .map(|frame| frame.whitespace)
+                                    .unwrap_or_default(),
                             );
                         }
                     }
                 }
                 Event::GeneralRef(reference) => {
-                    if !stack.last().is_some_and(|(_, _, hidden, _)| *hidden) {
+                    if !stack.last().is_some_and(|frame| frame.hidden) {
                         let style = stack
                             .last()
-                            .map(|(_, style, _, _)| style.clone())
+                            .map(|frame| frame.style.clone())
                             .unwrap_or_default();
                         document.push_text(
                             &quick_xml::escape::unescape(&format!("&{};", reference.decode()?))?,
                             &style,
-                            stack.last().is_some_and(|(_, _, _, pre)| *pre),
+                            stack
+                                .last()
+                                .map(|frame| frame.whitespace)
+                                .unwrap_or_default(),
                         );
                     }
                 }
                 Event::CData(text) => {
-                    if !stack.last().is_some_and(|(_, _, hidden, _)| *hidden) {
+                    if !stack.last().is_some_and(|frame| frame.hidden) {
                         let style = stack
                             .last()
-                            .map(|(_, style, _, _)| style.clone())
+                            .map(|frame| frame.style.clone())
                             .unwrap_or_default();
-                        document.push(&text.decode()?, &style);
+                        document.push_text(
+                            &text.html_content()?,
+                            &style,
+                            stack
+                                .last()
+                                .map(|frame| frame.whitespace)
+                                .unwrap_or_default(),
+                        );
                     }
                 }
                 Event::Eof => break,
@@ -427,15 +482,19 @@ impl Document {
                 .is_some_and(|number| number.parse::<i32>().is_ok())
     }
 
-    fn push_text(&mut self, text: &str, style: &Style, pre: bool) {
-        if pre {
+    fn push_text(&mut self, text: &str, style: &Style, mode: Whitespace) {
+        if matches!(mode, Whitespace::Pre) {
             self.push(text, style);
             return;
         }
         let mut normalized = String::new();
         let mut whitespace = self.text.is_empty() || self.text.ends_with([' ', '\n', '\t']);
+        // Copied HTML can omit the source's white-space CSS; keep its literal line breaks.
         for ch in text.chars() {
-            if matches!(ch, ' ' | '\t' | '\n' | '\r' | '\u{c}') {
+            if ch == '\n' && matches!(mode, Whitespace::Lines) {
+                normalized.push('\n');
+                whitespace = true;
+            } else if matches!(ch, ' ' | '\t' | '\n' | '\r' | '\u{c}') {
                 if !whitespace {
                     normalized.push(' ');
                 }
@@ -585,12 +644,56 @@ fn block(name: &str) -> bool {
             | "h5"
             | "h6"
             | "tr"
+            | "section"
+            | "article"
+            | "main"
+            | "header"
+            | "footer"
+            | "aside"
+            | "nav"
+            | "figure"
+            | "figcaption"
+            | "dl"
+            | "dt"
+            | "dd"
+            | "address"
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clipboard_line_breaks_survive_import_and_reopening() {
+        for (html, expected) in [
+            (
+                "<p>First\nSecond\n\n<strong>Third\nFourth</strong></p>",
+                "First\nSecond\n\nThird\nFourth\n",
+            ),
+            ("<p>First</p><p></p><p>Last</p>", "First\n\nLast\n"),
+            (
+                "<span style='white-space:pre-line'>First   part\n\nSecond</span>",
+                "First part\n\nSecond",
+            ),
+            (
+                "<span style='white-space:normal'>First\nSecond</span>",
+                "First Second",
+            ),
+            (
+                "<span style='display:block'><b>First</b></span><span style='display:block'>Second</span>",
+                "First\nSecond\n",
+            ),
+            (
+                "<section>First</section><article>Second</article>",
+                "First\nSecond\n",
+            ),
+        ] {
+            let document = Document::from_html(html).unwrap();
+            assert_eq!(document.text, expected);
+            assert_eq!(Document::from_html(&document.html()).unwrap(), document);
+        }
+    }
 
     #[test]
     fn keeps_inline_formatting_lists_and_safe_clipboard_html() {
