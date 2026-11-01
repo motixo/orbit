@@ -106,6 +106,9 @@ pub enum Message {
     Undo,
     Preview(Option<PathBuf>),
     PreviewLoaded(window::Id, crate::preview::Content),
+    PreviewText(window::Id, widget::text_editor::Action),
+    PreviewSelection(window::Id, std::ops::Range<usize>),
+    CopyPreview(window::Id),
     ClosePreview,
     DragPreview,
     Share(bool),
@@ -984,6 +987,41 @@ impl cosmic::Application for Orbit {
                     && preview.id == id
                 {
                     preview.content = Some(content);
+                }
+            }
+            Message::PreviewText(id, action) => {
+                if let Some(preview) = &mut self.preview
+                    && preview.id == id
+                    && let Some(content) = &mut preview.content
+                {
+                    content.interact(action);
+                }
+            }
+            Message::CopyPreview(id) => {
+                if let Some(preview) = &self.preview
+                    && preview.id == id
+                {
+                    match &preview.content {
+                        Some(crate::preview::Content::Text(text)) => {
+                            if let Some(selection) = text.selection() {
+                                return iced::clipboard::write(selection);
+                            }
+                        }
+                        Some(crate::preview::Content::Rich(text)) => {
+                            if let Some(selection) = text.selected() {
+                                return iced::clipboard::write_data(selection);
+                            }
+                        }
+                        _ => (),
+                    }
+                }
+            }
+            Message::PreviewSelection(id, selection) => {
+                if let Some(preview) = &mut self.preview
+                    && preview.id == id
+                    && let Some(crate::preview::Content::Rich(text)) = &mut preview.content
+                {
+                    text.select(selection);
                 }
             }
             Message::ClosePreview => {
@@ -1909,7 +1947,8 @@ impl Orbit {
                 .shelf
                 .items
                 .iter()
-                .map(|item| (item.order, self.item_view(item, window)))
+                .zip(self.shelf.drag_transfers())
+                .map(|(item, data)| (item.order, self.item_view(item, window, data)))
                 .chain(
                     self.pending_imports
                         .iter()
@@ -2093,7 +2132,12 @@ impl Orbit {
             .into()
     }
 
-    fn item_view<'a>(&'a self, item: &'a Item, window: window::Id) -> Element<'a, Message> {
+    fn item_view<'a>(
+        &'a self,
+        item: &'a Item,
+        window: window::Id,
+        data: Arc<Transfer>,
+    ) -> Element<'a, Message> {
         use iced::advanced::text::{Ellipsize, EllipsizeHeightLimit};
 
         let spacing = cosmic::theme::spacing();
@@ -2191,8 +2235,8 @@ impl Orbit {
             .into()
         } else if item.has_text() {
             widget::row::with_children(vec![
-                self.drag_source(preview, &item.path, window, false),
-                self.drag_source(label, &item.path, window, true),
+                self.drag_source(preview, &item.path, window, false, data.clone()),
+                self.drag_source(label, &item.path, window, true, data),
             ])
             .spacing(spacing.space_s)
             .align_y(Alignment::Center)
@@ -2208,6 +2252,7 @@ impl Orbit {
                 &item.path,
                 window,
                 false,
+                data,
             )
         };
         let path = item.path.clone();
@@ -2243,21 +2288,15 @@ impl Orbit {
         path: &std::path::Path,
         window: window::Id,
         prefer_content: bool,
+        data: Arc<Transfer>,
     ) -> Element<'a, Message> {
-        let data = self.shelf.drag_transfer(path);
         let content_only = prefer_content && data.text_only;
         let label = if content_only {
             fl!("drag-content", count = data.files.0.len())
         } else {
             fl!("drag-files", count = data.files.0.len())
         };
-        let action = if self.copy_mode && data.has_local_files {
-            DndAction::Copy
-        } else if content_only || data.text_only && !data.has_local_files {
-            DndAction::Copy | DndAction::Move
-        } else {
-            DndAction::Move
-        };
+        let action = data.drag_actions(self.copy_mode);
         let content = widget::mouse_area(content)
             .on_press(Message::FocusItem(path.to_owned()))
             .on_double_click(Message::Preview(Some(path.to_owned())));

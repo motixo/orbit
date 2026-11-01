@@ -161,9 +161,11 @@ impl Shelf {
         let paths = items.iter().map(|item| item.path.clone()).collect();
         let text_only = !items.is_empty() && items.iter().all(|item| item.has_text());
         let links = text_only
-            && items
-                .iter()
-                .all(|item| item.text.as_deref().is_some_and(is_link));
+            && items.iter().all(|item| {
+                item.text.as_deref().is_some_and(|text| {
+                    is_link(text) && crate::rich_text::Document::read(&item.path, text).is_none()
+                })
+            });
         let text = items.iter().any(|item| item.has_text()).then(|| {
             items
                 .iter()
@@ -226,6 +228,26 @@ impl Shelf {
         } else {
             Arc::new(self.transfer(vec![path.to_owned()], false))
         }
+    }
+
+    pub fn drag_transfers(&self) -> Vec<Arc<Transfer>> {
+        let selection = self
+            .items
+            .iter()
+            .find(|item| item.selected)
+            .map(|item| self.drag_transfer(&item.path));
+        self.items
+            .iter()
+            .map(|item| {
+                if item.selected
+                    && let Some(selection) = &selection
+                {
+                    selection.clone()
+                } else {
+                    Arc::new(self.transfer(vec![item.path.clone()], false))
+                }
+            })
+            .collect()
     }
 
     pub fn toggle(&mut self, path: &Path) {
@@ -420,6 +442,34 @@ mod tests {
     }
 
     #[test]
+    fn rendered_drags_share_one_selection_snapshot_and_refresh_missing_files() {
+        let fixture = Fixture::new();
+        let a = fixture.file("a");
+        let b = fixture.file("b");
+        let c = fixture.file("c");
+        let mut shelf = Shelf::default();
+        shelf.add([a.clone(), b.clone(), c.clone()]);
+        shelf.toggle(&c);
+        let initial = shelf.drag_transfers();
+        assert!(Arc::ptr_eq(&initial[0], &initial[1]));
+        assert_eq!(initial[0].files.0, [a.clone(), b.clone()]);
+        assert_eq!(initial[2].files.0.as_slice(), std::slice::from_ref(&c));
+
+        fs::remove_file(&b).unwrap();
+        let refreshed = shelf.drag_transfers();
+        assert!(Arc::ptr_eq(&refreshed[0], &refreshed[1]));
+        assert!(!Arc::ptr_eq(&initial[0], &refreshed[0]));
+        assert_eq!(refreshed[0].files.0.as_slice(), std::slice::from_ref(&a));
+        assert_eq!(refreshed[2].files.0.as_slice(), std::slice::from_ref(&c));
+
+        fs::write(&b, b"back").unwrap();
+        let restored = shelf.drag_transfers();
+        assert!(Arc::ptr_eq(&restored[0], &restored[1]));
+        assert_eq!(restored[0].files.0, [a, b]);
+        assert_eq!(restored[2].files.0, [c]);
+    }
+
+    #[test]
     fn selections_control_group_drags_without_affecting_single_item_drags() {
         let fixture = Fixture::new();
         let a = fixture.file("a");
@@ -493,6 +543,25 @@ mod tests {
         assert!(!shelf.contains_link("https://example.com/article?a=2#section"));
         assert!(!shelf.contains_link("https://example.com/article?a=1#other"));
         assert!(!shelf.contains_link("https://example.com/article?a=1#section\nAnother line"));
+    }
+
+    #[test]
+    fn a_table_containing_one_url_still_transfers_as_formatted_text() {
+        use cosmic::iced::clipboard::mime::AsMimeTypes;
+        let fixture = Fixture::new();
+        let path = fixture.file("table.html");
+        let document = crate::rich_text::Document::from_html(
+            "<table><tr><td>https://example.com</td></tr></table>",
+        )
+        .unwrap();
+        fs::write(&path, document.html()).unwrap();
+        let mut shelf = Shelf::default();
+        shelf.add([path.clone()]);
+        shelf.set_import(&path, Some(document.text), None);
+        let transfer = shelf.transfer(vec![path], true);
+        assert!(!transfer.links);
+        let html = transfer.as_bytes(crate::rich_text::HTML).unwrap();
+        assert!(std::str::from_utf8(&html).unwrap().contains("<table "));
     }
 
     #[test]
