@@ -60,6 +60,7 @@ pub struct Orbit {
     copy_mode: bool,
     compression_dialog: Option<CompressionDialog>,
     preview: Option<crate::preview::Preview>,
+    share: Option<crate::share::Share>,
     focused_item: Option<PathBuf>,
     thumbnails: HashMap<PathBuf, Option<widget::image::Handle>>,
     pending_imports: Vec<(u64, Progress, iced::task::Handle)>,
@@ -106,6 +107,14 @@ pub enum Message {
     PreviewLoaded(window::Id, crate::preview::Content),
     ClosePreview,
     DragPreview,
+    Share,
+    ShareReady(window::Id, Result<Arc<crate::share::Bundle>, String>),
+    RefreshDevices,
+    DevicesReady(window::Id, Result<Vec<crate::kdeconnect::Device>, String>),
+    SendToDevice(String),
+    ShareSent(window::Id, Result<(), String>),
+    CloseShare,
+    DragShare,
     FocusItem(PathBuf),
     Copy,
     ToggleCopyMode,
@@ -178,6 +187,7 @@ impl cosmic::Application for Orbit {
             copy_mode: flags.restored.as_ref().is_some_and(|entry| entry.copy_mode),
             compression_dialog: None,
             preview: None,
+            share: None,
             focused_item: None,
             thumbnails: HashMap::new(),
             pending_imports: Vec::new(),
@@ -274,6 +284,9 @@ impl cosmic::Application for Orbit {
     }
 
     fn on_close_requested(&self, id: window::Id) -> Option<Message> {
+        if self.share.as_ref().is_some_and(|share| share.id == id) {
+            return Some(Message::CloseShare);
+        }
         if self
             .preview
             .as_ref()
@@ -315,6 +328,11 @@ impl cosmic::Application for Orbit {
     }
 
     fn view_window(&self, id: window::Id) -> Element<'_, Message> {
+        if let Some(share) = &self.share
+            && share.id == id
+        {
+            return share.view();
+        }
         if let Some(preview) = &self.preview
             && preview.id == id
         {
@@ -476,6 +494,18 @@ impl cosmic::Application for Orbit {
     fn update(&mut self, message: Message) -> Task<cosmic::Action<Message>> {
         match message {
             Message::Key(event, window) => {
+                if self.share.as_ref().is_some_and(|share| share.id == window) {
+                    if matches!(
+                        &event,
+                        iced::keyboard::Event::KeyPressed {
+                            key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+                            ..
+                        }
+                    ) {
+                        return self.update(Message::CloseShare);
+                    }
+                    return Task::none();
+                }
                 if self.compression_dialog.is_some() {
                     return Task::none();
                 }
@@ -698,6 +728,111 @@ impl cosmic::Application for Orbit {
                 self.focused_item = Some(path);
             }
             Message::FocusItem(path) => self.focused_item = Some(path),
+            Message::Share => {
+                if let Some(share) = &self.share {
+                    return window::gain_focus(share.id);
+                }
+                let paths = self.shelf.export_paths();
+                if paths.is_empty() {
+                    return Task::none();
+                }
+                let items = self
+                    .shelf
+                    .items
+                    .iter()
+                    .filter(|item| paths.contains(&item.path))
+                    .cloned()
+                    .collect();
+                let transfer = Arc::new(self.shelf.transfer(paths, false));
+                let (share, open) = crate::share::Share::open();
+                let id = share.id;
+                self.share = Some(share);
+                let (output, input) = iced::futures::channel::mpsc::unbounded();
+                if let Err(error) = std::thread::Builder::new()
+                    .name("orbit-share".into())
+                    .spawn(move || {
+                        let _ = output.unbounded_send(Message::ShareReady(
+                            id,
+                            crate::share::Bundle::prepare(items, transfer),
+                        ));
+                    })
+                {
+                    eprintln!("Could not prepare sharing: {error}");
+                    self.share.as_mut().unwrap().status = fl!("share-error");
+                }
+                return Task::batch([
+                    open,
+                    self.set_window_title(fl!("share"), id),
+                    cosmic::task::stream(input),
+                    self.update(Message::RefreshDevices),
+                ]);
+            }
+            Message::ShareReady(id, result) => {
+                if let Some(share) = &mut self.share
+                    && share.id == id
+                {
+                    match result {
+                        Ok(bundle) => share.bundle = Some(bundle),
+                        Err(error) => {
+                            eprintln!("Could not prepare sharing: {error}");
+                            share.status = fl!("share-error");
+                        }
+                    }
+                }
+            }
+            Message::RefreshDevices => {
+                if let Some(share) = &mut self.share {
+                    let id = share.id;
+                    share.devices = None;
+                    return cosmic::task::future(async move {
+                        Message::DevicesReady(id, crate::kdeconnect::devices().await)
+                    });
+                }
+            }
+            Message::DevicesReady(id, devices) => {
+                if let Some(share) = &mut self.share
+                    && share.id == id
+                {
+                    share.devices = Some(devices);
+                }
+            }
+            Message::SendToDevice(device) => {
+                if let Some(share) = &mut self.share
+                    && !share.busy
+                    && let Some(bundle) = share.bundle.clone()
+                {
+                    let id = share.id;
+                    share.busy = true;
+                    share.status.clear();
+                    return cosmic::task::future(async move {
+                        Message::ShareSent(id, crate::kdeconnect::send(&device, &bundle).await)
+                    });
+                }
+            }
+            Message::ShareSent(id, result) => {
+                if let Some(share) = &mut self.share
+                    && share.id == id
+                {
+                    share.busy = false;
+                    share.status = match result {
+                        Ok(()) => fl!("share-queued"),
+                        Err(error) => {
+                            eprintln!("Could not send files: {error}");
+                            fl!("share-error")
+                        }
+                    };
+                }
+            }
+            Message::CloseShare => {
+                if let Some(share) = self.share.take() {
+                    return window::close(share.id);
+                }
+            }
+            Message::DragShare => {
+                if let Some(share) = &self.share {
+                    return window::drag(share.id);
+                }
+            }
             Message::Preview(path) => {
                 if path.is_none() && self.preview.is_some() {
                     return self.update(Message::ClosePreview);
@@ -1202,6 +1337,7 @@ impl Orbit {
             return iced::exit();
         }
         let preview = self.update(Message::ClosePreview);
+        let share = self.update(Message::CloseShare);
         let ghost = self.dismiss_pin_preview();
         let main = self.core.main_window_id();
         self.core.set_main_window_id(None);
@@ -1224,7 +1360,7 @@ impl Orbit {
         self.focused_item = None;
         self.copy_mode = false;
         self.status.clear();
-        Task::batch([preview, ghost, floating, pinned])
+        Task::batch([preview, share, ghost, floating, pinned])
     }
 
     fn header_tools(&self, window: window::Id) -> Element<'_, Message> {
@@ -1245,6 +1381,12 @@ impl Orbit {
                         .iter()
                         .any(|item| item.selected && !item.is_missing())
                         .then_some(Message::Compress),
+                    false,
+                ),
+                (
+                    fl!("share"),
+                    "send-to-symbolic",
+                    (!self.shelf.export_paths().is_empty()).then_some(Message::Share),
                     false,
                 ),
             ]
