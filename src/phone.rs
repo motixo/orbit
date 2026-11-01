@@ -7,7 +7,7 @@ use axum::{
     extract::{DefaultBodyLimit, Multipart, Path, Request, State},
     http::{HeaderValue, StatusCode, header},
     middleware::{self, Next},
-    response::{Html, IntoResponse, Response},
+    response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
 };
 use cosmic::iced::futures::{StreamExt, channel::mpsc::UnboundedSender};
@@ -155,7 +155,14 @@ pub async fn start(
         )
         .layer(middleware::from_fn_with_state(state.clone(), guard))
         .with_state(state);
-    let app = Router::new().nest(&format!("/{token}"), routes);
+    let base = format!("/{token}/");
+    let redirect = base.clone();
+    let app = Router::new()
+        .route(
+            &format!("/{token}"),
+            get(move || async move { Redirect::temporary(&redirect) }),
+        )
+        .nest(&base, routes);
     tokio::spawn(async move {
         if let Err(error) = axum::serve(listener, app)
             .with_graceful_shutdown(stopping(stopped))
@@ -432,6 +439,27 @@ mod tests {
         assert_eq!(page.status(), StatusCode::OK);
         let html = page.text().await.unwrap();
         assert!(html.contains("&lt;private&gt;"));
+        assert!(html.contains("Send to Orbit"));
+        let redirected = client
+            .get(session.url.trim_end_matches('/'))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(redirected.status(), StatusCode::OK);
+        assert_eq!(redirected.url().as_str(), session.url);
+        for (asset, content_type) in [
+            ("style.css", "text/css; charset=utf-8"),
+            ("app.js", "text/javascript; charset=utf-8"),
+        ] {
+            let response = client
+                .get(format!("{}{asset}", session.url))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(response.headers()[header::CONTENT_TYPE], content_type);
+            assert!(!response.text().await.unwrap().is_empty());
+        }
         assert_eq!(
             client
                 .get(format!("{}files/0", session.url))
