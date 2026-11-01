@@ -49,6 +49,7 @@ pub enum EditTarget {
 #[derive(Clone, Debug)]
 pub enum Message {
     NewOrbit,
+    Receive,
     Restore(String),
     ChooseWatch,
     WatchChosen(Result<Option<std::path::PathBuf>, String>),
@@ -218,6 +219,7 @@ impl cosmic::Application for OrbitApplet {
             Page::Menu => {
                 for (label, message) in [
                     (fl!("new-orbit"), Message::NewOrbit),
+                    (fl!("receive"), Message::Receive),
                     (fl!("settings"), Message::Page(Page::Settings)),
                     (fl!("shortcuts"), Message::Page(Page::Shortcuts)),
                     (fl!("about"), Message::Page(Page::About)),
@@ -409,6 +411,7 @@ impl cosmic::Application for OrbitApplet {
             Message::NewOrbit => {
                 return self.launch(Vec::new(), None);
             }
+            Message::Receive => return self.launch(vec!["--receive".into()], None),
             Message::Hover(value) => self.hovering = value,
             Message::DropData(bytes, mime) => {
                 self.hovering = false;

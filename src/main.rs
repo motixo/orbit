@@ -34,7 +34,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match paths.first().and_then(|arg| arg.to_str()) {
         Some("--help" | "-h") => {
             println!(
-                "Orbit — a file shelf for COSMIC\n\nUsage: orbit [FILE_OR_FOLDER ...]\n       orbit --new\n       orbit --applet\n       orbit --version"
+                "Orbit — a file shelf for COSMIC\n\nUsage: orbit [FILE_OR_FOLDER ...]\n       orbit --new\n       orbit --receive\n       orbit --applet\n       orbit --version"
             );
             return Ok(());
         }
