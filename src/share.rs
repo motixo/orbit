@@ -130,7 +130,7 @@ impl Share {
         let mut controls = Vec::new();
         if let (Some(session), Some(qr)) = (&self.session, &self.qr) {
             controls.push(
-                widget::container(crate::orbit_icon::crossed(64))
+                widget::container(crate::orbit_icon::binary())
                     .center_x(Length::Fill)
                     .into(),
             );
