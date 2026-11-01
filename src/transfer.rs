@@ -245,13 +245,7 @@ impl Transfer {
     fn available_for(&self, content_only: bool) -> Cow<'static, [String]> {
         let mut mimes = Vec::new();
         if self.text_only {
-            if !self.links
-                && (content_only || self.clipboard)
-                && self.files.0.iter().any(|path| {
-                    path.extension()
-                        .is_some_and(|extension| extension.eq_ignore_ascii_case("html"))
-                })
-            {
+            if !self.links && (content_only || self.clipboard) {
                 mimes.extend([
                     crate::rich_text::HTML_UTF8.into(),
                     crate::rich_text::HTML.into(),
@@ -281,7 +275,7 @@ impl Transfer {
                 if self.text_only && (content_only || self.clipboard) =>
             {
                 let text = self.text.as_ref()?;
-                let html = self
+                let documents = self
                     .files
                     .0
                     .iter()
@@ -290,18 +284,15 @@ impl Transfer {
                         let text = text.contents()?;
                         Some(
                             crate::rich_text::Document::read(path, &text)
-                                .map(|document| document.html())
-                                .unwrap_or_else(|| {
-                                    format!(
-                                        "<div style=\"white-space:pre-wrap\">{}</div>",
-                                        crate::rich_text::html_text(&text)
-                                    )
-                                }),
+                                .unwrap_or_else(|| crate::rich_text::Document::plain(&text)),
                         )
                     })
-                    .collect::<Option<Vec<_>>>()?
-                    .join("<br>");
-                Some(Cow::Owned(html.into_bytes()))
+                    .collect::<Option<Vec<_>>>()?;
+                Some(Cow::Owned(
+                    crate::rich_text::Document::join(documents)
+                        .clipboard_html()
+                        .into_bytes(),
+                ))
             }
             ORBIT_TEXT if self.text_only => {
                 self.plain_text().map(|text| Cow::Owned(text.into_bytes()))
@@ -336,6 +327,56 @@ impl Transfer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn content_drags_keep_paragraphs_styles_and_item_boundaries() {
+        use crate::rich_text::{Document, HTML};
+
+        let directory = tempfile::tempdir().unwrap();
+        let styled_path = directory.path().join("styled.html");
+        let text_path = directory.path().join("plain.txt");
+        let styled = Document::from_html("<b>First</b><br><br><i>Second</i><br>").unwrap();
+        std::fs::write(&styled_path, styled.html()).unwrap();
+        std::fs::write(&text_path, "Third\nFourth").unwrap();
+        let data = Arc::new(Transfer {
+            files: FileList(vec![styled_path, text_path.clone()]),
+            text: Some(vec![Text::Inline(styled.text), Text::File(text_path)]),
+            text_only: true,
+            has_local_files: true,
+            links: false,
+            clipboard: false,
+            cached: Vec::new(),
+        });
+        let file_drag = Drag {
+            transfer: data.clone(),
+            content_only: false,
+        };
+        assert!(!file_drag.available().iter().any(|mime| mime == HTML));
+        let drag = Drag {
+            transfer: data.clone(),
+            content_only: true,
+        };
+        assert!(drag.available().iter().any(|mime| mime == HTML));
+        let html = String::from_utf8(drag.as_bytes(HTML).unwrap().into_owned()).unwrap();
+        let normalized = html.replace("white-space:pre-wrap", "white-space:normal");
+        let received = Document::from_html(&normalized).unwrap();
+        assert_eq!(received.text, data.plain_text().unwrap());
+        assert!(received.html().contains("font-weight:bold"));
+        assert!(received.html().contains("font-style:italic"));
+
+        let plain = Transfer {
+            files: FileList(vec![directory.path().join("only.txt")]),
+            text: Some(vec![Text::Inline("One\nTwo".into())]),
+            ..(*data).clone()
+        };
+        let drag = Drag {
+            transfer: Arc::new(plain),
+            content_only: true,
+        };
+        assert!(drag.available().iter().any(|mime| mime == HTML));
+        let html = String::from_utf8(drag.as_bytes(HTML).unwrap().into_owned()).unwrap();
+        assert_eq!(Document::from_html(&html).unwrap().text, "One\nTwo");
+    }
 
     #[test]
     fn text_drags_keep_utf8_and_offer_a_file_fallback() {

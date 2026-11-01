@@ -98,6 +98,32 @@ impl Preview {
 }
 
 impl Document {
+    pub fn plain(text: &str) -> Self {
+        let text = text.replace("\r\n", "\n").replace('\r', "\n");
+        let runs = if text.is_empty() {
+            Vec::new()
+        } else {
+            vec![Run {
+                range: 0..text.len(),
+                style: Style::default(),
+            }]
+        };
+        Self { text, runs }
+    }
+
+    pub fn join(documents: Vec<Self>) -> Self {
+        let mut joined = Self::default();
+        for (index, document) in documents.into_iter().enumerate() {
+            if index > 0 {
+                joined.push("\n\n", &Style::default());
+            }
+            for run in document.runs {
+                joined.push(&document.text[run.range], &run.style);
+            }
+        }
+        joined
+    }
+
     pub fn read(path: &Path, text: &str) -> Option<Self> {
         if !path
             .extension()
@@ -138,7 +164,43 @@ impl Document {
 
     pub fn html(&self) -> String {
         let mut html = String::from("<span style=\"white-space:pre-wrap\">");
-        for run in &self.runs {
+        self.write_html(&mut html, 0..self.text.len());
+        html.push_str("</span>");
+        html
+    }
+
+    pub fn clipboard_html(&self) -> String {
+        let mut html = String::new();
+        let mut offset = 0;
+        let mut lines = self.text.split('\n').peekable();
+        while let Some(line) = lines.next() {
+            // Editors can discard trailing breaks inside inline spans; use block boundaries.
+            let tag = if lines.peek().is_some() { "p" } else { "span" };
+            html.push_str(&format!("<{tag} style=\"margin:0;white-space:pre-wrap\">"));
+            if line.is_empty() && tag == "p" {
+                html.push_str("<br>");
+            } else {
+                self.write_html(&mut html, offset..offset + line.len());
+            }
+            html.push_str(&format!("</{tag}>"));
+            offset += line.len() + 1;
+        }
+        html
+    }
+
+    fn write_html(&self, html: &mut String, range: Range<usize>) {
+        let first = self
+            .runs
+            .partition_point(|run| run.range.end <= range.start);
+        for run in self.runs[first..]
+            .iter()
+            .take_while(|run| run.range.start < range.end)
+        {
+            let start = run.range.start.max(range.start);
+            let end = run.range.end.min(range.end);
+            if start >= end {
+                continue;
+            }
             let style = &run.style;
             let mut css = String::new();
             if style.bold {
@@ -185,11 +247,9 @@ impl Document {
             html.push_str(&format!(
                 "<span style=\"{}\">{}</span>",
                 quick_xml::escape::escape(&css),
-                html_text(&self.text[run.range.clone()])
+                html_text(&self.text[start..end])
             ));
         }
-        html.push_str("</span>");
-        html
     }
 
     pub fn from_html(html: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
@@ -548,7 +608,7 @@ impl cosmic::iced::clipboard::mime::AsMimeTypes for Document {
     }
     fn as_bytes(&self, mime: &str) -> Option<Cow<'static, [u8]>> {
         match mime {
-            HTML | HTML_UTF8 => Some(Cow::Owned(self.html().into_bytes())),
+            HTML | HTML_UTF8 => Some(Cow::Owned(self.clipboard_html().into_bytes())),
             crate::transfer::TEXT | crate::transfer::UTF8_TEXT => {
                 Some(Cow::Owned(self.text.clone().into_bytes()))
             }
@@ -675,7 +735,7 @@ mod tests {
 
         let document = Document::from_html("<b>First</b><br><br>Second &amp; last").unwrap();
         let html = String::from_utf8(document.as_bytes(HTML).unwrap().into_owned()).unwrap();
-        assert_eq!(html.matches("<br>").count(), 2);
+        assert_eq!(html.matches("<p ").count(), 2);
         let normal = html.replace("white-space:pre-wrap", "white-space:normal");
         assert_eq!(Document::from_html(&normal).unwrap(), document);
         assert_eq!(
