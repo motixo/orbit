@@ -151,7 +151,12 @@ impl Share {
                 .into(),
             );
             controls.push(widget::text::caption(fl!("share-network-hint")).into());
-            controls.push(widget::selectable_text::caption(&session.url).into());
+            controls.push(
+                widget::selectable_text::caption(&session.url)
+                    .width(Length::Fill)
+                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
+                    .into(),
+            );
             controls.push(
                 widget::row::with_children(vec![
                     widget::button::standard(fl!("copy-link"))
@@ -216,9 +221,11 @@ impl Share {
                 .into(),
             widget::scrollable(
                 widget::column::with_children(controls)
+                    .width(Length::Fill)
                     .spacing(cosmic::theme::spacing().space_s)
                     .padding(cosmic::theme::spacing().space_s),
             )
+            .width(Length::Fill)
             .height(Length::Fill)
             .into(),
         ])
