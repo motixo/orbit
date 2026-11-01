@@ -20,11 +20,19 @@ static TRACK: LazyLock<svg::Handle> = LazyLock::new(|| {
     svg::Handle::from_memory(include_bytes!("../resources/icons/orbit-track.svg").as_slice())
 });
 
-pub fn animated<'a, Message: 'a>(size: u16, count: usize, hovering: bool) -> Element<'a, Message> {
+const STATIC_ANGLE: f32 = TAU * 7.0 / 8.0;
+
+pub fn icon<'a, Message: 'a>(
+    size: u16,
+    count: usize,
+    hovering: bool,
+    animated: bool,
+) -> Element<'a, Message> {
     Element::new(OrbitIcon {
         size: size.into(),
         count,
         hovering,
+        animated,
     })
 }
 
@@ -32,6 +40,7 @@ struct OrbitIcon {
     size: f32,
     count: usize,
     hovering: bool,
+    animated: bool,
 }
 
 struct State {
@@ -109,7 +118,7 @@ impl<Message> Widget<Message, Theme, Renderer> for OrbitIcon {
         _: &Rectangle,
     ) {
         if let Event::Window(window::Event::RedrawRequested(now)) = event
-            && (self.count > 0
+            && ((self.animated && self.count > 0)
                 || self.hovering
                 || tree.state.downcast_ref::<State>().hover.is_animating(*now))
         {
@@ -130,7 +139,6 @@ impl<Message> Widget<Message, Theme, Renderer> for OrbitIcon {
         let bounds = layout.bounds();
         let state = tree.state.downcast_ref::<State>();
         let now = Instant::now();
-        let elapsed = now.duration_since(state.started).as_secs_f64();
         let pulse = state.pulse(now);
         let scale = bounds.width / 24.0 * 1.2 * (1.0 - 0.10 * pulse);
         let mut icon_color = style.icon_color;
@@ -146,7 +154,12 @@ impl<Message> Widget<Message, Theme, Renderer> for OrbitIcon {
             drawing_bounds,
             bounds,
         );
-        let angle = (elapsed.rem_euclid(4.0) as f32) * TAU / 4.0;
+        let angle = if self.animated {
+            let elapsed = now.duration_since(state.started).as_secs_f64();
+            (elapsed.rem_euclid(4.0) as f32) * TAU / 4.0
+        } else {
+            STATIC_ANGLE
+        };
         let (tilt_sine, tilt_cosine) = 28.0_f32.to_radians().sin_cos();
         for index in 0..self.count {
             let (sine, cosine) = (angle + TAU * index as f32 / self.count as f32).sin_cos();

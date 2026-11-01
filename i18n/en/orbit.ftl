@@ -42,6 +42,7 @@ floating = Floating
 pinned = Pinned
 open-as = Open as
 default-corner = Corner
+animate-icon = Animate icon
 top-left = Top left
 top-right = Top right
 bottom-right = Bottom right

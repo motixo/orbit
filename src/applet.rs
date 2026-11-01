@@ -59,6 +59,7 @@ pub enum Message {
     Page(Page),
     Mode(usize),
     Corner(usize),
+    AnimateIcon(bool),
     Reminder(usize),
     CheckUpdates(bool),
     Checked(bool, Result<crate::updates::Outcome, String>),
@@ -121,10 +122,11 @@ impl cosmic::Application for OrbitApplet {
             self.core
                 .applet
                 .button_from_element(
-                    crate::orbit_icon::animated(
+                    crate::orbit_icon::icon(
                         self.core.applet.suggested_size(false).0,
                         self.open_orbits,
                         self.hovering,
+                        !self.preferences.static_icon,
                     ),
                     false,
                 )
@@ -265,6 +267,11 @@ impl cosmic::Application for OrbitApplet {
                             Message::Corner,
                         )
                         .width(Length::Fixed(144.0)),
+                    )))
+                    .push(Self::popup_row(widget::settings::item(
+                        fl!("animate-icon"),
+                        widget::toggler(!self.preferences.static_icon)
+                            .on_toggle(Message::AnimateIcon),
                     )));
                 body = body.push(widget::divider::horizontal::default()).push(
                     widget::container(widget::text::caption(fl!("watch-folders")))
@@ -475,6 +482,10 @@ impl cosmic::Application for OrbitApplet {
                     self.preferences.corner = *corner;
                     self.save();
                 }
+            }
+            Message::AnimateIcon(animate) => {
+                self.preferences.static_icon = !animate;
+                self.save();
             }
             Message::Reminder(index) => {
                 if let Some(reminder) = UpdateReminder::ALL.get(index) {
