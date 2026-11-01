@@ -3,7 +3,7 @@
 use cosmic::{
     Element, Renderer, Theme,
     iced::{
-        Animation, Border, Event, Length, Rectangle, Size,
+        Animation, Border, Color, Event, Length, Point, Rectangle, Size,
         advanced::{
             Clipboard, Layout, Shell, Widget, layout, mouse,
             renderer::{self, Renderer as _},
@@ -11,7 +11,7 @@ use cosmic::{
             widget::{Tree, tree},
         },
         animation::Easing,
-        window,
+        gradient, window,
     },
 };
 use std::{f32::consts::TAU, sync::LazyLock, time::Instant};
@@ -20,9 +20,9 @@ static TRACK: LazyLock<svg::Handle> = LazyLock::new(|| {
     svg::Handle::from_memory(include_bytes!("../resources/icons/orbit-track.svg").as_slice())
 });
 
-static BINARY_TRACK: LazyLock<svg::Handle> = LazyLock::new(|| {
-    svg::Handle::from_memory(include_bytes!("../resources/icons/orbit-binary.svg").as_slice())
-});
+const BINARY_SIZE: Size = Size::new(208.0, 112.0);
+const ECCENTRICITY: f32 = 0.6;
+static BINARY_TRACKS: LazyLock<[svg::Handle; 2]> = LazyLock::new(binary_tracks);
 
 pub fn animated<'a, Message: 'a>(size: u16, count: usize, hovering: bool) -> Element<'a, Message> {
     Element::new(OrbitIcon {
@@ -35,7 +35,7 @@ pub fn animated<'a, Message: 'a>(size: u16, count: usize, hovering: bool) -> Ele
 
 pub fn binary<'a, Message: 'a>() -> Element<'a, Message> {
     Element::new(OrbitIcon {
-        size: Size::new(160.0, 80.0),
+        size: BINARY_SIZE,
         count: 2,
         hovering: false,
         binary: true,
@@ -198,26 +198,98 @@ impl<Message> Widget<Message, Theme, Renderer> for OrbitIcon {
     }
 }
 
+fn binary_point(anomaly: f32) -> Point {
+    let (sine, cosine) = anomaly.sin_cos();
+    Point::new(
+        44.0 * (cosine - ECCENTRICITY),
+        44.0 * (1.0 - ECCENTRICITY * ECCENTRICITY).sqrt() * sine,
+    )
+}
+
+fn binary_position(mean: f32) -> Point {
+    let mean = mean.rem_euclid(TAU);
+    let mut anomaly = mean;
+    for _ in 0..8 {
+        anomaly -=
+            (anomaly - ECCENTRICITY * anomaly.sin() - mean) / (1.0 - ECCENTRICITY * anomaly.cos());
+    }
+    binary_point(anomaly)
+}
+
+fn project_binary(point: Point) -> (Point, f32) {
+    let (inclination_sine, inclination_cosine) = 58.0_f32.to_radians().sin_cos();
+    let (roll_sine, roll_cosine) = (-22.0_f32).to_radians().sin_cos();
+    let perspective = 260.0 / (260.0 - point.y * inclination_sine);
+    (
+        Point::new(
+            (point.x * roll_cosine - point.y * inclination_cosine * roll_sine) * perspective,
+            (point.x * roll_sine + point.y * inclination_cosine * roll_cosine) * perspective,
+        ),
+        perspective,
+    )
+}
+
+fn binary_tracks() -> [svg::Handle; 2] {
+    use std::fmt::Write;
+    [false, true].map(|front| {
+        let mut source = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {} {}">"#,
+            BINARY_SIZE.width, BINARY_SIZE.height,
+        );
+        for direction in [-1.0, 1.0] {
+            let start = if (direction > 0.0) == front { 0.0 } else { TAU / 2.0 };
+            source.push_str(r#"<polyline fill="none" stroke="white" stroke-width=".8" stroke-linecap="round" points=""#);
+            for index in 0..=64 {
+                let point = binary_point(start + TAU / 2.0 * index as f32 / 64.0);
+                let (point, _) = project_binary(Point::new(point.x * direction, point.y * direction));
+                let _ = write!(source, "{:.3},{:.3} ", point.x + BINARY_SIZE.width / 2.0, point.y + BINARY_SIZE.height / 2.0);
+            }
+            source.push_str(r#""/>"#);
+        }
+        source.push_str("</svg>");
+        svg::Handle::from_memory(source.into_bytes())
+    })
+}
+
 fn draw_binary(renderer: &mut Renderer, style: &renderer::Style, bounds: Rectangle, elapsed: f64) {
-    renderer.draw_svg(
-        svg::Svg::new(BINARY_TRACK.clone()).color(style.icon_color),
-        bounds,
-        bounds,
-    );
-    let scale = (bounds.width / 160.0).min(bounds.height / 80.0);
-    let angle = elapsed.rem_euclid(6.0) as f32 * TAU / 6.0;
-    let (tilt_sine, tilt_cosine) = 16.0_f32.to_radians().sin_cos();
-    for phase in [angle, angle + TAU / 2.0] {
-        let (sine, cosine) = phase.sin_cos();
-        let x = 58.0 * cosine;
-        let y = 22.0 * sine;
-        let depth = (sine + 1.0) / 2.0;
-        let radius = (4.2 + 0.8 * depth) * scale;
+    let scale = (bounds.width / BINARY_SIZE.width).min(bounds.height / BINARY_SIZE.height);
+    let drawing_bounds = Rectangle {
+        x: bounds.center_x() - BINARY_SIZE.width * scale / 2.0,
+        y: bounds.center_y() - BINARY_SIZE.height * scale / 2.0,
+        width: BINARY_SIZE.width * scale,
+        height: BINARY_SIZE.height * scale,
+    };
+    let point = binary_position(elapsed.rem_euclid(6.0) as f32 * TAU / 6.0);
+    let mut stars = [
+        project_binary(point),
+        project_binary(Point::new(-point.x, -point.y)),
+    ];
+    stars.sort_by(|a, b| a.1.total_cmp(&b.1));
+    for (index, (point, perspective)) in stars.into_iter().enumerate() {
+        renderer.draw_svg(
+            svg::Svg::new(BINARY_TRACKS[index].clone())
+                .color(style.icon_color)
+                .opacity(if index == 0 { 0.20_f32 } else { 0.45_f32 }),
+            drawing_bounds,
+            bounds,
+        );
+        let radius = 6.0 * perspective * scale;
+        let color = style.icon_color;
+        let shadow = Color {
+            r: color.r * 0.45,
+            g: color.g * 0.45,
+            b: color.b * 0.45,
+            ..color
+        };
+        let surface = gradient::Linear::new(std::f32::consts::FRAC_PI_4)
+            .add_stop(0.0, color)
+            .add_stop(0.4, color)
+            .add_stop(1.0, shadow);
         renderer.fill_quad(
             renderer::Quad {
                 bounds: Rectangle {
-                    x: bounds.center_x() + (x * tilt_cosine - y * tilt_sine) * scale - radius,
-                    y: bounds.center_y() + (x * tilt_sine + y * tilt_cosine) * scale - radius,
+                    x: bounds.center_x() + point.x * scale - radius,
+                    y: bounds.center_y() + point.y * scale - radius,
                     width: radius * 2.0,
                     height: radius * 2.0,
                 },
@@ -227,7 +299,7 @@ fn draw_binary(renderer: &mut Renderer, style: &renderer::Style, bounds: Rectang
                 },
                 ..renderer::Quad::default()
             },
-            style.icon_color.scale_alpha(0.75 + 0.25 * depth),
+            surface,
         );
     }
 }
@@ -236,6 +308,22 @@ fn draw_binary(renderer: &mut Renderer, style: &renderer::Style, bounds: Rectang
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn elliptic_motion_has_a_shared_focus_and_accelerates_near_it() {
+        let periapsis = binary_position(0.0);
+        let apoapsis = binary_position(TAU / 2.0);
+        assert!((periapsis.x - 44.0 * (1.0 - ECCENTRICITY)).abs() < 0.0001);
+        assert!((apoapsis.x + 44.0 * (1.0 + ECCENTRICITY)).abs() < 0.0001);
+        let step = 0.001;
+        let fast = periapsis.distance(binary_position(step));
+        let slow = apoapsis.distance(binary_position(TAU / 2.0 + step));
+        assert!(fast > slow * 3.0);
+        assert!(periapsis.distance(binary_position(TAU)) < 0.0001);
+        let (_, near) = project_binary(Point::new(0.0, 30.0));
+        let (_, far) = project_binary(Point::new(0.0, -30.0));
+        assert!(near > 1.0 && far < 1.0);
+    }
 
     #[test]
     fn hover_pulse_starts_at_entry_and_fades_through_quick_reentry() {
