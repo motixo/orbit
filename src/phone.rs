@@ -4,7 +4,10 @@ use crate::{import::ImportedFiles, share::Bundle};
 use axum::{
     Json, Router,
     body::Body,
-    extract::{DefaultBodyLimit, Multipart, Path, Request, State},
+    extract::{
+        DefaultBodyLimit, Multipart, Path, Request, State,
+        ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
+    },
     http::{HeaderValue, StatusCode, header},
     middleware::{self, Next},
     response::{Html, IntoResponse, Redirect, Response},
@@ -12,13 +15,18 @@ use axum::{
 };
 use cosmic::iced::futures::{StreamExt, channel::mpsc::UnboundedSender};
 use serde::Deserialize;
-use std::{net::Ipv4Addr, sync::Arc, time::Duration};
+use std::{
+    net::Ipv4Addr,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 use tokio::{
     io::AsyncWriteExt,
     sync::{Semaphore, watch},
 };
 
 const MAX_UPLOAD: usize = 1024 * 1024 * 1024;
+const PONG_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug)]
 pub struct Address {
@@ -97,15 +105,53 @@ impl Drop for Session {
 struct ShareState {
     bundle: Arc<Bundle>,
     origin: String,
-    incoming: UnboundedSender<ImportedFiles>,
+    incoming: UnboundedSender<Event>,
+    clients: Arc<Mutex<usize>>,
+    policy: HeaderValue,
     stop: watch::Receiver<bool>,
     uploads: Arc<Semaphore>,
+}
+
+#[derive(Clone, Debug)]
+pub enum Event {
+    Received(ImportedFiles),
+    Connected(bool),
+}
+
+struct BrowserConnection {
+    clients: Arc<Mutex<usize>>,
+    incoming: UnboundedSender<Event>,
+}
+
+impl BrowserConnection {
+    fn open(clients: Arc<Mutex<usize>>, incoming: UnboundedSender<Event>) -> Self {
+        let mut count = clients.lock().unwrap_or_else(|error| error.into_inner());
+        *count += 1;
+        if *count == 1 {
+            let _ = incoming.unbounded_send(Event::Connected(true));
+        }
+        drop(count);
+        Self { clients, incoming }
+    }
+}
+
+impl Drop for BrowserConnection {
+    fn drop(&mut self) {
+        let mut count = self
+            .clients
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        *count -= 1;
+        if *count == 0 {
+            let _ = self.incoming.unbounded_send(Event::Connected(false));
+        }
+    }
 }
 
 pub async fn start(
     address: &Address,
     bundle: Arc<Bundle>,
-    incoming: UnboundedSender<ImportedFiles>,
+    incoming: UnboundedSender<Event>,
 ) -> Result<Arc<Session>, String> {
     let listener = tokio::net::TcpListener::bind((address.ip, 0))
         .await
@@ -117,10 +163,16 @@ pub async fn start(
     let token = uuid::Uuid::new_v4().simple().to_string();
     let url = format!("{origin}/{token}/");
     let (stop, stopped) = watch::channel(false);
+    let policy = HeaderValue::from_str(&format!(
+        "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self' {}; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+        origin.replacen("http://", "ws://", 1),
+    )).map_err(|error| error.to_string())?;
     let state = ShareState {
         bundle,
         origin,
         incoming,
+        clients: Arc::new(Mutex::new(0)),
+        policy,
         stop: stopped.clone(),
         uploads: Arc::new(Semaphore::new(2)),
     };
@@ -145,6 +197,7 @@ pub async fn start(
             }),
         )
         .route("/files/{index}", get(download))
+        .route("/presence", get(presence))
         .route(
             "/upload",
             post(upload).layer(DefaultBodyLimit::max(MAX_UPLOAD + 1024 * 1024)),
@@ -180,6 +233,49 @@ async fn stopping(mut stop: watch::Receiver<bool>) {
     }
 }
 
+async fn presence(State(state): State<ShareState>, upgrade: WebSocketUpgrade) -> Response {
+    upgrade
+        .max_message_size(1024)
+        .max_frame_size(1024)
+        .on_upgrade(move |socket| track_connection(socket, state))
+}
+
+async fn track_connection(mut socket: WebSocket, state: ShareState) {
+    let mut connection = None;
+    let mut ping = tokio::time::interval(Duration::from_secs(1));
+    ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut last_pong = tokio::time::Instant::now();
+    loop {
+        tokio::select! {
+            biased;
+            _ = stopping(state.stop.clone()) => break,
+            message = socket.recv() => match message {
+                Some(Ok(WsMessage::Pong(_))) => {
+                    last_pong = tokio::time::Instant::now();
+                    connection.get_or_insert_with(|| BrowserConnection::open(state.clients.clone(), state.incoming.clone()));
+                },
+                Some(Ok(WsMessage::Ping(_))) => {},
+                _ => break,
+            },
+            _ = tokio::time::sleep_until(last_pong + PONG_TIMEOUT) => break,
+            _ = ping.tick() => {
+                if !matches!(
+                    tokio::time::timeout(Duration::from_secs(2), socket.send(WsMessage::Ping(Vec::new().into()))).await,
+                    Ok(Ok(()))
+                ) {
+                    break;
+                }
+            }
+        }
+    }
+    drop(connection);
+    let _ = tokio::time::timeout(
+        Duration::from_millis(200),
+        socket.send(WsMessage::Close(None)),
+    )
+    .await;
+}
+
 async fn guard(State(state): State<ShareState>, request: Request, next: Next) -> Response {
     if *state.stop.borrow() || !valid_origin(&state.origin, request.headers()) {
         return StatusCode::FORBIDDEN.into_response();
@@ -189,15 +285,14 @@ async fn guard(State(state): State<ShareState>, request: Request, next: Next) ->
         ("cache-control", "no-store"),
         ("referrer-policy", "no-referrer"),
         ("x-content-type-options", "nosniff"),
-        (
-            "content-security-policy",
-            "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
-        ),
     ] {
         response
             .headers_mut()
             .insert(name, HeaderValue::from_static(value));
     }
+    response
+        .headers_mut()
+        .insert(header::CONTENT_SECURITY_POLICY, state.policy);
     response
 }
 
@@ -334,11 +429,11 @@ async fn upload(
         drop(output);
         state
             .incoming
-            .unbounded_send(ImportedFiles {
+            .unbounded_send(Event::Received(ImportedFiles {
                 files: crate::transfer::FileList(vec![path]),
                 directory: Some(directory),
                 text: None,
-            })
+            }))
             .map_err(|_| (StatusCode::GONE, "Sharing stopped"))?;
         count += 1;
     }
@@ -370,7 +465,7 @@ async fn receive_text(
     .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not save text"))?;
     state
         .incoming
-        .unbounded_send(imported)
+        .unbounded_send(Event::Received(imported))
         .map_err(|_| (StatusCode::GONE, "Sharing stopped"))?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -410,6 +505,20 @@ mod tests {
         let addresses = parse_addresses(br#"[{"ifname":"lo","addr_info":[{"local":"127.0.0.1"}]},{"ifname":"docker0","addr_info":[{"local":"172.17.0.1"}]},{"ifname":"wlan0","addr_info":[{"local":"192.168.1.2"},{"local":"8.8.8.8"}]}]"#).unwrap();
         assert_eq!(addresses.len(), 1);
         assert_eq!(addresses[0].ip, Ipv4Addr::new(192, 168, 1, 2));
+    }
+
+    #[test]
+    fn browser_presence_reports_the_first_and_last_connection() {
+        let clients = Arc::new(Mutex::new(0));
+        let (output, mut input) = cosmic::iced::futures::channel::mpsc::unbounded();
+        let first = BrowserConnection::open(clients.clone(), output.clone());
+        assert!(matches!(input.try_recv(), Ok(Event::Connected(true))));
+        let second = BrowserConnection::open(clients, output);
+        assert!(input.try_recv().is_err());
+        drop(first);
+        assert!(input.try_recv().is_err());
+        drop(second);
+        assert!(matches!(input.try_recv(), Ok(Event::Connected(false))));
     }
 
     #[tokio::test]
@@ -518,10 +627,13 @@ mod tests {
                 expected
             );
         }
-        let received = tokio::time::timeout(Duration::from_secs(3), input.next())
+        let Event::Received(received) = tokio::time::timeout(Duration::from_secs(3), input.next())
             .await
             .unwrap()
-            .unwrap();
+            .unwrap()
+        else {
+            panic!("Expected a file");
+        };
         assert_eq!(
             std::fs::read_to_string(&received.files.0[0]).unwrap(),
             "from phone"
@@ -537,11 +649,53 @@ mod tests {
                 .status(),
             StatusCode::NO_CONTENT
         );
-        let link = tokio::time::timeout(Duration::from_secs(3), input.next())
+        let Event::Received(link) = tokio::time::timeout(Duration::from_secs(3), input.next())
             .await
             .unwrap()
-            .unwrap();
+            .unwrap()
+        else {
+            panic!("Expected a link");
+        };
         assert_eq!(link.text.as_deref(), Some("https://example.com"));
+        let upgrade = client
+            .get(format!("{}presence", session.url))
+            .header(header::CONNECTION, "Upgrade")
+            .header(header::UPGRADE, "websocket")
+            .header("sec-websocket-version", "13")
+            .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==");
+        let response = upgrade.try_clone().unwrap().send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+        let mut socket = response.upgrade().await.unwrap();
+        // A masked, empty WebSocket Pong frame requires no page JavaScript.
+        socket.write_all(&[0x8a, 0x80, 0, 0, 0, 0]).await.unwrap();
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(3), input.next())
+                .await
+                .unwrap(),
+            Some(Event::Connected(true))
+        ));
+        drop(socket);
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(3), input.next())
+                .await
+                .unwrap(),
+            Some(Event::Connected(false))
+        ));
+        let mut idle = upgrade.send().await.unwrap().upgrade().await.unwrap();
+        idle.write_all(&[0x8a, 0x80, 0, 0, 0, 0]).await.unwrap();
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(3), input.next())
+                .await
+                .unwrap(),
+            Some(Event::Connected(true))
+        ));
+        assert!(matches!(
+            tokio::time::timeout(PONG_TIMEOUT + Duration::from_secs(1), input.next())
+                .await
+                .unwrap(),
+            Some(Event::Connected(false))
+        ));
+        drop(idle);
         let url = session.url.clone();
         drop(session);
         if let Ok(response) = client.get(url).send().await {

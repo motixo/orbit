@@ -7,7 +7,7 @@ license = "GPL-3.0-only"
 description = "A floating file shelf for the COSMIC desktop"
 
 [dependencies]
-axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "json", "multipart"] }
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "json", "multipart", "ws"] }
 base64 = "0.22.1"
 flate2 = "1.1"
 image = { version = "0.25.10", default-features = false }

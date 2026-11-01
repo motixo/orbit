@@ -87,6 +87,7 @@ pub struct Share {
     pub session: Option<Arc<crate::phone::Session>>,
     pub qr: Option<widget::qr_code::Data>,
     pub generation: u64,
+    pub connected: bool,
 }
 
 impl Share {
@@ -120,6 +121,7 @@ impl Share {
                 session: None,
                 qr: None,
                 generation: 0,
+                connected: false,
             },
             cosmic::task::message(cosmic::Action::Surface(open)),
         )
@@ -153,6 +155,14 @@ impl Share {
                 ))
                 .center_x(Length::Fill)
                 .padding(8)
+                .into(),
+            );
+            controls.push(
+                widget::text::caption(if self.connected {
+                    fl!("share-connected")
+                } else {
+                    fl!("share-waiting")
+                })
                 .into(),
             );
             controls.push(widget::text::caption(fl!("share-network-hint")).into());

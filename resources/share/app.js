@@ -1,5 +1,48 @@
 const status = document.getElementById('status');
 
+let presenceActive = false;
+let presenceTimer;
+let presenceSocket;
+
+function retryPresence(socket) {
+  if (presenceSocket !== socket) return;
+  presenceSocket = null;
+  socket.close();
+  clearTimeout(presenceTimer);
+  if (presenceActive) presenceTimer = setTimeout(connectPresence, 500);
+}
+
+function connectPresence() {
+  if (!presenceActive) return;
+  clearTimeout(presenceTimer);
+  const previous = presenceSocket;
+  presenceSocket = null;
+  previous?.close();
+  const url = new URL('presence', location.href);
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  const socket = new WebSocket(url.href);
+  presenceSocket = socket;
+  presenceTimer = setTimeout(() => retryPresence(socket), 8000);
+  socket.addEventListener('open', () => {
+    if (presenceSocket === socket) clearTimeout(presenceTimer);
+  });
+  socket.addEventListener('close', () => retryPresence(socket));
+  socket.addEventListener('error', () => retryPresence(socket));
+}
+
+window.addEventListener('pageshow', () => {
+  presenceActive = true;
+  connectPresence();
+});
+window.addEventListener('pagehide', () => {
+  presenceActive = false;
+  clearTimeout(presenceTimer);
+  const socket = presenceSocket;
+  presenceSocket = null;
+  socket?.close(1000);
+});
+window.addEventListener('online', connectPresence);
+
 document.querySelectorAll('[data-copy]').forEach(button => {
   button.addEventListener('click', async () => {
     const field = document.getElementById(button.dataset.copy);

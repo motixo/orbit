@@ -132,7 +132,7 @@ pub enum Message {
     QrAddress(usize),
     StopQr,
     CopyShareLink,
-    PhoneReceived(window::Id, u64, ImportedFiles),
+    PhoneEvent(window::Id, u64, crate::phone::Event),
     FocusItem(PathBuf),
     Copy,
     ToggleCopyMode,
@@ -881,6 +881,7 @@ impl cosmic::Application for Orbit {
                     share.session = None;
                     share.qr = None;
                     share.qr_busy = false;
+                    share.connected = false;
                     share.status.clear();
                 }
             }
@@ -890,14 +891,21 @@ impl cosmic::Application for Orbit {
                     return iced::clipboard::write(session.url.clone());
                 }
             }
-            Message::PhoneReceived(id, generation, imported) => {
+            Message::PhoneEvent(id, generation, event) => {
                 if let Some(share) = &mut self.share
                     && share.id == id
                     && share.generation == generation
                 {
-                    share.status = fl!("share-received");
-                    let order = self.shelf.reserve_order();
-                    return self.accept_import(order, Ok(imported));
+                    match event {
+                        crate::phone::Event::Connected(connected) => {
+                            share.connected = connected;
+                        }
+                        crate::phone::Event::Received(imported) => {
+                            share.status = fl!("share-received");
+                            let order = self.shelf.reserve_order();
+                            return self.accept_import(order, Ok(imported));
+                        }
+                    }
                 }
             }
             Message::Preview(path) => {
@@ -1415,7 +1423,7 @@ impl Orbit {
         Task::batch([
             start,
             cosmic::task::stream(
-                input.map(move |imported| Message::PhoneReceived(id, generation, imported)),
+                input.map(move |event| Message::PhoneEvent(id, generation, event)),
             ),
         ])
     }
