@@ -31,6 +31,7 @@ pub const SHELF_SIZE: u32 = 320;
 const PREVIEW_PADDING: u32 = 20;
 
 pub struct Flags {
+    pub receive: bool,
     pub uris: Vec<String>,
     pub watch: Option<crate::watch::Folder>,
     pub restored: Option<crate::history::Entry>,
@@ -107,7 +108,7 @@ pub enum Message {
     PreviewLoaded(window::Id, crate::preview::Content),
     ClosePreview,
     DragPreview,
-    Share,
+    Share(bool),
     ShareReady(window::Id, Result<Arc<crate::share::Bundle>, String>),
     RefreshDevices,
     DevicesReady(window::Id, Result<Vec<crate::kdeconnect::Device>, String>),
@@ -115,6 +116,23 @@ pub enum Message {
     ShareSent(window::Id, Result<(), String>),
     CloseShare,
     DragShare,
+    StartQr,
+    QrReady(
+        window::Id,
+        u64,
+        Result<
+            (
+                Arc<crate::phone::Session>,
+                Vec<crate::phone::Address>,
+                usize,
+            ),
+            String,
+        >,
+    ),
+    QrAddress(usize),
+    StopQr,
+    CopyShareLink,
+    PhoneReceived(window::Id, u64, ImportedFiles),
     FocusItem(PathBuf),
     Copy,
     ToggleCopyMode,
@@ -254,7 +272,15 @@ impl cosmic::Application for Orbit {
         } else {
             Task::none()
         };
-        (app, Task::batch([title, startup, incoming, thumbnails]))
+        let receive = if flags.receive {
+            app.update(Message::Share(true))
+        } else {
+            Task::none()
+        };
+        (
+            app,
+            Task::batch([title, startup, incoming, thumbnails, receive]),
+        )
     }
 
     fn view(&self) -> Element<'_, Message> {
@@ -623,34 +649,7 @@ impl cosmic::Application for Orbit {
                     return Task::none();
                 }
                 self.pending_imports.retain(|(key, ..)| *key != id);
-                let mut metadata = None;
-                let files = result.map(|imported| {
-                    if imported
-                        .text
-                        .as_deref()
-                        .is_some_and(|text| self.shelf.contains_link(text))
-                    {
-                        return FileList(Vec::new());
-                    }
-                    if imported.directory.is_some() || imported.text.is_some() {
-                        metadata = imported
-                            .files
-                            .0
-                            .first()
-                            .cloned()
-                            .map(|path| (path, imported.text, imported.directory));
-                    }
-                    imported.files
-                });
-                let first_added = self.shelf.items.len();
-                let task = self.update(Message::Incoming(files));
-                for item in &mut self.shelf.items[first_added..] {
-                    item.order = id;
-                }
-                if let Some((path, text, cache)) = metadata {
-                    self.shelf.set_import(&path, text, cache);
-                }
-                return task;
+                return self.accept_import(id, result);
             }
             Message::RemoveImport(id) => {
                 self.pending_imports.retain(|(key, ..)| *key != id);
@@ -728,12 +727,12 @@ impl cosmic::Application for Orbit {
                 self.focused_item = Some(path);
             }
             Message::FocusItem(path) => self.focused_item = Some(path),
-            Message::Share => {
+            Message::Share(receive) => {
                 if let Some(share) = &self.share {
                     return window::gain_focus(share.id);
                 }
                 let paths = self.shelf.export_paths();
-                if paths.is_empty() {
+                if paths.is_empty() && !receive {
                     return Task::none();
                 }
                 let items = self
@@ -744,7 +743,7 @@ impl cosmic::Application for Orbit {
                     .cloned()
                     .collect();
                 let transfer = Arc::new(self.shelf.transfer(paths, false));
-                let (share, open) = crate::share::Share::open();
+                let (share, open) = crate::share::Share::open(receive);
                 let id = share.id;
                 self.share = Some(share);
                 let (output, input) = iced::futures::channel::mpsc::unbounded();
@@ -772,7 +771,12 @@ impl cosmic::Application for Orbit {
                     && share.id == id
                 {
                     match result {
-                        Ok(bundle) => share.bundle = Some(bundle),
+                        Ok(bundle) => {
+                            share.bundle = Some(bundle);
+                            if share.receive {
+                                return self.update(Message::StartQr);
+                            }
+                        }
                         Err(error) => {
                             eprintln!("Could not prepare sharing: {error}");
                             share.status = fl!("share-error");
@@ -831,6 +835,69 @@ impl cosmic::Application for Orbit {
             Message::DragShare => {
                 if let Some(share) = &self.share {
                     return window::drag(share.id);
+                }
+            }
+            Message::StartQr => return self.start_qr(),
+            Message::QrReady(id, generation, result) => {
+                if let Some(share) = &mut self.share
+                    && share.id == id
+                    && share.generation == generation
+                {
+                    share.qr_busy = false;
+                    match result {
+                        Ok((session, addresses, index)) => {
+                            match widget::qr_code::Data::new(session.url.as_bytes()) {
+                                Ok(qr) => {
+                                    share.qr = Some(qr);
+                                    share.session = Some(session);
+                                    share.addresses = addresses;
+                                    share.address = index;
+                                }
+                                Err(error) => {
+                                    eprintln!("Could not create QR: {error}");
+                                    share.status = fl!("share-network-error");
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            eprintln!("Could not start phone sharing: {error}");
+                            share.status = fl!("share-network-error");
+                        }
+                    }
+                }
+            }
+            Message::QrAddress(index) => {
+                if let Some(share) = &mut self.share
+                    && index < share.addresses.len()
+                {
+                    share.address = index;
+                    let _ = self.update(Message::StopQr);
+                    return self.update(Message::StartQr);
+                }
+            }
+            Message::StopQr => {
+                if let Some(share) = &mut self.share {
+                    share.generation += 1;
+                    share.session = None;
+                    share.qr = None;
+                    share.qr_busy = false;
+                    share.status.clear();
+                }
+            }
+            Message::CopyShareLink => {
+                if let Some(session) = self.share.as_ref().and_then(|share| share.session.as_ref())
+                {
+                    return iced::clipboard::write(session.url.clone());
+                }
+            }
+            Message::PhoneReceived(id, generation, imported) => {
+                if let Some(share) = &mut self.share
+                    && share.id == id
+                    && share.generation == generation
+                {
+                    share.status = fl!("share-received");
+                    let order = self.shelf.reserve_order();
+                    return self.accept_import(order, Ok(imported));
                 }
             }
             Message::Preview(path) => {
@@ -1310,6 +1377,84 @@ impl cosmic::Application for Orbit {
 }
 
 impl Orbit {
+    fn start_qr(&mut self) -> Task<cosmic::Action<Message>> {
+        let Some(share) = &mut self.share else {
+            return Task::none();
+        };
+        if share.qr_busy || share.session.is_some() {
+            return Task::none();
+        }
+        let Some(bundle) = share.bundle.clone() else {
+            return Task::none();
+        };
+        share.generation += 1;
+        let generation = share.generation;
+        let id = share.id;
+        let index = share.address;
+        let addresses = share.addresses.clone();
+        share.qr_busy = true;
+        share.status.clear();
+        let (output, input) = iced::futures::channel::mpsc::unbounded();
+        let start = cosmic::task::future(async move {
+            let result = async move {
+                let addresses = if addresses.is_empty() {
+                    tokio::task::spawn_blocking(crate::phone::addresses)
+                        .await
+                        .map_err(|e| e.to_string())??
+                } else {
+                    addresses
+                };
+                let index = index.min(addresses.len() - 1);
+                let session = crate::phone::start(&addresses[index], bundle, output).await?;
+                Ok((session, addresses, index))
+            }
+            .await;
+            Message::QrReady(id, generation, result)
+        });
+        use iced::futures::StreamExt;
+        Task::batch([
+            start,
+            cosmic::task::stream(
+                input.map(move |imported| Message::PhoneReceived(id, generation, imported)),
+            ),
+        ])
+    }
+
+    fn accept_import(
+        &mut self,
+        id: u64,
+        result: Result<ImportedFiles, String>,
+    ) -> Task<cosmic::Action<Message>> {
+        let mut metadata = None;
+        let files = result.map(|imported| {
+            if imported
+                .text
+                .as_deref()
+                .is_some_and(|text| self.shelf.contains_link(text))
+            {
+                return FileList(Vec::new());
+            }
+            if imported.directory.is_some() || imported.text.is_some() {
+                metadata = imported
+                    .files
+                    .0
+                    .first()
+                    .cloned()
+                    .map(|path| (path, imported.text, imported.directory));
+            }
+            imported.files
+        });
+        let first_added = self.shelf.items.len();
+        let task = self.update(Message::Incoming(files));
+        for item in &mut self.shelf.items[first_added..] {
+            item.order = id;
+        }
+        if let Some((path, text, cache)) = metadata {
+            self.shelf.set_import(&path, text, cache);
+        }
+        task
+    }
+
     fn show_watched_shelf(&mut self) -> Task<cosmic::Action<Message>> {
         if self.watch.is_none()
             || self.pinned.is_some()
@@ -1386,7 +1531,7 @@ impl Orbit {
                 (
                     fl!("share"),
                     "send-to-symbolic",
-                    (!self.shelf.export_paths().is_empty()).then_some(Message::Share),
+                    (!self.shelf.export_paths().is_empty()).then_some(Message::Share(false)),
                     false,
                 ),
             ]

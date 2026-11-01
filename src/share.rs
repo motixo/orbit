@@ -11,6 +11,8 @@ use std::{path::PathBuf, sync::Arc};
 #[derive(Debug)]
 pub struct SharedFile {
     pub path: PathBuf,
+    pub name: String,
+    pub text: Option<String>,
 }
 
 #[derive(Debug)]
@@ -42,10 +44,21 @@ impl Bundle {
             if !metadata.is_file() || path.to_str().is_none() {
                 return Err("Unsupported file".into());
             }
-            files.push(SharedFile { path });
-        }
-        if files.is_empty() {
-            return Err("No files selected".into());
+            let name = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+            let text = item.text.or_else(|| {
+                crate::transfer::is_text_file(&path)
+                    .then(|| {
+                        crate::transfer::Text::File(path.clone())
+                            .contents()
+                            .map(|text| text.into_owned())
+                    })
+                    .flatten()
+            });
+            files.push(SharedFile { path, name, text });
         }
         Ok(Arc::new(Self {
             files,
@@ -67,14 +80,22 @@ pub struct Share {
     pub devices: Option<Result<Vec<crate::kdeconnect::Device>, String>>,
     pub busy: bool,
     pub status: String,
+    pub receive: bool,
+    pub addresses: Vec<crate::phone::Address>,
+    pub address: usize,
+    pub qr_busy: bool,
+    pub session: Option<Arc<crate::phone::Session>>,
+    pub qr: Option<widget::qr_code::Data>,
+    pub generation: u64,
 }
 
 impl Share {
-    pub fn open() -> (Self, Task<cosmic::Action<Message>>) {
+    pub fn open(receive: bool) -> (Self, Task<cosmic::Action<Message>>) {
         let (id, open) = cosmic::surface::action::app_window::<crate::app::Orbit>(
             |_| cosmic::surface::action::LiveSettings::default(),
             |_| window::Settings {
-                size: iced::Size::new(380.0, 420.0),
+                size: iced::Size::new(380.0, 520.0),
+                min_size: Some(iced::Size::new(340.0, 360.0)),
                 decorations: false,
                 transparent: true,
                 platform_specific: window::settings::PlatformSpecific {
@@ -92,35 +113,92 @@ impl Share {
                 devices: None,
                 busy: false,
                 status: String::new(),
+                receive,
+                addresses: Vec::new(),
+                address: 0,
+                qr_busy: false,
+                session: None,
+                qr: None,
+                generation: 0,
             },
             cosmic::task::message(cosmic::Action::Surface(open)),
         )
     }
 
     pub fn view(&self) -> Element<'_, Message> {
-        let ready = self.bundle.is_some() && !self.busy;
-        let mut controls = vec![widget::text::heading(fl!("kde-connect")).into()];
-        match &self.devices {
-            Some(Ok(devices)) if !devices.is_empty() => {
-                for device in devices {
-                    controls.push(
-                        widget::button::standard(&device.name)
-                            .width(Length::Fill)
-                            .on_press_maybe(ready.then(|| Message::SendToDevice(device.id.clone())))
-                            .into(),
-                    );
-                }
+        let ready = self.bundle.is_some() && !self.busy && !self.qr_busy;
+        let mut controls = Vec::new();
+        if let (Some(session), Some(qr)) = (&self.session, &self.qr) {
+            if self.addresses.len() > 1 {
+                controls.push(
+                    widget::dropdown(&self.addresses, Some(self.address), Message::QrAddress)
+                        .width(Length::Fill)
+                        .into(),
+                );
             }
-            Some(Ok(_)) => controls.push(widget::text::body(fl!("share-no-devices")).into()),
-            Some(Err(_)) => controls.push(widget::text::body(fl!("share-no-service")).into()),
-            None => controls.push(widget::indeterminate_circular().size(24.0).into()),
-        }
-        controls.push(
-            widget::button::standard(fl!("refresh"))
-                .on_press_maybe((!self.busy).then_some(Message::RefreshDevices))
+            controls.push(
+                widget::container(iced::widget::themer(
+                    Some(iced::Theme::Light),
+                    widget::qr_code::QRCode::<iced::Theme>::new(qr)
+                        .total_size(240)
+                        .style(|_| widget::qr_code::Style {
+                            cell: iced::Color::BLACK,
+                            background: iced::Color::WHITE,
+                        }),
+                ))
+                .center_x(Length::Fill)
+                .padding(8)
                 .into(),
-        );
-        if self.bundle.is_none() && self.status.is_empty() || self.busy {
+            );
+            controls.push(widget::text::caption(fl!("share-network-hint")).into());
+            controls.push(widget::selectable_text::caption(&session.url).into());
+            controls.push(
+                widget::row::with_children(vec![
+                    widget::button::standard(fl!("copy-link"))
+                        .on_press(Message::CopyShareLink)
+                        .into(),
+                    widget::button::standard(fl!("stop-sharing"))
+                        .on_press(Message::StopQr)
+                        .into(),
+                ])
+                .spacing(cosmic::theme::spacing().space_xxs)
+                .into(),
+            );
+        } else {
+            controls.push(
+                widget::button::suggested(fl!("share-qr"))
+                    .width(Length::Fill)
+                    .on_press_maybe(ready.then_some(Message::StartQr))
+                    .into(),
+            );
+        }
+        if !self.receive && self.session.is_none() {
+            controls.push(widget::divider::horizontal::default().into());
+            controls.push(widget::text::heading(fl!("kde-connect")).into());
+            match &self.devices {
+                Some(Ok(devices)) if !devices.is_empty() => {
+                    for device in devices {
+                        controls.push(
+                            widget::button::standard(&device.name)
+                                .width(Length::Fill)
+                                .on_press_maybe(
+                                    ready.then(|| Message::SendToDevice(device.id.clone())),
+                                )
+                                .into(),
+                        );
+                    }
+                }
+                Some(Ok(_)) => controls.push(widget::text::body(fl!("share-no-devices")).into()),
+                Some(Err(_)) => controls.push(widget::text::body(fl!("share-no-service")).into()),
+                None => controls.push(widget::indeterminate_circular().size(24.0).into()),
+            }
+            controls.push(
+                widget::button::standard(fl!("refresh"))
+                    .on_press_maybe((!self.busy).then_some(Message::RefreshDevices))
+                    .into(),
+            );
+        }
+        if self.bundle.is_none() && self.status.is_empty() || self.busy || self.qr_busy {
             controls.push(widget::indeterminate_circular().size(24.0).into());
         }
         if !self.status.is_empty() {
@@ -128,7 +206,11 @@ impl Share {
         }
         let content = widget::column::with_children(vec![
             widget::header_bar()
-                .title(fl!("share"))
+                .title(if self.receive {
+                    fl!("receive")
+                } else {
+                    fl!("share")
+                })
                 .on_drag(Message::DragShare)
                 .on_close(Message::CloseShare)
                 .into(),

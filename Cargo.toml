@@ -7,6 +7,7 @@ license = "GPL-3.0-only"
 description = "A floating file shelf for the COSMIC desktop"
 
 [dependencies]
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "json", "multipart"] }
 base64 = "0.22.1"
 flate2 = "1.1"
 image = { version = "0.25.10", default-features = false }
@@ -26,6 +27,8 @@ serde_json = "1.0"
 semver = "1.0"
 tempfile = "3.27"
 tar = "0.4"
+tokio = { version = "1.52", features = ["fs", "io-util", "net", "sync", "time"] }
+tokio-util = { version = "0.7", features = ["io"] }
 url = "2.5"
 uuid = { version = "1.29", features = ["v4"] }
 zbus = { version = "5.19", default-features = false, features = ["tokio"] }
@@ -34,7 +37,7 @@ zip = { version = "3", default-features = false, features = ["deflate-flate2", "
 [dependencies.libcosmic]
 git = "https://github.com/pop-os/libcosmic"
 rev = "5a8bd9482a35ae94c1e54edf77b331c6b970f170"
-features = ["applet", "process", "single-instance", "surface-message", "wayland", "xdg-portal"]
+features = ["applet", "process", "qr_code", "single-instance", "surface-message", "wayland", "xdg-portal"]
 
 [dependencies.iced_winit]
 git = "https://github.com/pop-os/libcosmic"

@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Orbit</title>
+<link rel="stylesheet" href="style.css">
+<script src="app.js" defer></script>
+<main>
+  <h1>Orbit</h1>
+  <section><!-- items --></section>
+  <h2>Send to Orbit</h2>
+  <form id="files">
+    <label for="upload">Files <small>Up to 1 GiB each</small></label>
+    <input id="upload" type="file" multiple required>
+    <button>Send files</button>
+  </form>
+  <form id="text">
+    <label for="message">Text or link</label>
+    <textarea id="message" placeholder="Paste here" required></textarea>
+    <button>Send</button>
+  </form>
+  <p id="status" role="status" aria-live="polite"></p>
+</main>
+</html>

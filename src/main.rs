@@ -15,6 +15,7 @@ mod kdeconnect;
 mod launch;
 mod layer_input;
 mod orbit_icon;
+mod phone;
 mod pin;
 mod pointer;
 mod presence;
@@ -69,6 +70,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         None
     };
+    let receive = paths.first().is_some_and(|arg| arg == "--receive");
+    if receive {
+        if paths.len() != 1 {
+            return Err("Usage: orbit --new --receive".into());
+        }
+        paths.clear();
+        independent = true;
+    }
     let restored = if paths.first().is_some_and(|arg| arg == "--restore") {
         if paths.len() != 2 {
             return Err("Usage: orbit --new --restore ID".into());
@@ -130,6 +139,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     cache::start_cleanup()?;
     let startup_area = always_on_top::start()?;
     let flags = app::Flags {
+        receive,
         uris,
         incoming_drop,
         restored,
