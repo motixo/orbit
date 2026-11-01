@@ -119,8 +119,36 @@ impl State {
     fn line_at(&self, index: usize) -> Option<&Line> {
         self.lines
             .iter()
-            .find(|line| index <= line.range.end)
-            .or(self.lines.last())
+            .find(|line| index >= line.range.start && index <= line.range.end)
+    }
+
+    fn move_horizontal(&self, text: &str, index: usize, right: bool) -> usize {
+        if let Some(image) = self.images.iter().find(|image| {
+            if right {
+                image.range.start <= index && index < image.range.end
+            } else {
+                image.range.start < index && index <= image.range.end
+            }
+        }) {
+            return if right {
+                image.range.end
+            } else {
+                image.range.start
+            };
+        }
+        if right {
+            text[index..]
+                .graphemes(true)
+                .next()
+                .map(|grapheme| index + grapheme.len())
+                .unwrap_or(text.len())
+        } else {
+            text[..index]
+                .grapheme_indices(true)
+                .next_back()
+                .map(|(start, _)| start)
+                .unwrap_or(0)
+        }
     }
 
     fn append(
@@ -556,26 +584,34 @@ impl Widget<Message, Theme, Renderer> for View<'_> {
                     state.focused = true;
                     state.dragging = true;
                     let position = cursor.position().unwrap();
-                    let index = state.hit(Point::new(
+                    let point = Point::new(
                         position.x - layout.bounds().x,
                         position.y - layout.bounds().y,
-                    ));
+                    );
+                    let index = state.hit(point);
                     let click =
                         mouse::Click::new(position, mouse::Button::Left, state.click.take());
-                    let range = match click.kind() {
-                        mouse::click::Kind::Single => {
+                    let image = state
+                        .images
+                        .iter()
+                        .find(|image| image.bounds.contains(point));
+                    let range = match (click.kind(), image) {
+                        (mouse::click::Kind::Single, _) => {
                             if state.modifiers.shift() {
                                 selection.start..index
                             } else {
                                 index..index
                             }
                         }
-                        mouse::click::Kind::Double => text
+                        (mouse::click::Kind::Double | mouse::click::Kind::Triple, Some(image)) => {
+                            image.range.clone()
+                        }
+                        (mouse::click::Kind::Double, _) => text
                             .unicode_word_indices()
                             .find(|(start, word)| *start <= index && index < start + word.len())
                             .map(|(start, word)| start..start + word.len())
                             .unwrap_or(index..index),
-                        mouse::click::Kind::Triple => state
+                        (mouse::click::Kind::Triple, _) => state
                             .line_at(index)
                             .map(|line| line.range.clone())
                             .unwrap_or(index..index),
@@ -625,20 +661,12 @@ impl Widget<Message, Theme, Renderer> for View<'_> {
                 let index = selection.end;
                 let line = state.line_at(index);
                 let target = match key.as_ref() {
-                    keyboard::Key::Named(keyboard::key::Named::ArrowLeft) => Some(
-                        text[..index]
-                            .grapheme_indices(true)
-                            .next_back()
-                            .map(|(start, _)| start)
-                            .unwrap_or(0),
-                    ),
-                    keyboard::Key::Named(keyboard::key::Named::ArrowRight) => Some(
-                        text[index..]
-                            .graphemes(true)
-                            .next()
-                            .map(|grapheme| index + grapheme.len())
-                            .unwrap_or(text.len()),
-                    ),
+                    keyboard::Key::Named(keyboard::key::Named::ArrowLeft) => {
+                        Some(state.move_horizontal(text, index, false))
+                    }
+                    keyboard::Key::Named(keyboard::key::Named::ArrowRight) => {
+                        Some(state.move_horizontal(text, index, true))
+                    }
                     keyboard::Key::Named(keyboard::key::Named::Home) => {
                         Some(if modifiers.command() {
                             0
@@ -777,7 +805,7 @@ mod tests {
 
     #[test]
     fn image_preview_keeps_aspect_ratio_and_selection_offsets() {
-        let document = Document::from_html("Before<img src='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=' width='200' height='100'>After").unwrap();
+        let document = Document::from_html("Before<img src='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=' alt='تصویر' width='200' height='100'>After").unwrap();
         let preview = Preview::new(document);
         let mut state = State::default();
         let height = state.append(
@@ -800,5 +828,32 @@ mod tests {
         );
         assert!(height > image.bounds.height);
         assert!(state.lines.last().unwrap().top > image.bounds.y);
+        for index in image.range.clone() {
+            if preview.document.text.is_char_boundary(index) {
+                assert_eq!(
+                    state.move_horizontal(&preview.document.text, index, true),
+                    image.range.end
+                );
+                if index > image.range.start {
+                    assert_eq!(
+                        state.move_horizontal(&preview.document.text, index, false),
+                        image.range.start
+                    );
+                    assert!(state.line_at(index).is_none());
+                }
+            }
+        }
+        assert_eq!(
+            state.move_horizontal(&preview.document.text, image.range.end, false),
+            image.range.start
+        );
+        assert_eq!(
+            state.move_horizontal(&preview.document.text, image.range.start, false),
+            image.range.start - 1
+        );
+        assert_eq!(
+            state.move_horizontal(&preview.document.text, image.range.end, true),
+            image.range.end + 1
+        );
     }
 }
