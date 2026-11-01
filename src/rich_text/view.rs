@@ -151,6 +151,54 @@ impl State {
         }
     }
 
+    fn move_vertical(&self, index: usize, up: bool) -> Option<usize> {
+        let line = self.line_at(index)?;
+        let point =
+            line.paragraph
+                .cursor_position(0, index - line.range.start, text::Affinity::After)?;
+        let row = line
+            .paragraph
+            .buffer()
+            .layout_runs()
+            .find(|row| point.y >= row.line_top && point.y < row.line_top + row.line_height)?;
+        let mut target = Point::new(
+            point.x + line.left,
+            line.top
+                + if up {
+                    row.line_top - 1.0
+                } else {
+                    row.line_top + row.line_height + 1.0
+                },
+        );
+        if target.y < line.top || target.y >= line.top + line.height {
+            let adjacent = self
+                .lines
+                .iter()
+                .filter(|candidate| {
+                    target.x >= candidate.left
+                        && target.x <= candidate.left + candidate.width
+                        && if up {
+                            candidate.top < line.top
+                        } else {
+                            candidate.top >= line.top + line.height
+                        }
+                })
+                .min_by(|a, b| {
+                    (a.top - line.top)
+                        .abs()
+                        .total_cmp(&(b.top - line.top).abs())
+                });
+            if let Some(adjacent) = adjacent {
+                target.y = if up {
+                    adjacent.top + adjacent.height - 1.0
+                } else {
+                    adjacent.top + 1.0
+                };
+            }
+        }
+        Some(self.hit(target))
+    }
+
     fn append(
         &mut self,
         preview: &Preview,
@@ -683,50 +731,13 @@ impl Widget<Message, Theme, Renderer> for View<'_> {
                     }
                     keyboard::Key::Named(
                         keyboard::key::Named::ArrowUp | keyboard::key::Named::ArrowDown,
-                    ) => line.and_then(|line| {
-                        let point = line.paragraph.cursor_position(
-                            0,
-                            index - line.range.start,
-                            text::Affinity::After,
-                        )?;
-                        let delta = if matches!(
+                    ) => state.move_vertical(
+                        index,
+                        matches!(
                             key.as_ref(),
                             keyboard::Key::Named(keyboard::key::Named::ArrowUp)
-                        ) {
-                            -21.0
-                        } else {
-                            21.0
-                        };
-                        let mut target =
-                            Point::new(point.x + line.left, point.y + line.top + delta);
-                        if target.y < line.top || target.y >= line.top + line.height {
-                            let adjacent = state
-                                .lines
-                                .iter()
-                                .filter(|candidate| {
-                                    target.x >= candidate.left
-                                        && target.x <= candidate.left + candidate.width
-                                        && if delta < 0.0 {
-                                            candidate.top < line.top
-                                        } else {
-                                            candidate.top >= line.top + line.height
-                                        }
-                                })
-                                .min_by(|a, b| {
-                                    (a.top - line.top)
-                                        .abs()
-                                        .total_cmp(&(b.top - line.top).abs())
-                                });
-                            if let Some(adjacent) = adjacent {
-                                target.y = if delta < 0.0 {
-                                    adjacent.top + adjacent.height - 1.0
-                                } else {
-                                    adjacent.top + 1.0
-                                };
-                            }
-                        }
-                        Some(state.hit(target))
-                    }),
+                        ),
+                    ),
                     _ => None,
                 };
                 if let Some(target) = target {
@@ -804,6 +815,43 @@ mod tests {
     }
 
     #[test]
+    fn vertical_navigation_follows_wrapped_rows_with_different_line_heights() {
+        let preview = Preview::new(Document::from_html(
+            "<p style='font-size:32px;line-height:64px'>Large text that wraps across several visual rows</p><p style='font-size:12px;line-height:36px'>Smaller text</p>",
+        ).unwrap());
+        let mut state = State::default();
+        state.append(
+            &preview,
+            0..preview.document.text.len(),
+            Rectangle::new(Point::ORIGIN, Size::new(180.0, 0.0)),
+            None,
+            true,
+        );
+        let line = &state.lines[0];
+        let rows: Vec<_> = line.paragraph.buffer().layout_runs().collect();
+        assert!(rows.len() > 1);
+        assert!(rows[0].line_height > 21.0);
+        let down = state.move_vertical(line.range.start, false).unwrap();
+        let position = line
+            .paragraph
+            .cursor_position(0, down - line.range.start, text::Affinity::After)
+            .unwrap();
+        assert_eq!(position.y, rows[1].line_top);
+        assert_eq!(state.move_vertical(down, true), Some(line.range.start));
+
+        let last_row = line.range.start + rows.last().unwrap().glyphs[0].start;
+        let next = &state.lines[1];
+        let down = state.move_vertical(last_row, false).unwrap();
+        assert!((next.range.start..=next.range.end).contains(&down));
+        let up = state.move_vertical(next.range.start, true).unwrap();
+        let position = line
+            .paragraph
+            .cursor_position(0, up - line.range.start, text::Affinity::After)
+            .unwrap();
+        assert_eq!(position.y, rows.last().unwrap().line_top);
+    }
+
+    #[test]
     fn image_preview_keeps_aspect_ratio_and_selection_offsets() {
         let document = Document::from_html("Before<img src='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=' alt='تصویر' width='200' height='100'>After").unwrap();
         let preview = Preview::new(document);
@@ -840,6 +888,7 @@ mod tests {
                         image.range.start
                     );
                     assert!(state.line_at(index).is_none());
+                    assert!(state.move_vertical(index, false).is_none());
                 }
             }
         }
