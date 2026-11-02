@@ -572,9 +572,6 @@ impl cosmic::Application for OrbitApplet {
                 self.editing = None;
                 if self.host == Host::Tray {
                     self.core.set_main_window_id(None);
-                    if !self.preferences.tray_enabled {
-                        return iced::exit();
-                    }
                 }
                 return inhibit_shortcuts(false).discard();
             }
@@ -749,7 +746,6 @@ impl OrbitApplet {
             Host::Applet if self.preferences.tray_enabled => {
                 cosmic::task::future(async { Message::TrayStarted(crate::tray::start().await) })
             }
-            Host::Tray if !self.preferences.tray_enabled && self.popup.is_none() => iced::exit(),
             _ => Task::none(),
         }
     }
