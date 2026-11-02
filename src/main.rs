@@ -26,6 +26,7 @@ mod shelf;
 mod shortcuts;
 mod thumbnail;
 mod transfer;
+mod tray;
 mod updates;
 mod watch;
 
@@ -35,7 +36,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match paths.first().and_then(|arg| arg.to_str()) {
         Some("--help" | "-h") => {
             println!(
-                "Orbit — a file shelf for COSMIC\n\nUsage: orbit [FILE_OR_FOLDER ...]\n       orbit --new\n       orbit --share\n       orbit --applet\n       orbit --version"
+                "Orbit — a file shelf for COSMIC\n\nUsage: orbit [FILE_OR_FOLDER ...]\n       orbit --new\n       orbit --share\n       orbit --applet\n       orbit --tray\n       orbit --menu\n       orbit --version"
             );
             return Ok(());
         }
@@ -46,7 +47,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some("--applet") => {
             let languages = i18n_embed::DesktopLanguageRequester::requested_languages();
             i18n::init(&languages);
-            cosmic::applet::run::<applet::OrbitApplet>(())?;
+            cosmic::applet::run::<applet::OrbitApplet>(applet::Flags::Applet)?;
+            return Ok(());
+        }
+        Some("--tray" | "--menu") => {
+            let show_menu = paths[0] == "--menu";
+            let Some(session) = tray::Session::open(show_menu)? else {
+                return Ok(());
+            };
+            let languages = i18n_embed::DesktopLanguageRequester::requested_languages();
+            i18n::init(&languages);
+            cosmic::app::run::<applet::OrbitApplet>(
+                cosmic::app::Settings::default()
+                    .no_main_window(true)
+                    .exit_on_close(false),
+                applet::Flags::Desktop { session, show_menu },
+            )?;
             return Ok(());
         }
         Some("--new") => {

@@ -3,7 +3,7 @@
 use crate::{
     config::{Corner, Preferences, REPOSITORY, UPDATES_URL, UpdateReminder},
     fl,
-    shortcuts::{Action, Shortcut},
+    shortcuts::{Action, DesktopAction, Shortcut},
 };
 use cosmic::{
     iced::{self, Length, Subscription, window},
@@ -12,10 +12,18 @@ use cosmic::{
 };
 use iced::platform_specific::shell::commands::{activation, popup::destroy_popup};
 use iced::platform_specific::shell::wayland::commands::keyboard_shortcuts_inhibit::inhibit_shortcuts;
+use std::collections::BTreeMap;
+
+const MENU_MIN_HEIGHT: f32 = 460.0;
+const MENU_MAX_HEIGHT: f32 = 560.0;
 
 pub struct OrbitApplet {
     core: cosmic::Core,
+    desktop: Option<crate::tray::Session>,
+    activation_token: Option<String>,
+    tray: Option<crate::tray::Controller>,
     popup: Option<window::Id>,
+    desktop_size: iced::Size,
     page: Page,
     preferences: Preferences,
     modes: Vec<String>,
@@ -25,11 +33,19 @@ pub struct OrbitApplet {
     available_update: Option<String>,
     status: String,
     editing: Option<EditTarget>,
-    global_shortcut: Option<Shortcut>,
+    global_shortcuts: BTreeMap<DesktopAction, Option<Shortcut>>,
     hovering: bool,
     drop_target: widget::Id,
     recent: Vec<crate::history::Entry>,
     open_orbits: usize,
+}
+
+pub enum Flags {
+    Applet,
+    Desktop {
+        session: crate::tray::Session,
+        show_menu: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -40,14 +56,47 @@ pub enum Page {
     About,
 }
 
+pub enum MenuEntry {
+    Item(String, Message),
+    Separator,
+    Heading(String),
+}
+
+pub fn menu(recent: &[crate::history::Entry]) -> Vec<MenuEntry> {
+    let mut items = vec![
+        MenuEntry::Item(fl!("new-orbit"), Message::NewOrbit),
+        MenuEntry::Item(fl!("share"), Message::Share),
+        MenuEntry::Item(fl!("settings"), Message::Page(Page::Settings)),
+        MenuEntry::Item(fl!("shortcuts"), Message::Page(Page::Shortcuts)),
+        MenuEntry::Item(fl!("about"), Message::Page(Page::About)),
+    ];
+    if !recent.is_empty() {
+        items.push(MenuEntry::Separator);
+        items.push(MenuEntry::Heading(fl!("recent")));
+        items.extend(
+            recent
+                .iter()
+                .take(5)
+                .map(|entry| MenuEntry::Item(entry.label(), Message::Restore(entry.id.clone()))),
+        );
+    }
+    items
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EditTarget {
-    Global,
+    Global(DesktopAction),
     Local(Action),
 }
 
 #[derive(Clone, Debug)]
 pub enum Message {
+    Activation(cosmic::dbus_activation::Message),
+    TrayAction(Box<Message>, Option<String>),
+    TrayReady(crate::tray::Controller),
+    TrayError(String),
+    Tray(bool),
+    TrayStarted(bool),
     NewOrbit,
     Share,
     Restore(String),
@@ -58,6 +107,7 @@ pub enum Message {
     TogglePopup,
     Closed,
     Page(Page),
+    MenuHeight(window::Id, f32),
     Mode(usize),
     Corner(usize),
     Reminder(usize),
@@ -75,7 +125,7 @@ pub enum Message {
 
 impl cosmic::Application for OrbitApplet {
     type Executor = cosmic::executor::Default;
-    type Flags = ();
+    type Flags = Flags;
     type Message = Message;
     const APP_ID: &'static str = "io.github.motixo.Orbit.Applet";
 
@@ -86,38 +136,81 @@ impl cosmic::Application for OrbitApplet {
         &mut self.core
     }
 
-    fn init(core: cosmic::Core, _: ()) -> (Self, Task<cosmic::Action<Message>>) {
+    fn init(mut core: cosmic::Core, flags: Flags) -> (Self, Task<cosmic::Action<Message>>) {
+        let (desktop, show_menu) = match flags {
+            Flags::Applet => (None, false),
+            Flags::Desktop { session, show_menu } => (Some(session), show_menu),
+        };
+        if desktop.is_some() {
+            core.window.show_maximize = false;
+            core.set_header_title(fl!("orbit-menu"));
+        }
         let preferences = Preferences::load();
         let watches = Self::launch_watches(preferences.watch_folders.clone());
+        let mut app = Self {
+            core,
+            desktop,
+            activation_token: show_menu
+                .then(|| std::env::var("XDG_ACTIVATION_TOKEN").ok())
+                .flatten(),
+            tray: None,
+            popup: None,
+            desktop_size: iced::Size::new(420.0, MENU_MIN_HEIGHT),
+            page: Page::Menu,
+            preferences,
+            modes: vec![fl!("floating"), fl!("pinned")],
+            corners: vec![
+                fl!("top-left"),
+                fl!("top-right"),
+                fl!("bottom-right"),
+                fl!("bottom-left"),
+            ],
+            reminders: vec![fl!("disabled"), fl!("daily"), fl!("weekly")],
+            checking_update: false,
+            available_update: None,
+            status: String::new(),
+            editing: None,
+            global_shortcuts: BTreeMap::new(),
+            hovering: false,
+            drop_target: widget::Id::unique(),
+            recent: Vec::new(),
+            open_orbits: 0,
+        };
+        let tray = if show_menu {
+            app.update(Message::Page(Page::Menu))
+        } else if app.desktop.is_some() && !app.preferences.tray_enabled {
+            app.update(Message::Page(Page::Settings))
+        } else {
+            app.sync_tray()
+        };
         (
-            Self {
-                core,
-                popup: None,
-                page: Page::Menu,
-                preferences,
-                modes: vec![fl!("floating"), fl!("pinned")],
-                corners: vec![
-                    fl!("top-left"),
-                    fl!("top-right"),
-                    fl!("bottom-right"),
-                    fl!("bottom-left"),
-                ],
-                reminders: vec![fl!("disabled"), fl!("daily"), fl!("weekly")],
-                checking_update: false,
-                available_update: None,
-                status: String::new(),
-                editing: None,
-                global_shortcut: None,
-                hovering: false,
-                drop_target: widget::Id::unique(),
-                recent: Vec::new(),
-                open_orbits: 0,
-            },
-            Task::batch([cosmic::task::message(Message::CheckUpdates(false)), watches]),
+            app,
+            Task::batch([
+                cosmic::task::message(Message::CheckUpdates(false)),
+                watches,
+                tray,
+            ]),
         )
     }
 
     fn view(&self) -> Element<'_, Message> {
+        if self.desktop.is_some() {
+            let id = self.popup.unwrap_or(window::Id::NONE);
+            return widget::responsive(move |viewport| {
+                let chrome = (self.desktop_size.height - viewport.height).max(0.0);
+                // Continuous Wayland autosizing can loop; resize only when content changes.
+                let content = iced::widget::sensor(self.view_window(id)).on_resize(move |size| {
+                    Message::MenuHeight(
+                        id,
+                        (size.height + chrome)
+                            .ceil()
+                            .clamp(MENU_MIN_HEIGHT, MENU_MAX_HEIGHT),
+                    )
+                });
+                widget::scrollable(content).height(Length::Fill).into()
+            })
+            .into();
+        }
         let button = widget::mouse_area(
             self.core
                 .applet
@@ -164,6 +257,12 @@ impl cosmic::Application for OrbitApplet {
         (Some(id) == self.popup).then_some(Message::Closed)
     }
 
+    fn on_window_resize(&mut self, id: window::Id, width: f32, height: f32) {
+        if self.desktop.is_some() && Some(id) == self.popup {
+            self.desktop_size = iced::Size::new(width, height);
+        }
+    }
+
     fn subscription(&self) -> Subscription<Message> {
         let config = self
             .core
@@ -183,8 +282,22 @@ impl cosmic::Application for OrbitApplet {
         } else {
             Subscription::none()
         };
-        let presence = crate::presence::count().map(Message::OpenOrbits);
-        Subscription::batch([config, keyboard, updates, presence])
+        let presence = if self.desktop.is_none() {
+            crate::presence::count().map(Message::OpenOrbits)
+        } else {
+            Subscription::none()
+        };
+        let tray = if self.desktop.is_some() {
+            crate::tray::subscription()
+        } else {
+            Subscription::none()
+        };
+        let activation = self
+            .desktop
+            .as_ref()
+            .map(crate::tray::Session::subscription)
+            .unwrap_or_else(Subscription::none);
+        Subscription::batch([config, keyboard, updates, presence, tray, activation])
     }
 
     fn view_window(&self, _: window::Id) -> Element<'_, Message> {
@@ -217,39 +330,38 @@ impl cosmic::Application for OrbitApplet {
         let mut body = widget::column::with_capacity(15);
         match self.page {
             Page::Menu => {
-                for (label, message) in [
-                    (fl!("new-orbit"), Message::NewOrbit),
-                    (fl!("share"), Message::Share),
-                    (fl!("settings"), Message::Page(Page::Settings)),
-                    (fl!("shortcuts"), Message::Page(Page::Shortcuts)),
-                    (fl!("about"), Message::Page(Page::About)),
-                ] {
-                    body = body.push(
-                        cosmic::applet::menu_button(widget::text::body(label)).on_press(message),
-                    );
-                }
-                if !self.recent.is_empty() {
-                    body = body.push(widget::divider::horizontal::default()).push(
-                        cosmic::applet::padded_control(widget::text::caption(fl!("recent"))),
-                    );
-                    for entry in &self.recent {
-                        body = body.push(
-                            cosmic::applet::menu_button(
-                                widget::text::body(entry.label())
-                                    .width(Length::Fill)
-                                    .wrapping(iced::widget::text::Wrapping::None)
-                                    .ellipsize(iced::advanced::text::Ellipsize::End(
-                                        iced::advanced::text::EllipsizeHeightLimit::Lines(1),
-                                    )),
-                            )
-                            .on_press(Message::Restore(entry.id.clone())),
-                        );
-                    }
+                let recent = if self.desktop.is_none() {
+                    self.recent.as_slice()
+                } else {
+                    &[]
+                };
+                for entry in menu(recent) {
+                    let entry: Element<'_, Message> = match entry {
+                        MenuEntry::Item(label, message) => cosmic::applet::menu_button(
+                            widget::text::body(label)
+                                .width(Length::Fill)
+                                .wrapping(iced::widget::text::Wrapping::None)
+                                .ellipsize(iced::advanced::text::Ellipsize::End(
+                                    iced::advanced::text::EllipsizeHeightLimit::Lines(1),
+                                )),
+                        )
+                        .on_press(message)
+                        .into(),
+                        MenuEntry::Separator => widget::divider::horizontal::default().into(),
+                        MenuEntry::Heading(label) => {
+                            cosmic::applet::padded_control(widget::text::caption(label)).into()
+                        }
+                    };
+                    body = body.push(entry);
                 }
             }
             Page::Settings => {
                 body = body
                     .spacing(spacing.space_xxs)
+                    .push(Self::popup_row(widget::settings::item(
+                        fl!("tray"),
+                        widget::toggler(self.preferences.tray_enabled).on_toggle(Message::Tray),
+                    )))
                     .push(Self::popup_row(widget::settings::item(
                         fl!("open-as"),
                         widget::dropdown(
@@ -346,16 +458,18 @@ impl cosmic::Application for OrbitApplet {
                     .push(
                         widget::container(widget::text::caption(fl!("global-shortcuts")))
                             .padding([0, spacing.space_xxs]),
-                    )
-                    .push(self.shortcut_row(
-                        fl!("new-orbit"),
-                        EditTarget::Global,
-                        self.global_shortcut.as_ref(),
-                    ))
-                    .push(
-                        widget::container(widget::text::caption(fl!("orbit-shortcuts")))
-                            .padding([0, spacing.space_xxs]),
                     );
+                for action in DesktopAction::ALL {
+                    shortcuts = shortcuts.push(self.shortcut_row(
+                        action.label(),
+                        EditTarget::Global(action),
+                        self.global_shortcuts.get(&action).and_then(Option::as_ref),
+                    ));
+                }
+                shortcuts = shortcuts.push(
+                    widget::container(widget::text::caption(fl!("orbit-shortcuts")))
+                        .padding([0, spacing.space_xxs]),
+                );
                 for action in Action::ALL {
                     let binding = self
                         .preferences
@@ -369,7 +483,12 @@ impl cosmic::Application for OrbitApplet {
                         binding,
                     ));
                 }
-                body = body.push(widget::scrollable(shortcuts).height(420)).push(
+                let shortcuts: Element<'_, Message> = if self.desktop.is_some() {
+                    shortcuts.into()
+                } else {
+                    widget::scrollable(shortcuts).height(420).into()
+                };
+                body = body.push(shortcuts).push(
                     widget::container(widget::text::caption(fl!("shortcut-hint")))
                         .padding([0, spacing.space_xxs]),
                 );
@@ -398,14 +517,55 @@ impl cosmic::Application for OrbitApplet {
                     .padding([0, spacing.space_xxs]),
             );
         }
-        self.core
-            .applet
-            .popup_container(content.width(Length::Fill))
-            .into()
+        if self.desktop.is_some() {
+            content.width(Length::Fill).into()
+        } else {
+            self.core
+                .applet
+                .popup_container(content.width(Length::Fill))
+                .into()
+        }
     }
 
     fn update(&mut self, message: Message) -> Task<cosmic::Action<Message>> {
         match message {
+            Message::Activation(message) => {
+                use cosmic::dbus_activation::Details;
+                if matches!(message.msg, Details::ActivateAction { action, .. } if action == "menu")
+                {
+                    self.activation_token = message.activation_token;
+                    return self.update(Message::Page(Page::Menu));
+                }
+            }
+            Message::TrayReady(controller) => {
+                self.tray = Some(controller);
+                return self.sync_tray();
+            }
+            Message::TrayAction(message, token) => {
+                self.activation_token = token;
+                return self.update(*message);
+            }
+            Message::TrayError(error) => {
+                eprintln!("Could not start Orbit tray: {error}");
+                self.status = fl!("tray-error");
+                if self.popup.is_none() {
+                    return iced::exit();
+                }
+            }
+            Message::Tray(enabled) => {
+                let previous = self.preferences.tray_enabled;
+                self.preferences.tray_enabled = enabled;
+                if !self.save() {
+                    self.preferences.tray_enabled = previous;
+                    return Task::none();
+                }
+                return self.sync_tray();
+            }
+            Message::TrayStarted(ok) => {
+                if !ok {
+                    self.status = fl!("tray-error");
+                }
+            }
             Message::OpenOrbits(count) => self.open_orbits = count,
             Message::Restore(id) => return self.launch(vec!["--restore".into(), id.into()], None),
             Message::NewOrbit => {
@@ -428,13 +588,7 @@ impl cosmic::Application for OrbitApplet {
                     return destroy_popup(id).chain(inhibit_shortcuts(false).discard());
                 }
                 self.status.clear();
-                self.recent = match crate::history::list() {
-                    Ok(recent) => recent,
-                    Err(_) => {
-                        self.status = fl!("history-error");
-                        Vec::new()
-                    }
-                };
+                self.refresh_recent();
                 self.page = Page::Menu;
                 return cosmic::surface::surface_task(cosmic::surface::action::app_popup(
                     |_| Default::default(),
@@ -455,19 +609,34 @@ impl cosmic::Application for OrbitApplet {
             Message::Closed => {
                 self.popup = None;
                 self.editing = None;
+                if self.desktop.is_some() {
+                    self.core.set_main_window_id(None);
+                }
                 return inhibit_shortcuts(false).discard();
             }
             Message::Page(page) => {
                 self.page = page;
                 self.editing = None;
                 self.status.clear();
-                if matches!(page, Page::Shortcuts) {
-                    match crate::shortcuts::global() {
-                        Ok(shortcut) => self.global_shortcut = shortcut,
-                        Err(error) => self.status = error,
-                    }
+                if self.desktop.is_none() && matches!(page, Page::Menu) {
+                    self.refresh_recent();
+                }
+                if matches!(page, Page::Shortcuts)
+                    && let Err(error) = self.refresh_global_shortcuts()
+                {
+                    self.status = error;
+                }
+                if self.desktop.is_some() {
+                    return self
+                        .desktop_window()
+                        .chain(inhibit_shortcuts(false).discard());
                 }
                 return inhibit_shortcuts(false).discard();
+            }
+            Message::MenuHeight(id, height) => {
+                if Some(id) == self.popup && (height - self.desktop_size.height).abs() >= 1.0 {
+                    return window::resize(id, iced::Size::new(self.desktop_size.width, height));
+                }
             }
             Message::Mode(mode) => {
                 self.preferences.pinned = mode == 1;
@@ -535,7 +704,7 @@ impl cosmic::Application for OrbitApplet {
                     .cloned()
                     .collect();
                 self.preferences = preferences;
-                return Self::launch_watches(added);
+                return Task::batch([Self::launch_watches(added), self.sync_tray()]);
             }
             Message::ChooseWatch => {
                 return cosmic::task::future(async {
@@ -595,6 +764,64 @@ impl cosmic::Application for OrbitApplet {
 }
 
 impl OrbitApplet {
+    fn refresh_global_shortcuts(&mut self) -> Result<(), String> {
+        self.global_shortcuts = DesktopAction::ALL
+            .into_iter()
+            .map(|action| crate::shortcuts::global(action).map(|shortcut| (action, shortcut)))
+            .collect::<Result<_, _>>()?;
+        Ok(())
+    }
+
+    fn refresh_recent(&mut self) {
+        self.recent = match crate::history::list() {
+            Ok(recent) => recent,
+            Err(_) => {
+                self.status = fl!("history-error");
+                Vec::new()
+            }
+        };
+    }
+
+    fn sync_tray(&self) -> Task<cosmic::Action<Message>> {
+        if let Some(tray) = &self.tray {
+            tray.set_enabled(self.preferences.tray_enabled);
+        }
+        if self.desktop.is_none() && self.preferences.tray_enabled {
+            cosmic::task::future(async { Message::TrayStarted(crate::tray::start().await) })
+        } else {
+            Task::none()
+        }
+    }
+
+    fn desktop_window(&mut self) -> Task<cosmic::Action<Message>> {
+        let mut open = Task::none();
+        let size = self.desktop_size;
+        let id = *self.popup.get_or_insert_with(|| {
+            let (id, task) = window::open(window::Settings {
+                size,
+                min_size: Some(iced::Size::new(420.0, MENU_MIN_HEIGHT)),
+                max_size: Some(iced::Size::new(420.0, MENU_MAX_HEIGHT)),
+                decorations: false,
+                transparent: true,
+                platform_specific: window::settings::PlatformSpecific {
+                    application_id: "io.github.motixo.Orbit.Menu".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+            open = task.discard();
+            id
+        });
+        self.core.set_main_window_id(Some(id));
+        let title = self.set_window_title(fl!("orbit-menu"), id);
+        let focus = if let Some(token) = self.activation_token.take() {
+            activation::activate(id, token)
+        } else {
+            window::gain_focus(id)
+        };
+        Task::batch([title, open.chain(window::minimize(id, false)).chain(focus)])
+    }
+
     fn launch_watches(paths: Vec<std::path::PathBuf>) -> Task<cosmic::Action<Message>> {
         if paths.is_empty() {
             return Task::none();
@@ -619,25 +846,32 @@ impl OrbitApplet {
         mut incoming: Option<(Vec<u8>, String)>,
     ) -> Task<cosmic::Action<Message>> {
         self.editing = None;
-        let close = self
-            .popup
-            .take()
-            .map(destroy_popup)
-            .unwrap_or_else(Task::none);
-        activation::request_token(Some(crate::config::ID.into()), self.core.main_window_id())
-            .then(move |token| {
-                let arguments = arguments.clone();
-                let incoming = incoming.take();
-                cosmic::task::future(async move {
-                    Message::Launched(if let Some((bytes, mime)) = incoming {
-                        crate::launch::from_drop(token, bytes, mime).await
-                    } else {
-                        crate::launch::new_orbit(token, None, arguments).await
+        let launch = if self.desktop.is_some() {
+            let token = self.activation_token.take();
+            cosmic::task::future(async move {
+                Message::Launched(crate::launch::new_orbit(token, None, arguments).await)
+            })
+        } else {
+            let close = self
+                .popup
+                .take()
+                .map(destroy_popup)
+                .unwrap_or_else(Task::none);
+            activation::request_token(Some(crate::config::ID.into()), self.core.main_window_id())
+                .then(move |token| {
+                    let arguments = arguments.clone();
+                    let incoming = incoming.take();
+                    cosmic::task::future(async move {
+                        Message::Launched(if let Some((bytes, mime)) = incoming {
+                            crate::launch::from_drop(token, bytes, mime).await
+                        } else {
+                            crate::launch::new_orbit(token, None, arguments).await
+                        })
                     })
                 })
-            })
-            .chain(close)
-            .chain(inhibit_shortcuts(false).discard())
+                .chain(close)
+        };
+        inhibit_shortcuts(false).discard().chain(launch)
     }
 
     fn popup_row<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
@@ -675,7 +909,7 @@ impl OrbitApplet {
         let Some(target) = self.editing else {
             return;
         };
-        let Some(shortcut) = Shortcut::from_event(&event, true) else {
+        let Some(shortcut) = Shortcut::from_event(&event, self.desktop.is_none()) else {
             return;
         };
         if shortcut.key == "Escape" {
@@ -696,23 +930,34 @@ impl OrbitApplet {
             Some(shortcut)
         };
         match target {
-            EditTarget::Global => {
+            EditTarget::Global(target) => {
                 if shortcut
                     .as_ref()
                     .and_then(|shortcut| self.preferences.shortcuts.action(shortcut))
-                    .is_some_and(|action| action != Action::New)
+                    .is_some_and(|action| target != DesktopAction::New || action != Action::New)
                 {
                     self.status = fl!("shortcut-conflict");
                     return;
                 }
-                if let Err(error) = crate::shortcuts::set_global(shortcut.as_ref()) {
+                if let Err(error) = crate::shortcuts::set_global(target, shortcut.as_ref()) {
                     self.status = error;
                     return;
                 }
-                self.global_shortcut = shortcut;
+                self.global_shortcuts.insert(target, shortcut);
             }
             EditTarget::Local(action) => {
-                if action != Action::New && shortcut.is_some() && shortcut == self.global_shortcut {
+                if shortcut.is_some()
+                    && let Err(error) = self.refresh_global_shortcuts()
+                {
+                    self.status = error;
+                    return;
+                }
+                if shortcut.is_some()
+                    && self.global_shortcuts.iter().any(|(target, global)| {
+                        global == &shortcut
+                            && !(*target == DesktopAction::New && action == Action::New)
+                    })
+                {
                     self.status = fl!("shortcut-conflict");
                     return;
                 }
@@ -735,11 +980,40 @@ impl OrbitApplet {
         self.status.clear();
     }
 
-    fn save(&mut self) {
-        self.status = if self.preferences.save().is_ok() {
-            String::new()
+    fn save(&mut self) -> bool {
+        if self.preferences.save().is_ok() {
+            self.status.clear();
+            true
         } else {
-            fl!("settings-error")
-        };
+            self.status = fl!("settings-error");
+            false
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shared_menu_restores_only_the_five_most_recent_orbits() {
+        let recent: Vec<_> = (0..6)
+            .map(|index| crate::history::Entry {
+                id: index.to_string(),
+                items: Vec::new(),
+                pinned: false,
+                corner: Corner::default(),
+                copy_mode: false,
+                collapsed: false,
+            })
+            .collect();
+        let ids: Vec<_> = menu(&recent)
+            .into_iter()
+            .filter_map(|entry| match entry {
+                MenuEntry::Item(_, Message::Restore(id)) => Some(id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ids, ["0", "1", "2", "3", "4"]);
     }
 }
