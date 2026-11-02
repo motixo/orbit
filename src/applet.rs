@@ -585,15 +585,10 @@ impl cosmic::Application for OrbitApplet {
                 if matches!(page, Page::Menu) {
                     self.refresh_recent();
                 }
-                if matches!(page, Page::Shortcuts) {
-                    for action in DesktopAction::ALL {
-                        match crate::shortcuts::global(action) {
-                            Ok(shortcut) => {
-                                self.global_shortcuts.insert(action, shortcut);
-                            }
-                            Err(error) => self.status = error,
-                        }
-                    }
+                if matches!(page, Page::Shortcuts)
+                    && let Err(error) = self.refresh_global_shortcuts()
+                {
+                    self.status = error;
                 }
                 if self.host == Host::Tray {
                     return self
@@ -728,6 +723,14 @@ impl cosmic::Application for OrbitApplet {
 }
 
 impl OrbitApplet {
+    fn refresh_global_shortcuts(&mut self) -> Result<(), String> {
+        self.global_shortcuts = DesktopAction::ALL
+            .into_iter()
+            .map(|action| crate::shortcuts::global(action).map(|shortcut| (action, shortcut)))
+            .collect::<Result<_, _>>()?;
+        Ok(())
+    }
+
     fn refresh_recent(&mut self) {
         self.recent = match crate::history::list() {
             Ok(recent) => recent,
@@ -901,6 +904,12 @@ impl OrbitApplet {
                 self.global_shortcuts.insert(target, shortcut);
             }
             EditTarget::Local(action) => {
+                if shortcut.is_some()
+                    && let Err(error) = self.refresh_global_shortcuts()
+                {
+                    self.status = error;
+                    return;
+                }
                 if shortcut.is_some()
                     && self.global_shortcuts.iter().any(|(target, global)| {
                         global == &shortcut
