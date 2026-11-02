@@ -14,6 +14,7 @@ use iced::platform_specific::shell::commands::{activation, popup::destroy_popup}
 use iced::platform_specific::shell::wayland::commands::keyboard_shortcuts_inhibit::inhibit_shortcuts;
 use std::collections::BTreeMap;
 
+const MENU_MIN_HEIGHT: f32 = 460.0;
 const MENU_MAX_HEIGHT: f32 = 560.0;
 
 pub struct OrbitApplet {
@@ -150,7 +151,7 @@ impl cosmic::Application for OrbitApplet {
                 .flatten(),
             tray: None,
             popup: None,
-            desktop_size: iced::Size::new(420.0, 240.0),
+            desktop_size: iced::Size::new(420.0, MENU_MIN_HEIGHT),
             page: Page::Menu,
             preferences,
             modes: vec![fl!("floating"), fl!("pinned")],
@@ -195,7 +196,12 @@ impl cosmic::Application for OrbitApplet {
                 let chrome = (self.desktop_size.height - viewport.height).max(0.0);
                 // Continuous Wayland autosizing can loop; resize only when content changes.
                 let content = iced::widget::sensor(self.view_window(id)).on_resize(move |size| {
-                    Message::MenuHeight(id, (size.height + chrome).ceil().min(MENU_MAX_HEIGHT))
+                    Message::MenuHeight(
+                        id,
+                        (size.height + chrome)
+                            .ceil()
+                            .clamp(MENU_MIN_HEIGHT, MENU_MAX_HEIGHT),
+                    )
                 });
                 widget::scrollable(content).height(Length::Fill).into()
             })
@@ -790,7 +796,7 @@ impl OrbitApplet {
         let id = *self.popup.get_or_insert_with(|| {
             let (id, task) = window::open(window::Settings {
                 size,
-                min_size: Some(iced::Size::new(420.0, 1.0)),
+                min_size: Some(iced::Size::new(420.0, MENU_MIN_HEIGHT)),
                 max_size: Some(iced::Size::new(420.0, MENU_MAX_HEIGHT)),
                 decorations: false,
                 transparent: true,
