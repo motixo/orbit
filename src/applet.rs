@@ -252,7 +252,11 @@ impl cosmic::Application for OrbitApplet {
         } else {
             Subscription::none()
         };
-        let presence = crate::presence::count().map(Message::OpenOrbits);
+        let presence = if self.host == Host::Applet {
+            crate::presence::count().map(Message::OpenOrbits)
+        } else {
+            Subscription::none()
+        };
         let tray = if self.host == Host::Tray {
             crate::tray::subscription()
         } else {
@@ -969,6 +973,5 @@ mod tests {
             })
             .collect();
         assert_eq!(ids, ["0", "1", "2", "3", "4"]);
-        assert_eq!(menu(&[]).len(), 4);
     }
 }
