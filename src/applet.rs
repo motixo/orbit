@@ -6,7 +6,6 @@ use crate::{
     shortcuts::{Action, DesktopAction, Shortcut},
 };
 use cosmic::{
-    Application,
     iced::{self, Length, Subscription, window},
     prelude::*,
     widget,
@@ -135,6 +134,7 @@ impl cosmic::Application for OrbitApplet {
         let host = if show_menu { Host::Tray } else { host };
         if host == Host::Tray {
             core.window.show_maximize = false;
+            core.set_header_title(fl!("orbit-menu"));
         }
         let preferences = Preferences::load();
         let watches = Self::launch_watches(preferences.watch_folders.clone());
@@ -306,7 +306,12 @@ impl cosmic::Application for OrbitApplet {
         let mut body = widget::column::with_capacity(15);
         match self.page {
             Page::Menu => {
-                for entry in menu(&self.recent) {
+                let recent = if self.host == Host::Applet {
+                    self.recent.as_slice()
+                } else {
+                    &[]
+                };
+                for entry in menu(recent) {
                     let entry: Element<'_, Message> = match entry {
                         MenuEntry::Item(label, message) => cosmic::applet::menu_button(
                             widget::text::body(label)
@@ -583,7 +588,7 @@ impl cosmic::Application for OrbitApplet {
                 self.page = page;
                 self.editing = None;
                 self.status.clear();
-                if matches!(page, Page::Menu) {
+                if self.host == Host::Applet && matches!(page, Page::Menu) {
                     self.refresh_recent();
                 }
                 if matches!(page, Page::Shortcuts)
@@ -763,7 +768,7 @@ impl OrbitApplet {
                 decorations: false,
                 transparent: true,
                 platform_specific: window::settings::PlatformSpecific {
-                    application_id: Self::APP_ID.into(),
+                    application_id: "io.github.motixo.Orbit.Menu".into(),
                     ..Default::default()
                 },
                 ..Default::default()
@@ -772,7 +777,7 @@ impl OrbitApplet {
             id
         });
         self.core.set_main_window_id(Some(id));
-        let title = self.set_window_title(fl!("app-title"), id);
+        let title = self.set_window_title(fl!("orbit-menu"), id);
         let focus = if let Some(token) = self.activation_token.take() {
             activation::activate(id, token)
         } else {

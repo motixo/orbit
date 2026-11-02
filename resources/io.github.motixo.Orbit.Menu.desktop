@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Orbit Menu
+Exec=orbit --menu
+Icon=io.github.motixo.Orbit-symbolic
+Terminal=false
+NoDisplay=true
+StartupNotify=true
