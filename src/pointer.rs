@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use cosmic::iced::{
-    self, Event, Point, Subscription,
+    Event, Point, Subscription,
     advanced::subscription::{self, EventStream, Hasher, Recipe},
     futures::{StreamExt, future, stream},
     mouse, window,
 };
-use std::{any::TypeId, hash::Hash, time::Duration};
+use std::{any::TypeId, hash::Hash};
 
 pub fn events(
     window: window::Id,
@@ -36,50 +36,33 @@ impl Recipe for Pointer {
     }
 
     fn stream(self: Box<Self>, input: EventStream) -> stream::BoxStream<'static, Self::Output> {
-        let ticks = if self.dragging {
-            subscription::into_recipes(iced::time::every(Duration::from_millis(8)))
-                .into_iter()
-                .next()
-                .expect("frame timer recipe")
-                .stream(stream::empty().boxed())
-                .map(|_| None)
-                .boxed()
-        } else {
-            stream::pending().boxed()
-        };
         let mut position = self.position;
-        let mut pending = false;
 
-        stream::select(input.map(Some), ticks)
+        input
             .filter_map(move |input| {
                 let output = match input {
-                    Some(subscription::Event::Interaction { window, event, .. })
+                    subscription::Event::Interaction { window, event, .. }
                         if window == self.window =>
                     {
                         match event {
                             Event::Mouse(mouse::Event::CursorMoved { position: next }) => {
-                                pending |= position != next;
                                 position = next;
-                                None
+                                if self.dragging {
+                                    Some((mouse::Event::CursorMoved { position }, position))
+                                } else {
+                                    None
+                                }
                             }
                             Event::Mouse(
                                 event @ (mouse::Event::ButtonPressed(mouse::Button::Left)
                                 | mouse::Event::ButtonReleased(mouse::Button::Left)
                                 | mouse::Event::CursorLeft),
-                            ) => {
-                                pending = false;
-                                Some((event, position))
-                            }
+                            ) => Some((event, position)),
                             Event::Window(window::Event::Unfocused) => {
-                                pending = false;
                                 Some((mouse::Event::CursorLeft, position))
                             }
                             _ => None,
                         }
-                    }
-                    None if pending => {
-                        pending = false;
-                        Some((mouse::Event::CursorMoved { position }, position))
                     }
                     _ => None,
                 };
@@ -92,6 +75,32 @@ impl Recipe for Pointer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cosmic::iced;
+
+    #[test]
+    fn drag_forwards_motion_without_waiting_for_a_timer() {
+        let window = window::Id::unique();
+        let positions = [Point::new(2.25, 3.5), Point::new(8.75, 9.25)];
+        let input = stream::iter(positions)
+            .map(move |position| subscription::Event::Interaction {
+                window,
+                event: Event::Mouse(mouse::Event::CursorMoved { position }),
+                status: iced::event::Status::Captured,
+            })
+            .boxed();
+        let mut events = Box::new(Pointer {
+            window,
+            position: Point::ORIGIN,
+            dragging: true,
+        })
+        .stream(input);
+        for position in positions {
+            assert_eq!(
+                iced::futures::executor::block_on(events.next()),
+                Some((mouse::Event::CursorMoved { position }, position))
+            );
+        }
+    }
 
     #[test]
     fn idle_pointer_tracks_position_without_starting_a_timer() {

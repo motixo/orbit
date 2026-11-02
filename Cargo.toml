@@ -1,6 +1,6 @@
 [package]
 name = "orbit"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2024"
 rust-version = "1.93"
 license = "GPL-3.0-only"
@@ -40,7 +40,7 @@ ksni = "0.3.7"
 [dependencies.libcosmic]
 git = "https://github.com/pop-os/libcosmic"
 rev = "5a8bd9482a35ae94c1e54edf77b331c6b970f170"
-features = ["applet", "process", "qr_code", "single-instance", "surface-message", "wayland", "xdg-portal"]
+features = ["applet", "process", "qr_code", "single-instance", "surface-message", "wayland", "wgpu", "xdg-portal"]
 
 [dependencies.iced_winit]
 git = "https://github.com/pop-os/libcosmic"
