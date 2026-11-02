@@ -7,11 +7,42 @@ use cosmic::iced::{
 };
 use ksni::TrayMethods;
 use std::{
+    collections::HashMap,
     fs::{self, File, OpenOptions, TryLockError},
     hash::{DefaultHasher, Hash, Hasher},
     io,
     path::Path,
 };
+
+pub fn show_menu() -> zbus::Result<()> {
+    let connection = zbus::blocking::Connection::session()?;
+    let id = <crate::applet::OrbitApplet as cosmic::Application>::APP_ID;
+    let mut proxy =
+        cosmic::dbus_activation::DbusActivationInterfaceProxyBlocking::builder(&connection)
+            .destination(id)?
+            .path(format!("/{}", id.replace('.', "/")))?
+            .build()?;
+    let token = std::env::var("XDG_ACTIVATION_TOKEN").ok();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        let mut platform = HashMap::new();
+        if let Some(token) = token.as_deref() {
+            platform.insert("activation-token", token.into());
+        }
+        match proxy.activate_action("menu", Vec::new(), platform) {
+            Err(zbus::Error::MethodError(name, ..))
+                if matches!(
+                    name.as_str(),
+                    "org.freedesktop.DBus.Error.ServiceUnknown"
+                        | "org.freedesktop.DBus.Error.NameHasNoOwner"
+                ) && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            result => return result,
+        }
+    }
+}
 
 pub async fn start() -> bool {
     match claim() {

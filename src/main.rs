@@ -33,7 +33,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match paths.first().and_then(|arg| arg.to_str()) {
         Some("--help" | "-h") => {
             println!(
-                "Orbit — a file shelf for COSMIC\n\nUsage: orbit [FILE_OR_FOLDER ...]\n       orbit --new\n       orbit --applet\n       orbit --tray\n       orbit --version"
+                "Orbit — a file shelf for COSMIC\n\nUsage: orbit [FILE_OR_FOLDER ...]\n       orbit --new\n       orbit --applet\n       orbit --tray\n       orbit --menu\n       orbit --version"
             );
             return Ok(());
         }
@@ -47,8 +47,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             cosmic::applet::run::<applet::OrbitApplet>(applet::Host::Applet)?;
             return Ok(());
         }
-        Some("--tray") => {
+        Some("--tray" | "--menu") => {
+            let show_menu = paths[0] == "--menu";
             let Some(_lease) = tray::claim()? else {
+                if show_menu {
+                    tray::show_menu()?;
+                }
                 return Ok(());
             };
             let languages = i18n_embed::DesktopLanguageRequester::requested_languages();
@@ -57,7 +61,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 cosmic::app::Settings::default()
                     .no_main_window(true)
                     .exit_on_close(false),
-                applet::Host::Tray,
+                if show_menu {
+                    applet::Host::Menu
+                } else {
+                    applet::Host::Tray
+                },
             )?;
             return Ok(());
         }

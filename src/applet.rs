@@ -3,7 +3,7 @@
 use crate::{
     config::{Corner, Preferences, REPOSITORY, UPDATES_URL, UpdateReminder},
     fl,
-    shortcuts::{Action, Shortcut},
+    shortcuts::{Action, DesktopAction, Shortcut},
 };
 use cosmic::{
     Application,
@@ -13,6 +13,7 @@ use cosmic::{
 };
 use iced::platform_specific::shell::commands::{activation, popup::destroy_popup};
 use iced::platform_specific::shell::wayland::commands::keyboard_shortcuts_inhibit::inhibit_shortcuts;
+use std::collections::BTreeMap;
 
 pub struct OrbitApplet {
     core: cosmic::Core,
@@ -29,7 +30,7 @@ pub struct OrbitApplet {
     available_update: Option<String>,
     status: String,
     editing: Option<EditTarget>,
-    global_shortcut: Option<Shortcut>,
+    global_shortcuts: BTreeMap<DesktopAction, Option<Shortcut>>,
     hovering: bool,
     drop_target: widget::Id,
     recent: Vec<crate::history::Entry>,
@@ -40,6 +41,7 @@ pub struct OrbitApplet {
 pub enum Host {
     Applet,
     Tray,
+    Menu,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -78,12 +80,14 @@ pub fn menu(recent: &[crate::history::Entry]) -> Vec<MenuEntry> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EditTarget {
-    Global,
+    Global(DesktopAction),
     Local(Action),
 }
 
 #[derive(Clone, Debug)]
 pub enum Message {
+    Activation(cosmic::dbus_activation::Message),
+    ActivationToken(String),
     TrayAction(Box<Message>, Option<String>),
     TrayReady(crate::tray::Controller),
     TrayError(String),
@@ -127,6 +131,8 @@ impl cosmic::Application for OrbitApplet {
     }
 
     fn init(mut core: cosmic::Core, host: Host) -> (Self, Task<cosmic::Action<Message>>) {
+        let show_menu = host == Host::Menu;
+        let host = if show_menu { Host::Tray } else { host };
         if host == Host::Tray {
             core.window.show_maximize = false;
         }
@@ -135,7 +141,9 @@ impl cosmic::Application for OrbitApplet {
         let mut app = Self {
             core,
             host,
-            activation_token: None,
+            activation_token: show_menu
+                .then(|| std::env::var("XDG_ACTIVATION_TOKEN").ok())
+                .flatten(),
             tray: None,
             popup: None,
             page: Page::Menu,
@@ -152,13 +160,15 @@ impl cosmic::Application for OrbitApplet {
             available_update: None,
             status: String::new(),
             editing: None,
-            global_shortcut: None,
+            global_shortcuts: BTreeMap::new(),
             hovering: false,
             drop_target: widget::Id::unique(),
             recent: Vec::new(),
             open_orbits: 0,
         };
-        let tray = if host == Host::Tray && !app.preferences.tray_enabled {
+        let tray = if show_menu {
+            app.update(Message::Page(Page::Menu))
+        } else if host == Host::Tray && !app.preferences.tray_enabled {
             app.update(Message::Page(Page::Settings))
         } else {
             app.sync_tray()
@@ -248,7 +258,18 @@ impl cosmic::Application for OrbitApplet {
         } else {
             Subscription::none()
         };
-        Subscription::batch([config, keyboard, updates, presence, tray])
+        let activation = if self.host == Host::Tray {
+            cosmic::dbus_activation::subscription::<Self>().map(|message| match message {
+                cosmic::Action::DbusActivation(message) => Message::Activation(message),
+                cosmic::Action::Cosmic(cosmic::app::Action::Activate(token)) => {
+                    Message::ActivationToken(token)
+                }
+                _ => Message::Ignore,
+            })
+        } else {
+            Subscription::none()
+        };
+        Subscription::batch([config, keyboard, updates, presence, tray, activation])
     }
 
     fn view_window(&self, _: window::Id) -> Element<'_, Message> {
@@ -404,16 +425,18 @@ impl cosmic::Application for OrbitApplet {
                     .push(
                         widget::container(widget::text::caption(fl!("global-shortcuts")))
                             .padding([0, spacing.space_xxs]),
-                    )
-                    .push(self.shortcut_row(
-                        fl!("new-orbit"),
-                        EditTarget::Global,
-                        self.global_shortcut.as_ref(),
-                    ))
-                    .push(
-                        widget::container(widget::text::caption(fl!("orbit-shortcuts")))
-                            .padding([0, spacing.space_xxs]),
                     );
+                for action in DesktopAction::ALL {
+                    shortcuts = shortcuts.push(self.shortcut_row(
+                        action.label(),
+                        EditTarget::Global(action),
+                        self.global_shortcuts.get(&action).and_then(Option::as_ref),
+                    ));
+                }
+                shortcuts = shortcuts.push(
+                    widget::container(widget::text::caption(fl!("orbit-shortcuts")))
+                        .padding([0, spacing.space_xxs]),
+                );
                 for action in Action::ALL {
                     let binding = self
                         .preferences
@@ -468,6 +491,14 @@ impl cosmic::Application for OrbitApplet {
 
     fn update(&mut self, message: Message) -> Task<cosmic::Action<Message>> {
         match message {
+            Message::ActivationToken(token) => self.activation_token = Some(token),
+            Message::Activation(message) => {
+                use cosmic::dbus_activation::Details;
+                if matches!(message.msg, Details::ActivateAction { action, .. } if action == "menu")
+                {
+                    return self.update(Message::Page(Page::Menu));
+                }
+            }
             Message::TrayReady(controller) => {
                 self.tray = Some(controller);
                 return self.sync_tray();
@@ -555,9 +586,13 @@ impl cosmic::Application for OrbitApplet {
                     self.refresh_recent();
                 }
                 if matches!(page, Page::Shortcuts) {
-                    match crate::shortcuts::global() {
-                        Ok(shortcut) => self.global_shortcut = shortcut,
-                        Err(error) => self.status = error,
+                    for action in DesktopAction::ALL {
+                        match crate::shortcuts::global(action) {
+                            Ok(shortcut) => {
+                                self.global_shortcuts.insert(action, shortcut);
+                            }
+                            Err(error) => self.status = error,
+                        }
                     }
                 }
                 if self.host == Host::Tray {
@@ -740,7 +775,7 @@ impl OrbitApplet {
         } else {
             window::gain_focus(id)
         };
-        Task::batch([title, open.chain(focus)])
+        Task::batch([title, open.chain(window::minimize(id, false)).chain(focus)])
     }
 
     fn launch_watches(paths: Vec<std::path::PathBuf>) -> Task<cosmic::Action<Message>> {
@@ -829,7 +864,7 @@ impl OrbitApplet {
         let Some(target) = self.editing else {
             return;
         };
-        let Some(shortcut) = Shortcut::from_event(&event, true) else {
+        let Some(shortcut) = Shortcut::from_event(&event, self.host == Host::Applet) else {
             return;
         };
         if shortcut.key == "Escape" {
@@ -850,23 +885,28 @@ impl OrbitApplet {
             Some(shortcut)
         };
         match target {
-            EditTarget::Global => {
+            EditTarget::Global(target) => {
                 if shortcut
                     .as_ref()
                     .and_then(|shortcut| self.preferences.shortcuts.action(shortcut))
-                    .is_some_and(|action| action != Action::New)
+                    .is_some_and(|action| target != DesktopAction::New || action != Action::New)
                 {
                     self.status = fl!("shortcut-conflict");
                     return;
                 }
-                if let Err(error) = crate::shortcuts::set_global(shortcut.as_ref()) {
+                if let Err(error) = crate::shortcuts::set_global(target, shortcut.as_ref()) {
                     self.status = error;
                     return;
                 }
-                self.global_shortcut = shortcut;
+                self.global_shortcuts.insert(target, shortcut);
             }
             EditTarget::Local(action) => {
-                if action != Action::New && shortcut.is_some() && shortcut == self.global_shortcut {
+                if shortcut.is_some()
+                    && self.global_shortcuts.iter().any(|(target, global)| {
+                        global == &shortcut
+                            && !(*target == DesktopAction::New && action == Action::New)
+                    })
+                {
                     self.status = fl!("shortcut-conflict");
                     return;
                 }

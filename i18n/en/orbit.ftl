@@ -51,6 +51,7 @@ tray-error = Could not start tray.
 tray = Tray
 shortcuts = Shortcuts
 global-shortcuts = Desktop
+orbit-menu = Orbit menu
 orbit-shortcuts = Orbit
 pin-toggle = Pin / Unpin
 next-corner = Next corner

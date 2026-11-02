@@ -190,7 +190,31 @@ impl Bindings {
 }
 
 const GLOBAL_ID: &str = "com.system76.CosmicSettings.Shortcuts";
-const COMMAND: &str = "orbit --new";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DesktopAction {
+    New,
+    Menu,
+}
+
+impl DesktopAction {
+    pub const ALL: [Self; 2] = [Self::New, Self::Menu];
+
+    fn command(self) -> &'static str {
+        match self {
+            Self::New => "orbit --new",
+            Self::Menu => "orbit --menu",
+        }
+    }
+
+    pub fn label(self) -> String {
+        match self {
+            Self::New => fl!("new-orbit"),
+            Self::Menu => fl!("orbit-menu"),
+        }
+    }
+}
+
 // Preserve compositor actions and binding fields verbatim when changing Orbit's shortcut.
 type GlobalMap = BTreeMap<Box<RawValue>, Box<RawValue>>;
 
@@ -218,8 +242,8 @@ enum GlobalAction {
     Spawn(String),
 }
 
-fn owned(action: &RawValue) -> bool {
-    matches!(action.into_rust::<GlobalAction>(), Ok(GlobalAction::Spawn(command)) if command == COMMAND)
+fn owned(action: &RawValue, target: DesktopAction) -> bool {
+    matches!(action.into_rust::<GlobalAction>(), Ok(GlobalAction::Spawn(command)) if command == target.command())
 }
 
 fn read(config: &Config, key: &str) -> Result<GlobalMap, String> {
@@ -267,10 +291,10 @@ impl GlobalBinding {
     }
 }
 
-pub fn global() -> Result<Option<Shortcut>, String> {
+pub fn global(target: DesktopAction) -> Result<Option<Shortcut>, String> {
     let config = Config::new(GLOBAL_ID, 1).map_err(|_| fl!("shortcut-save-error"))?;
     for (binding, action) in read(&config, "custom")? {
-        if owned(&action) {
+        if owned(&action, target) {
             return binding
                 .into_rust::<GlobalBinding>()
                 .map(|binding| Some(binding.shortcut()))
@@ -280,12 +304,28 @@ pub fn global() -> Result<Option<Shortcut>, String> {
     Ok(None)
 }
 
-pub fn set_global(shortcut: Option<&Shortcut>) -> Result<(), String> {
+pub fn set_global(target: DesktopAction, shortcut: Option<&Shortcut>) -> Result<(), String> {
     let config = Config::new(GLOBAL_ID, 1).map_err(|_| fl!("shortcut-save-error"))?;
     let mut custom = read(&config, "custom")?;
-    custom.retain(|_, action| !owned(action));
+    let defaults = if shortcut.is_some() {
+        read(&config, "defaults")?
+    } else {
+        GlobalMap::new()
+    };
+    assign_global(&mut custom, &defaults, target, shortcut)?;
+    config
+        .set("custom", custom)
+        .map_err(|_| fl!("shortcut-save-error"))
+}
+
+fn assign_global(
+    custom: &mut GlobalMap,
+    defaults: &GlobalMap,
+    target: DesktopAction,
+    shortcut: Option<&Shortcut>,
+) -> Result<(), String> {
+    custom.retain(|_, action| !owned(action, target));
     if let Some(shortcut) = shortcut {
-        let defaults = read(&config, "defaults")?;
         for (binding, _) in custom.iter().chain(defaults.iter()) {
             // Abort if a binding cannot be understood; never overwrite another action.
             let binding = binding
@@ -319,23 +359,49 @@ pub fn set_global(shortcut: Option<&Shortcut>) -> Result<(), String> {
             .collect(),
             key: key.into(),
             keycode: None,
-            description: Some(fl!("new-orbit")),
+            description: Some(target.label()),
         };
         custom.insert(
             RawValue::from_rust(&binding).map_err(|_| fl!("shortcut-save-error"))?,
-            RawValue::from_rust(&GlobalAction::Spawn(COMMAND.into()))
+            RawValue::from_rust(&GlobalAction::Spawn(target.command().into()))
                 .map_err(|_| fl!("shortcut-save-error"))?,
         );
     }
-    config
-        .set("custom", custom)
-        .map_err(|_| fl!("shortcut-save-error"))
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use iced_winit::{conversion, platform_specific::wayland::keymap};
+
+    #[test]
+    fn desktop_shortcuts_preserve_each_other_and_reject_conflicts() {
+        let mut custom = GlobalMap::new();
+        let defaults = GlobalMap::new();
+        let new = Shortcut {
+            modifiers: 9,
+            key: "n".into(),
+        };
+        let menu = Shortcut {
+            modifiers: 9,
+            key: "o".into(),
+        };
+        assign_global(&mut custom, &defaults, DesktopAction::New, Some(&new)).unwrap();
+        assign_global(&mut custom, &defaults, DesktopAction::Menu, Some(&menu)).unwrap();
+        assert_eq!(custom.len(), 2);
+        let mut conflicting = custom.clone();
+        assert!(
+            assign_global(&mut conflicting, &defaults, DesktopAction::Menu, Some(&new)).is_err()
+        );
+        assign_global(&mut custom, &defaults, DesktopAction::Menu, None).unwrap();
+        assert_eq!(custom.len(), 1);
+        assert!(
+            custom
+                .values()
+                .all(|value| owned(value, DesktopAction::New))
+        );
+    }
 
     #[test]
     fn new_shortcuts_preserve_existing_assignments_and_disabled_keys() {
