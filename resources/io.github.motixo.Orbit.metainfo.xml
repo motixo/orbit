@@ -18,6 +18,9 @@
   <supports><control>keyboard</control><control>pointing</control></supports>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.4.2" date="2026-11-02">
+      <description><p>Smoother pinned dragging with GPU rendering and lower CPU usage.</p></description>
+    </release>
     <release version="0.4.1" date="2026-11-02">
       <description><p>Add an optional desktop tray and an Orbit Menu shortcut; improve menu sizing and startup.</p></description>
     </release>
