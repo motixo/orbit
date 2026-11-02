@@ -6,6 +6,7 @@ use crate::{
     shortcuts::{Action, Shortcut},
 };
 use cosmic::{
+    Application,
     iced::{self, Length, Subscription, window},
     prelude::*,
     widget,
@@ -17,6 +18,7 @@ pub struct OrbitApplet {
     core: cosmic::Core,
     host: Host,
     activation_token: Option<String>,
+    tray: Option<crate::tray::Controller>,
     popup: Option<window::Id>,
     page: Page,
     preferences: Preferences,
@@ -83,6 +85,7 @@ pub enum EditTarget {
 #[derive(Clone, Debug)]
 pub enum Message {
     TrayAction(Box<Message>, Option<String>),
+    TrayReady(crate::tray::Controller),
     TrayError(String),
     Tray(bool),
     TrayStarted(bool),
@@ -133,6 +136,7 @@ impl cosmic::Application for OrbitApplet {
             core,
             host,
             activation_token: None,
+            tray: None,
             popup: None,
             page: Page::Menu,
             preferences,
@@ -239,7 +243,7 @@ impl cosmic::Application for OrbitApplet {
             Subscription::none()
         };
         let presence = crate::presence::count().map(Message::OpenOrbits);
-        let tray = if self.host == Host::Tray && self.preferences.tray_enabled {
+        let tray = if self.host == Host::Tray {
             crate::tray::subscription()
         } else {
             Subscription::none()
@@ -464,6 +468,10 @@ impl cosmic::Application for OrbitApplet {
 
     fn update(&mut self, message: Message) -> Task<cosmic::Action<Message>> {
         match message {
+            Message::TrayReady(controller) => {
+                self.tray = Some(controller);
+                return self.sync_tray();
+            }
             Message::TrayAction(message, token) => {
                 self.activation_token = token;
                 return self.update(*message);
@@ -510,13 +518,7 @@ impl cosmic::Application for OrbitApplet {
                     return destroy_popup(id).chain(inhibit_shortcuts(false).discard());
                 }
                 self.status.clear();
-                self.recent = match crate::history::list() {
-                    Ok(recent) => recent,
-                    Err(_) => {
-                        self.status = fl!("history-error");
-                        Vec::new()
-                    }
-                };
+                self.refresh_recent();
                 self.page = Page::Menu;
                 return cosmic::surface::surface_task(cosmic::surface::action::app_popup(
                     |_| Default::default(),
@@ -549,6 +551,9 @@ impl cosmic::Application for OrbitApplet {
                 self.page = page;
                 self.editing = None;
                 self.status.clear();
+                if matches!(page, Page::Menu) {
+                    self.refresh_recent();
+                }
                 if matches!(page, Page::Shortcuts) {
                     match crate::shortcuts::global() {
                         Ok(shortcut) => self.global_shortcut = shortcut,
@@ -688,7 +693,20 @@ impl cosmic::Application for OrbitApplet {
 }
 
 impl OrbitApplet {
+    fn refresh_recent(&mut self) {
+        self.recent = match crate::history::list() {
+            Ok(recent) => recent,
+            Err(_) => {
+                self.status = fl!("history-error");
+                Vec::new()
+            }
+        };
+    }
+
     fn sync_tray(&self) -> Task<cosmic::Action<Message>> {
+        if let Some(tray) = &self.tray {
+            tray.set_enabled(self.preferences.tray_enabled);
+        }
         match self.host {
             Host::Applet if self.preferences.tray_enabled => {
                 cosmic::task::future(async { Message::TrayStarted(crate::tray::start().await) })
@@ -706,9 +724,8 @@ impl OrbitApplet {
                 min_size: Some(iced::Size::new(340.0, 280.0)),
                 decorations: false,
                 transparent: true,
-                exit_on_close_request: false,
                 platform_specific: window::settings::PlatformSpecific {
-                    application_id: crate::config::ID.into(),
+                    application_id: Self::APP_ID.into(),
                     ..Default::default()
                 },
                 ..Default::default()

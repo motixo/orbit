@@ -66,25 +66,63 @@ pub fn subscription() -> Subscription<Message> {
     Subscription::run(|| {
         iced::stream::channel(1, |mut output: mpsc::Sender<Message>| async move {
             let (sender, mut input) = mpsc::unbounded();
-            let tray = Item {
-                sender,
-                recent: recent(),
-            };
-            let service = match tray.assume_sni_available(true).spawn().await {
-                Ok(handle) => Service(handle),
-                Err(error) => {
-                    let _ = output.send(Message::TrayError(error.to_string())).await;
-                    return;
-                }
-            };
-            while let Some(message) = input.next().await {
-                if output.send(message).await.is_err() {
-                    break;
+            if output
+                .send(Message::TrayReady(Controller(sender.clone())))
+                .await
+                .is_err()
+            {
+                return;
+            }
+            let mut service: Option<Service> = None;
+            while let Some(command) = input.next().await {
+                match command {
+                    Command::Enabled(true) if service.is_none() => {
+                        let tray = Item {
+                            sender: sender.clone(),
+                            recent: recent(),
+                        };
+                        match tray.assume_sni_available(true).spawn().await {
+                            Ok(handle) => service = Some(Service(handle)),
+                            Err(error) => {
+                                if output
+                                    .send(Message::TrayError(error.to_string()))
+                                    .await
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    Command::Enabled(false) => {
+                        if let Some(current) = service.take() {
+                            current.0.shutdown().await;
+                        }
+                    }
+                    Command::Message(message) => {
+                        if output.send(message).await.is_err() {
+                            break;
+                        }
+                    }
+                    _ => (),
                 }
             }
-            drop(service);
         })
     })
+}
+
+#[derive(Clone, Debug)]
+pub struct Controller(mpsc::UnboundedSender<Command>);
+
+impl Controller {
+    pub fn set_enabled(&self, enabled: bool) {
+        let _ = self.0.unbounded_send(Command::Enabled(enabled));
+    }
+}
+
+enum Command {
+    Enabled(bool),
+    Message(Message),
 }
 
 struct Service(ksni::Handle<Item>);
@@ -96,16 +134,18 @@ impl Drop for Service {
 }
 
 struct Item {
-    sender: mpsc::UnboundedSender<Message>,
+    sender: mpsc::UnboundedSender<Command>,
     recent: Vec<crate::history::Entry>,
 }
 
 impl Item {
     fn send(&self, message: Message) {
-        let _ = self.sender.unbounded_send(Message::TrayAction(
-            Box::new(message),
-            ksni::current_xdg_activation_token(),
-        ));
+        let _ = self
+            .sender
+            .unbounded_send(Command::Message(Message::TrayAction(
+                Box::new(message),
+                ksni::current_xdg_activation_token(),
+            )));
     }
 }
 
