@@ -1,0 +1,149 @@
+// SPDX-License-Identifier: GPL-3.0-only
+
+use crate::applet::{MenuEntry, Message};
+use cosmic::iced::{
+    self, Subscription,
+    futures::{SinkExt, StreamExt, channel::mpsc},
+};
+use ksni::TrayMethods;
+use std::{
+    fs::{self, File, OpenOptions, TryLockError},
+    hash::{DefaultHasher, Hash, Hasher},
+    io,
+    path::Path,
+};
+
+pub fn claim() -> io::Result<Option<File>> {
+    let root = crate::cache::root()?;
+    fs::create_dir_all(&root)?;
+    let mut session = DefaultHasher::new();
+    std::env::var_os("XDG_RUNTIME_DIR").hash(&mut session);
+    std::env::var_os("WAYLAND_DISPLAY").hash(&mut session);
+    claim_file(&root.join(format!("tray-{}.lock", session.finish())))
+}
+
+fn claim_file(path: &Path) -> io::Result<Option<File>> {
+    let lease = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(path)?;
+    match lease.try_lock() {
+        Ok(()) => Ok(Some(lease)),
+        Err(TryLockError::WouldBlock) => Ok(None),
+        Err(TryLockError::Error(error)) => Err(error),
+    }
+}
+
+pub fn subscription() -> Subscription<Message> {
+    Subscription::run(|| {
+        iced::stream::channel(1, |mut output: mpsc::Sender<Message>| async move {
+            let (sender, mut input) = mpsc::unbounded();
+            let tray = Item {
+                sender,
+                recent: recent(),
+            };
+            let service = match tray.assume_sni_available(true).spawn().await {
+                Ok(handle) => Service(handle),
+                Err(error) => {
+                    let _ = output.send(Message::TrayError(error.to_string())).await;
+                    return;
+                }
+            };
+            while let Some(message) = input.next().await {
+                if output.send(message).await.is_err() {
+                    break;
+                }
+            }
+            drop(service);
+        })
+    })
+}
+
+struct Service(ksni::Handle<Item>);
+
+impl Drop for Service {
+    fn drop(&mut self) {
+        self.0.shutdown();
+    }
+}
+
+struct Item {
+    sender: mpsc::UnboundedSender<Message>,
+    recent: Vec<crate::history::Entry>,
+}
+
+impl Item {
+    fn send(&self, message: Message) {
+        let _ = self.sender.unbounded_send(Message::TrayAction(
+            Box::new(message),
+            ksni::current_xdg_activation_token(),
+        ));
+    }
+}
+
+impl ksni::Tray for Item {
+    fn id(&self) -> String {
+        crate::config::ID.into()
+    }
+
+    fn title(&self) -> String {
+        "Orbit".into()
+    }
+
+    fn icon_name(&self) -> String {
+        "io.github.motixo.Orbit-symbolic".into()
+    }
+
+    fn activate(&mut self, _: i32, _: i32) {
+        self.send(Message::NewOrbit);
+    }
+
+    fn menu_about_to_show(&mut self) {
+        self.recent = recent();
+    }
+
+    fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
+        crate::applet::menu(&self.recent)
+            .into_iter()
+            .map(|entry| match entry {
+                MenuEntry::Item(label, message) => ksni::menu::StandardItem {
+                    label: label.replace('_', "__"),
+                    activate: Box::new(move |tray: &mut Self| tray.send(message.clone())),
+                    ..Default::default()
+                }
+                .into(),
+                MenuEntry::Separator => ksni::MenuItem::Separator,
+                MenuEntry::Heading(label) => ksni::menu::StandardItem {
+                    label,
+                    enabled: false,
+                    ..Default::default()
+                }
+                .into(),
+            })
+            .collect()
+    }
+}
+
+fn recent() -> Vec<crate::history::Entry> {
+    crate::history::list().unwrap_or_else(|error| {
+        eprintln!("Could not load recent Orbits: {error}");
+        Vec::new()
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_one_tray_can_hold_the_session_lease() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("tray.lock");
+        let first = claim_file(&path).unwrap().unwrap();
+        assert!(claim_file(&path).unwrap().is_none());
+        drop(first);
+        assert!(claim_file(&path).unwrap().is_some());
+    }
+}

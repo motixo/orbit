@@ -15,6 +15,8 @@ use iced::platform_specific::shell::wayland::commands::keyboard_shortcuts_inhibi
 
 pub struct OrbitApplet {
     core: cosmic::Core,
+    host: Host,
+    activation_token: Option<String>,
     popup: Option<window::Id>,
     page: Page,
     preferences: Preferences,
@@ -30,6 +32,12 @@ pub struct OrbitApplet {
     drop_target: widget::Id,
     recent: Vec<crate::history::Entry>,
     open_orbits: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Host {
+    Applet,
+    Tray,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -74,6 +82,8 @@ pub enum EditTarget {
 
 #[derive(Clone, Debug)]
 pub enum Message {
+    TrayAction(Box<Message>, Option<String>),
+    TrayError(String),
     NewOrbit,
     Restore(String),
     ChooseWatch,
@@ -100,7 +110,7 @@ pub enum Message {
 
 impl cosmic::Application for OrbitApplet {
     type Executor = cosmic::executor::Default;
-    type Flags = ();
+    type Flags = Host;
     type Message = Message;
     const APP_ID: &'static str = "io.github.motixo.Orbit.Applet";
 
@@ -111,12 +121,17 @@ impl cosmic::Application for OrbitApplet {
         &mut self.core
     }
 
-    fn init(core: cosmic::Core, _: ()) -> (Self, Task<cosmic::Action<Message>>) {
+    fn init(mut core: cosmic::Core, host: Host) -> (Self, Task<cosmic::Action<Message>>) {
+        if host == Host::Tray {
+            core.window.show_maximize = false;
+        }
         let preferences = Preferences::load();
         let watches = Self::launch_watches(preferences.watch_folders.clone());
         (
             Self {
                 core,
+                host,
+                activation_token: None,
                 popup: None,
                 page: Page::Menu,
                 preferences,
@@ -143,6 +158,9 @@ impl cosmic::Application for OrbitApplet {
     }
 
     fn view(&self) -> Element<'_, Message> {
+        if self.host == Host::Tray {
+            return self.view_window(self.popup.unwrap_or(window::Id::NONE));
+        }
         let button = widget::mouse_area(
             self.core
                 .applet
@@ -209,7 +227,12 @@ impl cosmic::Application for OrbitApplet {
             Subscription::none()
         };
         let presence = crate::presence::count().map(Message::OpenOrbits);
-        Subscription::batch([config, keyboard, updates, presence])
+        let tray = if self.host == Host::Tray {
+            crate::tray::subscription()
+        } else {
+            Subscription::none()
+        };
+        Subscription::batch([config, keyboard, updates, presence, tray])
     }
 
     fn view_window(&self, _: window::Id) -> Element<'_, Message> {
@@ -413,14 +436,29 @@ impl cosmic::Application for OrbitApplet {
                     .padding([0, spacing.space_xxs]),
             );
         }
-        self.core
-            .applet
-            .popup_container(content.width(Length::Fill))
-            .into()
+        if self.host == Host::Tray {
+            widget::scrollable(content.width(Length::Fill)).into()
+        } else {
+            self.core
+                .applet
+                .popup_container(content.width(Length::Fill))
+                .into()
+        }
     }
 
     fn update(&mut self, message: Message) -> Task<cosmic::Action<Message>> {
         match message {
+            Message::TrayAction(message, token) => {
+                self.activation_token = token;
+                return self.update(*message);
+            }
+            Message::TrayError(error) => {
+                eprintln!("Could not start Orbit tray: {error}");
+                self.status = fl!("tray-error");
+                if self.popup.is_none() {
+                    return iced::exit();
+                }
+            }
             Message::OpenOrbits(count) => self.open_orbits = count,
             Message::Restore(id) => return self.launch(vec!["--restore".into(), id.into()], None),
             Message::NewOrbit => {
@@ -469,6 +507,9 @@ impl cosmic::Application for OrbitApplet {
             Message::Closed => {
                 self.popup = None;
                 self.editing = None;
+                if self.host == Host::Tray {
+                    self.core.set_main_window_id(None);
+                }
                 return inhibit_shortcuts(false).discard();
             }
             Message::Page(page) => {
@@ -480,6 +521,11 @@ impl cosmic::Application for OrbitApplet {
                         Ok(shortcut) => self.global_shortcut = shortcut,
                         Err(error) => self.status = error,
                     }
+                }
+                if self.host == Host::Tray {
+                    return self
+                        .desktop_window()
+                        .chain(inhibit_shortcuts(false).discard());
                 }
                 return inhibit_shortcuts(false).discard();
             }
@@ -609,6 +655,34 @@ impl cosmic::Application for OrbitApplet {
 }
 
 impl OrbitApplet {
+    fn desktop_window(&mut self) -> Task<cosmic::Action<Message>> {
+        let mut open = Task::none();
+        let id = *self.popup.get_or_insert_with(|| {
+            let (id, task) = window::open(window::Settings {
+                size: iced::Size::new(420.0, 560.0),
+                min_size: Some(iced::Size::new(340.0, 280.0)),
+                decorations: false,
+                transparent: true,
+                exit_on_close_request: false,
+                platform_specific: window::settings::PlatformSpecific {
+                    application_id: crate::config::ID.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+            open = task.discard();
+            id
+        });
+        self.core.set_main_window_id(Some(id));
+        let title = self.set_window_title(fl!("app-title"), id);
+        let focus = if let Some(token) = self.activation_token.take() {
+            activation::activate(id, token)
+        } else {
+            window::gain_focus(id)
+        };
+        Task::batch([title, open.chain(focus)])
+    }
+
     fn launch_watches(paths: Vec<std::path::PathBuf>) -> Task<cosmic::Action<Message>> {
         if paths.is_empty() {
             return Task::none();
@@ -633,6 +707,12 @@ impl OrbitApplet {
         mut incoming: Option<(Vec<u8>, String)>,
     ) -> Task<cosmic::Action<Message>> {
         self.editing = None;
+        if self.host == Host::Tray {
+            let token = self.activation_token.take();
+            return cosmic::task::future(async move {
+                Message::Launched(crate::launch::new_orbit(token, None, arguments).await)
+            });
+        }
         let close = self
             .popup
             .take()
