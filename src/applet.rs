@@ -481,7 +481,12 @@ impl cosmic::Application for OrbitApplet {
                         binding,
                     ));
                 }
-                body = body.push(widget::scrollable(shortcuts).height(420)).push(
+                let shortcuts: Element<'_, Message> = if self.desktop.is_some() {
+                    shortcuts.into()
+                } else {
+                    widget::scrollable(shortcuts).height(420).into()
+                };
+                body = body.push(shortcuts).push(
                     widget::container(widget::text::caption(fl!("shortcut-hint")))
                         .padding([0, spacing.space_xxs]),
                 );
