@@ -762,18 +762,35 @@ impl OrbitApplet {
     fn desktop_window(&mut self) -> Task<cosmic::Action<Message>> {
         let mut open = Task::none();
         let id = *self.popup.get_or_insert_with(|| {
-            let (id, task) = window::open(window::Settings {
-                size: iced::Size::new(420.0, 560.0),
-                min_size: Some(iced::Size::new(340.0, 280.0)),
-                decorations: false,
-                transparent: true,
-                platform_specific: window::settings::PlatformSpecific {
-                    application_id: "io.github.motixo.Orbit.Menu".into(),
+            let (id, action) = cosmic::surface::action::app_window::<Self>(
+                |_| Default::default(),
+                |_| window::Settings {
+                    size: iced::Size::new(420.0, 240.0),
+                    min_size: Some(iced::Size::new(420.0, 1.0)),
+                    max_size: Some(iced::Size::new(420.0, 560.0)),
+                    decorations: false,
+                    transparent: true,
+                    platform_specific: window::settings::PlatformSpecific {
+                        application_id: "io.github.motixo.Orbit.Menu".into(),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
-                ..Default::default()
-            });
-            open = task.discard();
+                Some(Box::new(|app| {
+                    widget::autosize::autosize(
+                        app.view_main(),
+                        widget::Id::new("orbit-menu-autosize"),
+                    )
+                    .limits(
+                        iced::Limits::NONE
+                            .width(420.0)
+                            .height(Length::Shrink)
+                            .max_height(560.0),
+                    )
+                    .into()
+                })),
+            );
+            open = cosmic::task::message(cosmic::Action::Surface(action));
             id
         });
         self.core.set_main_window_id(Some(id));
