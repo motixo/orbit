@@ -16,6 +16,10 @@ Double-click the header to switch between floating and pinned. Drag a pinned hea
 
 In COSMIC Settings → Desktop → Panel or Dock → Applets, add **Orbit**. Drop files directly onto the applet to open an Orbit with them. Right-click it for Settings and Shortcuts.
 
+## Watched folders
+
+Right-click the applet or tray → Settings → Watch folder. New files added directly to the selected folder appear automatically in a separate Orbit.
+
 ## Shortcuts
 
 Defaults inside an Orbit window:
