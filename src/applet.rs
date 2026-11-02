@@ -40,6 +40,32 @@ pub enum Page {
     About,
 }
 
+pub enum MenuEntry {
+    Item(String, Message),
+    Separator,
+    Heading(String),
+}
+
+pub fn menu(recent: &[crate::history::Entry]) -> Vec<MenuEntry> {
+    let mut items = vec![
+        MenuEntry::Item(fl!("new-orbit"), Message::NewOrbit),
+        MenuEntry::Item(fl!("settings"), Message::Page(Page::Settings)),
+        MenuEntry::Item(fl!("shortcuts"), Message::Page(Page::Shortcuts)),
+        MenuEntry::Item(fl!("about"), Message::Page(Page::About)),
+    ];
+    if !recent.is_empty() {
+        items.push(MenuEntry::Separator);
+        items.push(MenuEntry::Heading(fl!("recent")));
+        items.extend(
+            recent
+                .iter()
+                .take(5)
+                .map(|entry| MenuEntry::Item(entry.label(), Message::Restore(entry.id.clone()))),
+        );
+    }
+    items
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EditTarget {
     Global,
@@ -216,33 +242,24 @@ impl cosmic::Application for OrbitApplet {
         let mut body = widget::column::with_capacity(15);
         match self.page {
             Page::Menu => {
-                for (label, message) in [
-                    (fl!("new-orbit"), Message::NewOrbit),
-                    (fl!("settings"), Message::Page(Page::Settings)),
-                    (fl!("shortcuts"), Message::Page(Page::Shortcuts)),
-                    (fl!("about"), Message::Page(Page::About)),
-                ] {
-                    body = body.push(
-                        cosmic::applet::menu_button(widget::text::body(label)).on_press(message),
-                    );
-                }
-                if !self.recent.is_empty() {
-                    body = body.push(widget::divider::horizontal::default()).push(
-                        cosmic::applet::padded_control(widget::text::caption(fl!("recent"))),
-                    );
-                    for entry in &self.recent {
-                        body = body.push(
-                            cosmic::applet::menu_button(
-                                widget::text::body(entry.label())
-                                    .width(Length::Fill)
-                                    .wrapping(iced::widget::text::Wrapping::None)
-                                    .ellipsize(iced::advanced::text::Ellipsize::End(
-                                        iced::advanced::text::EllipsizeHeightLimit::Lines(1),
-                                    )),
-                            )
-                            .on_press(Message::Restore(entry.id.clone())),
-                        );
-                    }
+                for entry in menu(&self.recent) {
+                    let entry: Element<'_, Message> = match entry {
+                        MenuEntry::Item(label, message) => cosmic::applet::menu_button(
+                            widget::text::body(label)
+                                .width(Length::Fill)
+                                .wrapping(iced::widget::text::Wrapping::None)
+                                .ellipsize(iced::advanced::text::Ellipsize::End(
+                                    iced::advanced::text::EllipsizeHeightLimit::Lines(1),
+                                )),
+                        )
+                        .on_press(message)
+                        .into(),
+                        MenuEntry::Separator => widget::divider::horizontal::default().into(),
+                        MenuEntry::Heading(label) => {
+                            cosmic::applet::padded_control(widget::text::caption(label)).into()
+                        }
+                    };
+                    body = body.push(entry);
                 }
             }
             Page::Settings => {
@@ -738,5 +755,33 @@ impl OrbitApplet {
         } else {
             fl!("settings-error")
         };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shared_menu_restores_only_the_five_most_recent_orbits() {
+        let recent: Vec<_> = (0..6)
+            .map(|index| crate::history::Entry {
+                id: index.to_string(),
+                items: Vec::new(),
+                pinned: false,
+                corner: Corner::default(),
+                copy_mode: false,
+                collapsed: false,
+            })
+            .collect();
+        let ids: Vec<_> = menu(&recent)
+            .into_iter()
+            .filter_map(|entry| match entry {
+                MenuEntry::Item(_, Message::Restore(id)) => Some(id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ids, ["0", "1", "2", "3", "4"]);
+        assert_eq!(menu(&[]).len(), 4);
     }
 }
