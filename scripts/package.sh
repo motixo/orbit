@@ -25,7 +25,7 @@ for orbit_desktop in "$orbit_appid" "$orbit_appid.Applet" "$orbit_appid.Preview"
     install -Dm0644 "$orbit_source/resources/$orbit_desktop.desktop" "$orbit_root/usr/share/applications/$orbit_desktop.desktop"
 done
 install -Dm0644 "$orbit_source/resources/$orbit_appid.metainfo.xml" "$orbit_root/usr/share/metainfo/$orbit_appid.metainfo.xml"
-for orbit_icon in "scalable/apps/$orbit_appid.svg" "symbolic/apps/$orbit_appid-symbolic.svg"; do
+for orbit_icon in "scalable/apps/$orbit_appid.svg" "symbolic/apps/$orbit_appid-symbolic.svg" "symbolic/apps/$orbit_appid-tray-symbolic.svg"; do
     install -Dm0644 "$orbit_source/resources/icons/hicolor/$orbit_icon" "$orbit_root/usr/share/icons/hicolor/$orbit_icon"
 done
 install -Dm0644 "$orbit_source/LICENSE" "$orbit_root/usr/share/licenses/orbit/LICENSE"
@@ -88,6 +88,7 @@ cp -a "$orbit_root/." "%{buildroot}/"
 /usr/share/metainfo/$orbit_appid.metainfo.xml
 /usr/share/icons/hicolor/scalable/apps/$orbit_appid.svg
 /usr/share/icons/hicolor/symbolic/apps/$orbit_appid-symbolic.svg
+/usr/share/icons/hicolor/symbolic/apps/$orbit_appid-tray-symbolic.svg
 %license /usr/share/licenses/orbit/LICENSE
 
 %post

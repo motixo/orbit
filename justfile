@@ -26,4 +26,4 @@ install:
     ORBIT_PREFIX={{quote(rootdir + prefix)}} CARGO_TARGET_DIR={{quote(cargo-target-dir)}} scripts/install.sh
 
 uninstall:
-    rm -f {{rootdir}}{{prefix}}/bin/{{name}} {{rootdir}}{{prefix}}/share/applications/{{appid}}.desktop {{rootdir}}{{prefix}}/share/applications/{{appid}}.Preview.desktop {{rootdir}}{{prefix}}/share/metainfo/{{appid}}.metainfo.xml {{rootdir}}{{prefix}}/share/icons/hicolor/scalable/apps/{{appid}}.svg
+    rm -f {{rootdir}}{{prefix}}/bin/{{name}} {{rootdir}}{{prefix}}/share/applications/{{appid}}.desktop {{rootdir}}{{prefix}}/share/applications/{{appid}}.Preview.desktop {{rootdir}}{{prefix}}/share/metainfo/{{appid}}.metainfo.xml {{rootdir}}{{prefix}}/share/icons/hicolor/scalable/apps/{{appid}}.svg {{rootdir}}{{prefix}}/share/icons/hicolor/symbolic/apps/{{appid}}-tray-symbolic.svg

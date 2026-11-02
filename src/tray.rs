@@ -159,7 +159,7 @@ impl ksni::Tray for Item {
     }
 
     fn icon_name(&self) -> String {
-        "io.github.motixo.Orbit-symbolic".into()
+        "io.github.motixo.Orbit-tray-symbolic".into()
     }
 
     fn activate(&mut self, _: i32, _: i32) {
