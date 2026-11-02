@@ -84,6 +84,8 @@ pub enum EditTarget {
 pub enum Message {
     TrayAction(Box<Message>, Option<String>),
     TrayError(String),
+    Tray(bool),
+    TrayStarted(bool),
     NewOrbit,
     Restore(String),
     ChooseWatch,
@@ -127,33 +129,43 @@ impl cosmic::Application for OrbitApplet {
         }
         let preferences = Preferences::load();
         let watches = Self::launch_watches(preferences.watch_folders.clone());
+        let mut app = Self {
+            core,
+            host,
+            activation_token: None,
+            popup: None,
+            page: Page::Menu,
+            preferences,
+            modes: vec![fl!("floating"), fl!("pinned")],
+            corners: vec![
+                fl!("top-left"),
+                fl!("top-right"),
+                fl!("bottom-right"),
+                fl!("bottom-left"),
+            ],
+            reminders: vec![fl!("disabled"), fl!("daily"), fl!("weekly")],
+            checking_update: false,
+            available_update: None,
+            status: String::new(),
+            editing: None,
+            global_shortcut: None,
+            hovering: false,
+            drop_target: widget::Id::unique(),
+            recent: Vec::new(),
+            open_orbits: 0,
+        };
+        let tray = if host == Host::Tray && !app.preferences.tray_enabled {
+            app.update(Message::Page(Page::Settings))
+        } else {
+            app.sync_tray()
+        };
         (
-            Self {
-                core,
-                host,
-                activation_token: None,
-                popup: None,
-                page: Page::Menu,
-                preferences,
-                modes: vec![fl!("floating"), fl!("pinned")],
-                corners: vec![
-                    fl!("top-left"),
-                    fl!("top-right"),
-                    fl!("bottom-right"),
-                    fl!("bottom-left"),
-                ],
-                reminders: vec![fl!("disabled"), fl!("daily"), fl!("weekly")],
-                checking_update: false,
-                available_update: None,
-                status: String::new(),
-                editing: None,
-                global_shortcut: None,
-                hovering: false,
-                drop_target: widget::Id::unique(),
-                recent: Vec::new(),
-                open_orbits: 0,
-            },
-            Task::batch([cosmic::task::message(Message::CheckUpdates(false)), watches]),
+            app,
+            Task::batch([
+                cosmic::task::message(Message::CheckUpdates(false)),
+                watches,
+                tray,
+            ]),
         )
     }
 
@@ -227,7 +239,7 @@ impl cosmic::Application for OrbitApplet {
             Subscription::none()
         };
         let presence = crate::presence::count().map(Message::OpenOrbits);
-        let tray = if self.host == Host::Tray {
+        let tray = if self.host == Host::Tray && self.preferences.tray_enabled {
             crate::tray::subscription()
         } else {
             Subscription::none()
@@ -288,6 +300,10 @@ impl cosmic::Application for OrbitApplet {
             Page::Settings => {
                 body = body
                     .spacing(spacing.space_xxs)
+                    .push(Self::popup_row(widget::settings::item(
+                        fl!("tray"),
+                        widget::toggler(self.preferences.tray_enabled).on_toggle(Message::Tray),
+                    )))
                     .push(Self::popup_row(widget::settings::item(
                         fl!("open-as"),
                         widget::dropdown(
@@ -459,6 +475,20 @@ impl cosmic::Application for OrbitApplet {
                     return iced::exit();
                 }
             }
+            Message::Tray(enabled) => {
+                let previous = self.preferences.tray_enabled;
+                self.preferences.tray_enabled = enabled;
+                if !self.save() {
+                    self.preferences.tray_enabled = previous;
+                    return Task::none();
+                }
+                return self.sync_tray();
+            }
+            Message::TrayStarted(ok) => {
+                if !ok {
+                    self.status = fl!("tray-error");
+                }
+            }
             Message::OpenOrbits(count) => self.open_orbits = count,
             Message::Restore(id) => return self.launch(vec!["--restore".into(), id.into()], None),
             Message::NewOrbit => {
@@ -509,6 +539,9 @@ impl cosmic::Application for OrbitApplet {
                 self.editing = None;
                 if self.host == Host::Tray {
                     self.core.set_main_window_id(None);
+                    if !self.preferences.tray_enabled {
+                        return iced::exit();
+                    }
                 }
                 return inhibit_shortcuts(false).discard();
             }
@@ -595,7 +628,7 @@ impl cosmic::Application for OrbitApplet {
                     .cloned()
                     .collect();
                 self.preferences = preferences;
-                return Self::launch_watches(added);
+                return Task::batch([Self::launch_watches(added), self.sync_tray()]);
             }
             Message::ChooseWatch => {
                 return cosmic::task::future(async {
@@ -655,6 +688,16 @@ impl cosmic::Application for OrbitApplet {
 }
 
 impl OrbitApplet {
+    fn sync_tray(&self) -> Task<cosmic::Action<Message>> {
+        match self.host {
+            Host::Applet if self.preferences.tray_enabled => {
+                cosmic::task::future(async { Message::TrayStarted(crate::tray::start().await) })
+            }
+            Host::Tray if !self.preferences.tray_enabled && self.popup.is_none() => iced::exit(),
+            _ => Task::none(),
+        }
+    }
+
     fn desktop_window(&mut self) -> Task<cosmic::Action<Message>> {
         let mut open = Task::none();
         let id = *self.popup.get_or_insert_with(|| {
@@ -829,12 +872,14 @@ impl OrbitApplet {
         self.status.clear();
     }
 
-    fn save(&mut self) {
-        self.status = if self.preferences.save().is_ok() {
-            String::new()
+    fn save(&mut self) -> bool {
+        if self.preferences.save().is_ok() {
+            self.status.clear();
+            true
         } else {
-            fl!("settings-error")
-        };
+            self.status = fl!("settings-error");
+            false
+        }
     }
 }
 

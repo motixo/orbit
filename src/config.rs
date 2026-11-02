@@ -71,14 +71,28 @@ impl UpdateReminder {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, CosmicConfigEntry)]
+#[derive(Clone, Debug, PartialEq, CosmicConfigEntry)]
 #[version = 1]
 pub struct Preferences {
+    pub tray_enabled: bool,
     pub pinned: bool,
     pub corner: Corner,
     pub update_reminder: UpdateReminder,
     pub watch_folders: Vec<std::path::PathBuf>,
     pub shortcuts: crate::shortcuts::Bindings,
+}
+
+impl Default for Preferences {
+    fn default() -> Self {
+        Self {
+            tray_enabled: true,
+            pinned: false,
+            corner: Corner::default(),
+            update_reminder: UpdateReminder::default(),
+            watch_folders: Vec::new(),
+            shortcuts: crate::shortcuts::Bindings::default(),
+        }
+    }
 }
 
 impl Preferences {

@@ -247,7 +247,18 @@ impl cosmic::Application for Orbit {
         } else {
             Task::none()
         };
-        (app, Task::batch([title, startup, incoming, thumbnails]))
+        let tray = if app.preferences.tray_enabled {
+            cosmic::task::future(async {
+                crate::tray::start().await;
+                Message::Noop
+            })
+        } else {
+            Task::none()
+        };
+        (
+            app,
+            Task::batch([title, startup, incoming, thumbnails, tray]),
+        )
     }
 
     fn view(&self) -> Element<'_, Message> {

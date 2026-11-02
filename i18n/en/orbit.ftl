@@ -48,6 +48,7 @@ bottom-right = Bottom right
 bottom-left = Bottom left
 settings-error = Could not save settings.
 tray-error = Could not start tray.
+tray = Tray
 shortcuts = Shortcuts
 global-shortcuts = Desktop
 orbit-shortcuts = Orbit

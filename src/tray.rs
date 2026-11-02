@@ -13,6 +13,32 @@ use std::{
     path::Path,
 };
 
+pub async fn start() -> bool {
+    match claim() {
+        Ok(None) => return true,
+        Ok(Some(lease)) => drop(lease),
+        Err(error) => {
+            eprintln!("Could not claim Orbit tray: {error}");
+            return false;
+        }
+    }
+    let Ok(executable) = std::env::current_exe() else {
+        return false;
+    };
+    let mut command = std::process::Command::new(executable.with_file_name("orbit"));
+    command
+        .arg("--tray")
+        .env_remove("WAYLAND_SOCKET")
+        .env_remove("ORBIT_START_PINNED")
+        .env_remove("XDG_ACTIVATION_TOKEN")
+        .env_remove("DESKTOP_STARTUP_ID");
+    let started = cosmic::process::spawn(command).await.is_some();
+    if !started {
+        eprintln!("Could not start Orbit tray");
+    }
+    started
+}
+
 pub fn claim() -> io::Result<Option<File>> {
     let root = crate::cache::root()?;
     fs::create_dir_all(&root)?;
