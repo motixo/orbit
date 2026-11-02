@@ -19,7 +19,7 @@ const MENU_MAX_HEIGHT: f32 = 560.0;
 
 pub struct OrbitApplet {
     core: cosmic::Core,
-    host: Host,
+    desktop: Option<crate::tray::Session>,
     activation_token: Option<String>,
     tray: Option<crate::tray::Controller>,
     popup: Option<window::Id>,
@@ -40,11 +40,12 @@ pub struct OrbitApplet {
     open_orbits: usize,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Host {
+pub enum Flags {
     Applet,
-    Tray,
-    Menu,
+    Desktop {
+        session: crate::tray::Session,
+        show_menu: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -90,7 +91,6 @@ pub enum EditTarget {
 #[derive(Clone, Debug)]
 pub enum Message {
     Activation(cosmic::dbus_activation::Message),
-    ActivationToken(String),
     TrayAction(Box<Message>, Option<String>),
     TrayReady(crate::tray::Controller),
     TrayError(String),
@@ -123,7 +123,7 @@ pub enum Message {
 
 impl cosmic::Application for OrbitApplet {
     type Executor = cosmic::executor::Default;
-    type Flags = Host;
+    type Flags = Flags;
     type Message = Message;
     const APP_ID: &'static str = "io.github.motixo.Orbit.Applet";
 
@@ -134,10 +134,12 @@ impl cosmic::Application for OrbitApplet {
         &mut self.core
     }
 
-    fn init(mut core: cosmic::Core, host: Host) -> (Self, Task<cosmic::Action<Message>>) {
-        let show_menu = host == Host::Menu;
-        let host = if show_menu { Host::Tray } else { host };
-        if host == Host::Tray {
+    fn init(mut core: cosmic::Core, flags: Flags) -> (Self, Task<cosmic::Action<Message>>) {
+        let (desktop, show_menu) = match flags {
+            Flags::Applet => (None, false),
+            Flags::Desktop { session, show_menu } => (Some(session), show_menu),
+        };
+        if desktop.is_some() {
             core.window.show_maximize = false;
             core.set_header_title(fl!("orbit-menu"));
         }
@@ -145,7 +147,7 @@ impl cosmic::Application for OrbitApplet {
         let watches = Self::launch_watches(preferences.watch_folders.clone());
         let mut app = Self {
             core,
-            host,
+            desktop,
             activation_token: show_menu
                 .then(|| std::env::var("XDG_ACTIVATION_TOKEN").ok())
                 .flatten(),
@@ -174,7 +176,7 @@ impl cosmic::Application for OrbitApplet {
         };
         let tray = if show_menu {
             app.update(Message::Page(Page::Menu))
-        } else if host == Host::Tray && !app.preferences.tray_enabled {
+        } else if app.desktop.is_some() && !app.preferences.tray_enabled {
             app.update(Message::Page(Page::Settings))
         } else {
             app.sync_tray()
@@ -190,7 +192,7 @@ impl cosmic::Application for OrbitApplet {
     }
 
     fn view(&self) -> Element<'_, Message> {
-        if self.host == Host::Tray {
+        if self.desktop.is_some() {
             let id = self.popup.unwrap_or(window::Id::NONE);
             return widget::responsive(move |viewport| {
                 let chrome = (self.desktop_size.height - viewport.height).max(0.0);
@@ -254,7 +256,7 @@ impl cosmic::Application for OrbitApplet {
     }
 
     fn on_window_resize(&mut self, id: window::Id, width: f32, height: f32) {
-        if self.host == Host::Tray && Some(id) == self.popup {
+        if self.desktop.is_some() && Some(id) == self.popup {
             self.desktop_size = iced::Size::new(width, height);
         }
     }
@@ -278,27 +280,21 @@ impl cosmic::Application for OrbitApplet {
         } else {
             Subscription::none()
         };
-        let presence = if self.host == Host::Applet {
+        let presence = if self.desktop.is_none() {
             crate::presence::count().map(Message::OpenOrbits)
         } else {
             Subscription::none()
         };
-        let tray = if self.host == Host::Tray {
+        let tray = if self.desktop.is_some() {
             crate::tray::subscription()
         } else {
             Subscription::none()
         };
-        let activation = if self.host == Host::Tray {
-            cosmic::dbus_activation::subscription::<Self>().map(|message| match message {
-                cosmic::Action::DbusActivation(message) => Message::Activation(message),
-                cosmic::Action::Cosmic(cosmic::app::Action::Activate(token)) => {
-                    Message::ActivationToken(token)
-                }
-                _ => Message::Ignore,
-            })
-        } else {
-            Subscription::none()
-        };
+        let activation = self
+            .desktop
+            .as_ref()
+            .map(crate::tray::Session::subscription)
+            .unwrap_or_else(Subscription::none);
         Subscription::batch([config, keyboard, updates, presence, tray, activation])
     }
 
@@ -332,7 +328,7 @@ impl cosmic::Application for OrbitApplet {
         let mut body = widget::column::with_capacity(15);
         match self.page {
             Page::Menu => {
-                let recent = if self.host == Host::Applet {
+                let recent = if self.desktop.is_none() {
                     self.recent.as_slice()
                 } else {
                     &[]
@@ -514,7 +510,7 @@ impl cosmic::Application for OrbitApplet {
                     .padding([0, spacing.space_xxs]),
             );
         }
-        if self.host == Host::Tray {
+        if self.desktop.is_some() {
             content.width(Length::Fill).into()
         } else {
             self.core
@@ -526,11 +522,11 @@ impl cosmic::Application for OrbitApplet {
 
     fn update(&mut self, message: Message) -> Task<cosmic::Action<Message>> {
         match message {
-            Message::ActivationToken(token) => self.activation_token = Some(token),
             Message::Activation(message) => {
                 use cosmic::dbus_activation::Details;
                 if matches!(message.msg, Details::ActivateAction { action, .. } if action == "menu")
                 {
+                    self.activation_token = message.activation_token;
                     return self.update(Message::Page(Page::Menu));
                 }
             }
@@ -605,7 +601,7 @@ impl cosmic::Application for OrbitApplet {
             Message::Closed => {
                 self.popup = None;
                 self.editing = None;
-                if self.host == Host::Tray {
+                if self.desktop.is_some() {
                     self.core.set_main_window_id(None);
                 }
                 return inhibit_shortcuts(false).discard();
@@ -614,7 +610,7 @@ impl cosmic::Application for OrbitApplet {
                 self.page = page;
                 self.editing = None;
                 self.status.clear();
-                if self.host == Host::Applet && matches!(page, Page::Menu) {
+                if self.desktop.is_none() && matches!(page, Page::Menu) {
                     self.refresh_recent();
                 }
                 if matches!(page, Page::Shortcuts)
@@ -622,7 +618,7 @@ impl cosmic::Application for OrbitApplet {
                 {
                     self.status = error;
                 }
-                if self.host == Host::Tray {
+                if self.desktop.is_some() {
                     return self
                         .desktop_window()
                         .chain(inhibit_shortcuts(false).discard());
@@ -782,11 +778,10 @@ impl OrbitApplet {
         if let Some(tray) = &self.tray {
             tray.set_enabled(self.preferences.tray_enabled);
         }
-        match self.host {
-            Host::Applet if self.preferences.tray_enabled => {
-                cosmic::task::future(async { Message::TrayStarted(crate::tray::start().await) })
-            }
-            _ => Task::none(),
+        if self.desktop.is_none() && self.preferences.tray_enabled {
+            cosmic::task::future(async { Message::TrayStarted(crate::tray::start().await) })
+        } else {
+            Task::none()
         }
     }
 
@@ -843,7 +838,7 @@ impl OrbitApplet {
         mut incoming: Option<(Vec<u8>, String)>,
     ) -> Task<cosmic::Action<Message>> {
         self.editing = None;
-        let launch = if self.host == Host::Tray {
+        let launch = if self.desktop.is_some() {
             let token = self.activation_token.take();
             cosmic::task::future(async move {
                 Message::Launched(crate::launch::new_orbit(token, None, arguments).await)
@@ -906,7 +901,7 @@ impl OrbitApplet {
         let Some(target) = self.editing else {
             return;
         };
-        let Some(shortcut) = Shortcut::from_event(&event, self.host == Host::Applet) else {
+        let Some(shortcut) = Shortcut::from_event(&event, self.desktop.is_none()) else {
             return;
         };
         if shortcut.key == "Escape" {

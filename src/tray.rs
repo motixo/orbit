@@ -8,48 +8,80 @@ use cosmic::iced::{
 use ksni::TrayMethods;
 use std::{
     collections::HashMap,
-    fs::{self, File, OpenOptions, TryLockError},
     hash::{DefaultHasher, Hash, Hasher},
-    io,
     path::Path,
+    sync::{Arc, Mutex},
 };
 
-pub fn show_menu() -> zbus::Result<()> {
-    let connection = zbus::blocking::Connection::session()?;
-    let id = <crate::applet::OrbitApplet as cosmic::Application>::APP_ID;
-    let mut proxy =
-        cosmic::dbus_activation::DbusActivationInterfaceProxyBlocking::builder(&connection)
-            .destination(id)?
-            .path(format!("/{}", id.replace('.', "/")))?
-            .build()?;
-    let token = std::env::var("XDG_ACTIVATION_TOKEN").ok();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    loop {
-        let mut platform = HashMap::new();
-        if let Some(token) = token.as_deref() {
-            platform.insert("activation-token", token.into());
-        }
-        match proxy.activate_action("menu", Vec::new(), platform) {
-            Err(zbus::Error::MethodError(name, ..))
-                if matches!(
-                    name.as_str(),
-                    "org.freedesktop.DBus.Error.ServiceUnknown"
-                        | "org.freedesktop.DBus.Error.NameHasNoOwner"
-                ) && std::time::Instant::now() < deadline =>
-            {
-                std::thread::sleep(std::time::Duration::from_millis(50));
+#[derive(Clone)]
+pub struct Session {
+    name: String,
+    _connection: zbus::Connection,
+    incoming: Arc<Mutex<Option<mpsc::Receiver<cosmic::dbus_activation::Message>>>>,
+}
+
+impl Hash for Session {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.name.hash(state);
+    }
+}
+
+impl Session {
+    pub fn open(show_menu: bool) -> zbus::Result<Option<Self>> {
+        let name = session_name();
+        let path = format!("/{}", name.replace('.', "/"));
+        let connection = zbus::blocking::Connection::session()?;
+        let mut interface = cosmic::dbus_activation::DbusActivation::new();
+        let incoming = interface.rx();
+        // Publish the interface before claiming the name so activation is ready immediately.
+        connection.object_server().at(path.as_str(), interface)?;
+        match connection.request_name(name.as_str()) {
+            Ok(()) => Ok(Some(Self {
+                name,
+                _connection: connection.into_inner(),
+                incoming: Arc::new(Mutex::new(Some(incoming))),
+            })),
+            Err(zbus::Error::NameTaken) => {
+                if show_menu {
+                    let mut proxy =
+                        cosmic::dbus_activation::DbusActivationInterfaceProxyBlocking::builder(
+                            &connection,
+                        )
+                        .destination(name.as_str())?
+                        .path(path.as_str())?
+                        .build()?;
+                    let token = std::env::var("XDG_ACTIVATION_TOKEN").ok();
+                    let mut platform = HashMap::new();
+                    if let Some(token) = token.as_deref() {
+                        platform.insert("activation-token", token.into());
+                    }
+                    proxy.activate_action("menu", Vec::new(), platform)?;
+                }
+                Ok(None)
             }
-            result => return result,
+            Err(error) => Err(error),
         }
+    }
+
+    pub fn subscription(&self) -> Subscription<Message> {
+        Subscription::run_with(self.clone(), |session| {
+            session
+                .incoming
+                .lock()
+                .unwrap()
+                .take()
+                .expect("activation subscription starts once")
+                .map(Message::Activation)
+        })
     }
 }
 
 pub async fn start() -> bool {
-    match claim() {
-        Ok(None) => return true,
-        Ok(Some(lease)) => drop(lease),
+    match running().await {
+        Ok(true) => return true,
+        Ok(false) => (),
         Err(error) => {
-            eprintln!("Could not claim Orbit tray: {error}");
+            eprintln!("Could not find Orbit tray: {error}");
             return false;
         }
     }
@@ -70,27 +102,29 @@ pub async fn start() -> bool {
     started
 }
 
-pub fn claim() -> io::Result<Option<File>> {
-    let root = crate::cache::root()?;
-    fs::create_dir_all(&root)?;
-    let mut session = DefaultHasher::new();
-    std::env::var_os("XDG_RUNTIME_DIR").hash(&mut session);
-    std::env::var_os("WAYLAND_DISPLAY").hash(&mut session);
-    claim_file(&root.join(format!("tray-{}.lock", session.finish())))
+async fn running() -> zbus::Result<bool> {
+    let connection = zbus::Connection::session().await?;
+    let proxy = zbus::fdo::DBusProxy::new(&connection).await?;
+    Ok(proxy
+        .name_has_owner(session_name().as_str().try_into()?)
+        .await?)
 }
 
-fn claim_file(path: &Path) -> io::Result<Option<File>> {
-    let lease = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(path)?;
-    match lease.try_lock() {
-        Ok(()) => Ok(Some(lease)),
-        Err(TryLockError::WouldBlock) => Ok(None),
-        Err(TryLockError::Error(error)) => Err(error),
-    }
+fn session_name() -> String {
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR").unwrap_or_default();
+    let display = std::env::var_os("WAYLAND_DISPLAY").unwrap_or_else(|| "wayland-0".into());
+    endpoint(Path::new(&runtime), Path::new(&display))
+}
+
+fn endpoint(runtime: &Path, display: &Path) -> String {
+    let address = runtime.join(display);
+    let address = address.canonicalize().unwrap_or(address);
+    let mut session = DefaultHasher::new();
+    address.hash(&mut session);
+    format!(
+        "io.github.motixo.Orbit.Menu.Session{:016x}",
+        session.finish()
+    )
 }
 
 pub fn subscription() -> Subscription<Message> {
@@ -235,12 +269,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_one_tray_can_hold_the_session_lease() {
+    fn activation_endpoints_normalize_display_paths_and_separate_sessions() {
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("tray.lock");
-        let first = claim_file(&path).unwrap().unwrap();
-        assert!(claim_file(&path).unwrap().is_none());
-        drop(first);
-        assert!(claim_file(&path).unwrap().is_some());
+        let runtime = directory.path();
+        let first = endpoint(runtime, Path::new("wayland-0"));
+        assert_eq!(first, endpoint(runtime, &runtime.join("wayland-0")));
+        assert_ne!(first, endpoint(runtime, Path::new("wayland-1")));
+        assert_ne!(
+            first,
+            endpoint(&runtime.join("other"), Path::new("wayland-0"))
+        );
     }
 }

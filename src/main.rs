@@ -44,15 +44,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some("--applet") => {
             let languages = i18n_embed::DesktopLanguageRequester::requested_languages();
             i18n::init(&languages);
-            cosmic::applet::run::<applet::OrbitApplet>(applet::Host::Applet)?;
+            cosmic::applet::run::<applet::OrbitApplet>(applet::Flags::Applet)?;
             return Ok(());
         }
         Some("--tray" | "--menu") => {
             let show_menu = paths[0] == "--menu";
-            let Some(_lease) = tray::claim()? else {
-                if show_menu {
-                    tray::show_menu()?;
-                }
+            let Some(session) = tray::Session::open(show_menu)? else {
                 return Ok(());
             };
             let languages = i18n_embed::DesktopLanguageRequester::requested_languages();
@@ -61,11 +58,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 cosmic::app::Settings::default()
                     .no_main_window(true)
                     .exit_on_close(false),
-                if show_menu {
-                    applet::Host::Menu
-                } else {
-                    applet::Host::Tray
-                },
+                applet::Flags::Desktop { session, show_menu },
             )?;
             return Ok(());
         }
