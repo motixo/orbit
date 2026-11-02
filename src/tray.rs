@@ -35,8 +35,11 @@ impl Session {
         let incoming = interface.rx();
         // Publish the interface before claiming the name so activation is ready immediately.
         connection.object_server().at(path.as_str(), interface)?;
-        match connection.request_name(name.as_str()) {
-            Ok(()) => Ok(Some(Self {
+        match connection.request_name_with_flags(
+            name.as_str(),
+            zbus::fdo::RequestNameFlags::DoNotQueue.into(),
+        ) {
+            Ok(_) => Ok(Some(Self {
                 name,
                 _connection: connection.into_inner(),
                 incoming: Arc::new(Mutex::new(Some(incoming))),
