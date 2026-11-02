@@ -843,31 +843,32 @@ impl OrbitApplet {
         mut incoming: Option<(Vec<u8>, String)>,
     ) -> Task<cosmic::Action<Message>> {
         self.editing = None;
-        if self.host == Host::Tray {
+        let launch = if self.host == Host::Tray {
             let token = self.activation_token.take();
-            return cosmic::task::future(async move {
+            cosmic::task::future(async move {
                 Message::Launched(crate::launch::new_orbit(token, None, arguments).await)
-            });
-        }
-        let close = self
-            .popup
-            .take()
-            .map(destroy_popup)
-            .unwrap_or_else(Task::none);
-        activation::request_token(Some(crate::config::ID.into()), self.core.main_window_id())
-            .then(move |token| {
-                let arguments = arguments.clone();
-                let incoming = incoming.take();
-                cosmic::task::future(async move {
-                    Message::Launched(if let Some((bytes, mime)) = incoming {
-                        crate::launch::from_drop(token, bytes, mime).await
-                    } else {
-                        crate::launch::new_orbit(token, None, arguments).await
+            })
+        } else {
+            let close = self
+                .popup
+                .take()
+                .map(destroy_popup)
+                .unwrap_or_else(Task::none);
+            activation::request_token(Some(crate::config::ID.into()), self.core.main_window_id())
+                .then(move |token| {
+                    let arguments = arguments.clone();
+                    let incoming = incoming.take();
+                    cosmic::task::future(async move {
+                        Message::Launched(if let Some((bytes, mime)) = incoming {
+                            crate::launch::from_drop(token, bytes, mime).await
+                        } else {
+                            crate::launch::new_orbit(token, None, arguments).await
+                        })
                     })
                 })
-            })
-            .chain(close)
-            .chain(inhibit_shortcuts(false).discard())
+                .chain(close)
+        };
+        inhibit_shortcuts(false).discard().chain(launch)
     }
 
     fn popup_row<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
