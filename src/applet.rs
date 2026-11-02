@@ -14,12 +14,15 @@ use iced::platform_specific::shell::commands::{activation, popup::destroy_popup}
 use iced::platform_specific::shell::wayland::commands::keyboard_shortcuts_inhibit::inhibit_shortcuts;
 use std::collections::BTreeMap;
 
+const MENU_MAX_HEIGHT: f32 = 560.0;
+
 pub struct OrbitApplet {
     core: cosmic::Core,
     host: Host,
     activation_token: Option<String>,
     tray: Option<crate::tray::Controller>,
     popup: Option<window::Id>,
+    desktop_size: iced::Size,
     page: Page,
     preferences: Preferences,
     modes: Vec<String>,
@@ -101,6 +104,7 @@ pub enum Message {
     TogglePopup,
     Closed,
     Page(Page),
+    MenuHeight(window::Id, f32),
     Mode(usize),
     Corner(usize),
     Reminder(usize),
@@ -146,6 +150,7 @@ impl cosmic::Application for OrbitApplet {
                 .flatten(),
             tray: None,
             popup: None,
+            desktop_size: iced::Size::new(420.0, 240.0),
             page: Page::Menu,
             preferences,
             modes: vec![fl!("floating"), fl!("pinned")],
@@ -185,7 +190,16 @@ impl cosmic::Application for OrbitApplet {
 
     fn view(&self) -> Element<'_, Message> {
         if self.host == Host::Tray {
-            return self.view_window(self.popup.unwrap_or(window::Id::NONE));
+            let id = self.popup.unwrap_or(window::Id::NONE);
+            return widget::responsive(move |viewport| {
+                let chrome = (self.desktop_size.height - viewport.height).max(0.0);
+                // Continuous Wayland autosizing can loop; resize only when content changes.
+                let content = iced::widget::sensor(self.view_window(id)).on_resize(move |size| {
+                    Message::MenuHeight(id, (size.height + chrome).ceil().min(MENU_MAX_HEIGHT))
+                });
+                widget::scrollable(content).height(Length::Fill).into()
+            })
+            .into();
         }
         let button = widget::mouse_area(
             self.core
@@ -231,6 +245,12 @@ impl cosmic::Application for OrbitApplet {
 
     fn on_close_requested(&self, id: window::Id) -> Option<Message> {
         (Some(id) == self.popup).then_some(Message::Closed)
+    }
+
+    fn on_window_resize(&mut self, id: window::Id, width: f32, height: f32) {
+        if self.host == Host::Tray && Some(id) == self.popup {
+            self.desktop_size = iced::Size::new(width, height);
+        }
     }
 
     fn subscription(&self) -> Subscription<Message> {
@@ -489,7 +509,7 @@ impl cosmic::Application for OrbitApplet {
             );
         }
         if self.host == Host::Tray {
-            widget::scrollable(content.width(Length::Fill)).into()
+            content.width(Length::Fill).into()
         } else {
             self.core
                 .applet
@@ -602,6 +622,11 @@ impl cosmic::Application for OrbitApplet {
                         .chain(inhibit_shortcuts(false).discard());
                 }
                 return inhibit_shortcuts(false).discard();
+            }
+            Message::MenuHeight(id, height) => {
+                if Some(id) == self.popup && (height - self.desktop_size.height).abs() >= 1.0 {
+                    return window::resize(id, iced::Size::new(self.desktop_size.width, height));
+                }
             }
             Message::Mode(mode) => {
                 self.preferences.pinned = mode == 1;
@@ -761,36 +786,21 @@ impl OrbitApplet {
 
     fn desktop_window(&mut self) -> Task<cosmic::Action<Message>> {
         let mut open = Task::none();
+        let size = self.desktop_size;
         let id = *self.popup.get_or_insert_with(|| {
-            let (id, action) = cosmic::surface::action::app_window::<Self>(
-                |_| Default::default(),
-                |_| window::Settings {
-                    size: iced::Size::new(420.0, 240.0),
-                    min_size: Some(iced::Size::new(420.0, 1.0)),
-                    max_size: Some(iced::Size::new(420.0, 560.0)),
-                    decorations: false,
-                    transparent: true,
-                    platform_specific: window::settings::PlatformSpecific {
-                        application_id: "io.github.motixo.Orbit.Menu".into(),
-                        ..Default::default()
-                    },
+            let (id, task) = window::open(window::Settings {
+                size,
+                min_size: Some(iced::Size::new(420.0, 1.0)),
+                max_size: Some(iced::Size::new(420.0, MENU_MAX_HEIGHT)),
+                decorations: false,
+                transparent: true,
+                platform_specific: window::settings::PlatformSpecific {
+                    application_id: "io.github.motixo.Orbit.Menu".into(),
                     ..Default::default()
                 },
-                Some(Box::new(|app| {
-                    widget::autosize::autosize(
-                        app.view_main(),
-                        widget::Id::new("orbit-menu-autosize"),
-                    )
-                    .limits(
-                        iced::Limits::NONE
-                            .width(420.0)
-                            .height(Length::Shrink)
-                            .max_height(560.0),
-                    )
-                    .into()
-                })),
-            );
-            open = cosmic::task::message(cosmic::Action::Surface(action));
+                ..Default::default()
+            });
+            open = task.discard();
             id
         });
         self.core.set_main_window_id(Some(id));
