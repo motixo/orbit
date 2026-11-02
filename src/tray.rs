@@ -30,11 +30,12 @@ impl Session {
     pub fn open(show_menu: bool) -> zbus::Result<Option<Self>> {
         let name = session_name();
         let path = format!("/{}", name.replace('.', "/"));
-        let connection = zbus::blocking::Connection::session()?;
         let mut interface = cosmic::dbus_activation::DbusActivation::new();
         let incoming = interface.rx();
         // Publish the interface before claiming the name so activation is ready immediately.
-        connection.object_server().at(path.as_str(), interface)?;
+        let connection = zbus::blocking::connection::Builder::session()?
+            .serve_at(path.as_str(), interface)?
+            .build()?;
         match connection.request_name_with_flags(
             name.as_str(),
             zbus::fdo::RequestNameFlags::DoNotQueue.into(),
