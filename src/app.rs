@@ -1960,11 +1960,13 @@ impl Orbit {
                 widget::button::text(fl!("clear-shelf"))
                     .class(cosmic::theme::Button::Icon)
                     .on_press_maybe(
-                        self.shelf
+                        (self
+                            .shelf
                             .items
                             .iter()
                             .any(|item| !item.busy && (selected == 0 || item.selected))
-                            .then_some(Message::Clear),
+                            || (selected == 0 && !self.pending_imports.is_empty()))
+                        .then_some(Message::Clear),
                     )
                     .into(),
             ])
