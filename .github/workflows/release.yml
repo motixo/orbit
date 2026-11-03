@@ -43,6 +43,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential cmake pkg-config libxkbcommon-dev libwayland-dev libfontconfig1-dev libfreetype6-dev libexpat1-dev libudev-dev libinput-dev libgbm-dev libegl1-mesa-dev dpkg-dev rpm libarchive-tools zstd
       - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-go@v6
+        if: hashFiles('source/peer/go.mod') != ''
+        with:
+          go-version-file: source/peer/go.mod
+          cache-dependency-path: source/peer/go.sum
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: source -> target
