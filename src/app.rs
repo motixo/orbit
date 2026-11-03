@@ -392,7 +392,7 @@ impl cosmic::Application for Orbit {
             0.0
         };
         let border_width = if self.pin_collapsed && self.hovering && self.dragged_paths.is_empty() {
-            hint_width + 2.0
+            hint_width.max(1.0) * 1.5
         } else {
             hint_width
         };
