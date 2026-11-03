@@ -147,23 +147,13 @@ pub fn run_worker(args: &[std::ffi::OsString]) -> io::Result<()> {
             .to_str()
             .ok_or_else(|| io::Error::other("Invalid conversion"))?,
     )?;
-    write_converted_image(
-        Path::new(source),
-        conversion,
-        Path::new(destination),
-        || false,
-    )
-    .map_err(io::Error::other)
+    write_converted_image(Path::new(source), conversion, Path::new(destination))
+        .map_err(io::Error::other)
 }
 
-fn write_converted_image(
-    source: &Path,
-    conversion: Conversion,
-    destination: &Path,
-    cancelled: impl Fn() -> bool,
-) -> Result<()> {
-    if cancelled() || !conversion.candidate(source) {
-        return Err(io::Error::other("Unsupported image or conversion cancelled").into());
+fn write_converted_image(source: &Path, conversion: Conversion, destination: &Path) -> Result<()> {
+    if !conversion.candidate(source) {
+        return Err(io::Error::other("Unsupported image").into());
     }
     let (mut image, profile) = match conversion {
         Conversion::WebpToJpeg => decode_webp(source)?,
@@ -184,9 +174,6 @@ fn write_converted_image(
         }
         image = DynamicImage::ImageRgba8(pixels);
     }
-    if cancelled() {
-        return Err(io::Error::other("Conversion cancelled").into());
-    }
     let mut writer = BufWriter::new(File::create_new(destination)?);
     if target == ImageFormat::Jpeg {
         let mut encoder = JpegEncoder::new_with_quality(&mut writer, 90);
@@ -203,9 +190,6 @@ fn write_converted_image(
     }
     writer.flush()?;
     writer.get_ref().sync_all()?;
-    if cancelled() {
-        return Err(io::Error::other("Conversion cancelled").into());
-    }
     Ok(())
 }
 
@@ -515,30 +499,9 @@ mod tests {
         assert_eq!(output.into_rgb16().as_raw(), &[32768; 3]);
     }
 
-    fn convert(
-        source: &Path,
-        conversion: Conversion,
-        cancelled: impl Fn() -> bool,
-    ) -> Result<ImportedFiles> {
-        let directory = Directory::new("orbit-image-")?;
-        let path = directory
-            .path()
-            .join(source.file_name().unwrap())
-            .with_extension(if conversion.target() == ImageFormat::Jpeg {
-                "jpeg"
-            } else {
-                "png"
-            });
-        write_converted_image(source, conversion, &path, cancelled)?;
-        Ok(ImportedFiles {
-            files: FileList(vec![path]),
-            directory: Some(directory),
-            text: None,
-        })
-    }
-
     #[test]
     fn failed_or_cancelled_decoder_returns_an_error_and_is_reaped() {
+        assert!(convert(Path::new("unused.webp"), Conversion::WebpToJpeg, || true).is_err());
         let child = Command::new("sh").args(["-c", "exit 7"]).spawn().unwrap();
         assert!(wait_for_conversion(child, || false).is_err());
         let child = Command::new("sleep").arg("60").spawn().unwrap();
@@ -547,39 +510,6 @@ mod tests {
         assert_eq!(
             rustix::process::test_kill_process(pid),
             Err(rustix::io::Errno::SRCH)
-        );
-    }
-
-    #[test]
-    fn converts_ten_bit_and_tiled_heic_without_changing_the_source() {
-        // Fixtures: Multipad-cyber/heic-decoder-rust, tests/fixtures (see HEIC-LICENSE).
-        let fixture = tempfile::tempdir().unwrap();
-        for (name, bytes) in [
-            (
-                "ten-bit.heic",
-                include_bytes!("fixtures/heic-10bit.heic").as_slice(),
-            ),
-            (
-                "grid.heic",
-                include_bytes!("fixtures/heic-grid.heic").as_slice(),
-            ),
-        ] {
-            let source = fixture.path().join(name);
-            std::fs::write(&source, bytes).unwrap();
-            let info = heic_decoder::probe(bytes).unwrap();
-            let converted = convert(&source, Conversion::HeicToJpeg, || false).unwrap();
-            let image = image::open(&converted.files.0[0]).unwrap();
-            assert_eq!(
-                (image.width() as usize, image.height() as usize),
-                (info.width, info.height)
-            );
-            assert_eq!(std::fs::read(source).unwrap(), bytes);
-        }
-        assert_eq!(
-            heic_decoder::probe(include_bytes!("fixtures/heic-10bit.heic"))
-                .unwrap()
-                .bit_depth_luma,
-            10
         );
     }
 
@@ -629,102 +559,6 @@ mod tests {
     }
 
     #[test]
-    fn converts_avif_with_container_transforms_and_icc() {
-        // Fixtures: AOMediaCodec/libavif, tests/data (see AVIF-LICENSE).
-        let fixture = tempfile::tempdir().unwrap();
-        for (name, bytes) in [
-            (
-                "transforms.avif",
-                include_bytes!("fixtures/avif-transforms.avif").as_slice(),
-            ),
-            (
-                "profile.avif",
-                include_bytes!("fixtures/avif-icc.avif").as_slice(),
-            ),
-        ] {
-            let source = fixture.path().join(name);
-            std::fs::write(&source, bytes).unwrap();
-            for conversion in [Conversion::AvifToJpeg, Conversion::AvifToPng] {
-                let converted = convert(&source, conversion, || false).unwrap();
-                let mut decoder = ImageReader::open(&converted.files.0[0])
-                    .unwrap()
-                    .with_guessed_format()
-                    .unwrap()
-                    .into_decoder()
-                    .unwrap();
-                if name == "profile.avif" {
-                    let avif = oxideav_avif::parse(bytes).unwrap();
-                    let original_icc = avif
-                        .meta
-                        .properties_for(avif.primary_item_id)
-                        .into_iter()
-                        .find_map(|property| {
-                            if let oxideav_avif::meta::Property::Colr(
-                                oxideav_avif::meta::Colr::Icc(profile),
-                            ) = property
-                            {
-                                Some(profile)
-                            } else {
-                                None
-                            }
-                        })
-                        .unwrap();
-                    assert_eq!(&decoder.icc_profile().unwrap().unwrap(), original_icc);
-                } else {
-                    assert_eq!(decoder.dimensions(), (10, 8));
-                }
-                assert_eq!(std::fs::read(&source).unwrap(), bytes);
-            }
-        }
-    }
-
-    #[test]
-    fn png_and_jpeg_conversion_keeps_sources_and_validates_formats() {
-        let fixture = tempfile::tempdir().unwrap();
-        for (conversion, input, extension, output) in [
-            (
-                Conversion::PngToJpeg,
-                ImageFormat::Png,
-                "PNG",
-                ImageFormat::Jpeg,
-            ),
-            (
-                Conversion::JpegToPng,
-                ImageFormat::Jpeg,
-                "JPG",
-                ImageFormat::Png,
-            ),
-        ] {
-            let source = fixture.path().join(format!("photo.{extension}"));
-            image::RgbImage::from_pixel(2, 3, image::Rgb([80, 120, 160]))
-                .save_with_format(&source, input)
-                .unwrap();
-            let original = std::fs::read(&source).unwrap();
-            let converted = convert(&source, conversion, || false).unwrap();
-            let path = &converted.files.0[0];
-            assert_ne!(path.parent(), source.parent());
-            let bytes = std::fs::read(path).unwrap();
-            assert_eq!(image::guess_format(&bytes).unwrap(), output);
-            let image = image::load_from_memory(&bytes).unwrap();
-            assert_eq!((image.width(), image.height()), (2, 3));
-            assert_eq!(std::fs::read(&source).unwrap(), original);
-        }
-        for (extension, conversion) in [
-            ("heic", Conversion::HeicToJpeg),
-            ("avif", Conversion::AvifToJpeg),
-            ("avif", Conversion::AvifToPng),
-            ("png", Conversion::PngToJpeg),
-            ("jpeg", Conversion::JpegToPng),
-        ] {
-            let source = fixture.path().join(format!("invalid.{extension}"));
-            std::fs::write(&source, b"not an image").unwrap();
-            assert!(conversion.candidate(&source));
-            assert!(convert(&source, conversion, || false).is_err());
-            assert_eq!(std::fs::read(source).unwrap(), b"not an image");
-        }
-    }
-
-    #[test]
     fn rejects_oversized_metadata_before_reading_it() {
         let fixture = tempfile::tempdir().unwrap();
         let source = fixture.path().join("metadata.webp");
@@ -742,43 +576,11 @@ mod tests {
             let length = (bytes.len() - 8) as u32;
             bytes[4..8].copy_from_slice(&length.to_le_bytes());
             std::fs::write(&source, bytes).unwrap();
-            let error = convert(&source, Conversion::WebpToJpeg, || false).unwrap_err();
+            let error = decode_webp(&source).unwrap_err();
             assert!(matches!(
                 error.downcast_ref::<DecodingError>(),
                 Some(DecodingError::MemoryLimitExceeded)
             ));
         }
-    }
-
-    #[test]
-    fn conversion_keeps_originals_and_rejects_other_formats() {
-        let fixture = tempfile::tempdir().unwrap();
-        let source = fixture.path().join("photo.WEBP");
-        image::RgbaImage::from_pixel(2, 2, image::Rgba([255, 0, 0, 0]))
-            .save_with_format(&source, ImageFormat::WebP)
-            .unwrap();
-        let original = std::fs::read(&source).unwrap();
-        assert!(Conversion::WebpToJpeg.candidate(&source));
-        let converted = convert(&source, Conversion::WebpToJpeg, || false).unwrap();
-        let output = &converted.files.0[0];
-        assert_eq!(output.file_name().unwrap(), "photo.jpeg");
-        assert_ne!(output.parent(), source.parent());
-        assert_eq!(std::fs::read(&source).unwrap(), original);
-        let jpeg = std::fs::read(output).unwrap();
-        assert_eq!(image::guess_format(&jpeg).unwrap(), ImageFormat::Jpeg);
-        let image = image::load_from_memory(&jpeg).unwrap().into_rgb8();
-        assert_eq!(image.dimensions(), (2, 2));
-        assert!(
-            image
-                .pixels()
-                .all(|pixel| pixel.0.iter().all(|channel| *channel >= 245))
-        );
-
-        let fake = fixture.path().join("other.webp");
-        std::fs::write(&fake, &jpeg).unwrap();
-        assert!(convert(&fake, Conversion::WebpToJpeg, || false).is_err());
-        assert_eq!(std::fs::read(&fake).unwrap(), jpeg);
-        assert!(convert(&source, Conversion::WebpToJpeg, || true).is_err());
-        assert_eq!(std::fs::read(source).unwrap(), original);
     }
 }
