@@ -112,6 +112,8 @@ pub enum Message {
     FocusItem(PathBuf),
     Copy,
     ToggleCopyMode,
+    ConvertWebp,
+    Converted(u64, PathBuf, u64, Result<ImportedFiles, String>),
     Compress,
     ArchiveName(String),
     ArchiveFormat(usize),
@@ -909,6 +911,31 @@ impl cosmic::Application for Orbit {
                 }
             }
             Message::ToggleCopyMode => self.copy_mode = !self.copy_mode,
+            Message::ConvertWebp => return self.begin_conversion(),
+            Message::Converted(id, source, order, result) => {
+                if !self
+                    .shelf
+                    .items
+                    .iter()
+                    .any(|item| item.path == source && item.order == order)
+                {
+                    self.pending_imports.retain(|(key, ..)| *key != id);
+                    return Task::none();
+                }
+                let converted = result
+                    .as_ref()
+                    .ok()
+                    .and_then(|imported| imported.files.0.first())
+                    .cloned();
+                let task = self.update(Message::DropImported(id, result));
+                if converted
+                    .is_some_and(|path| self.shelf.items.iter().any(|item| item.path == path))
+                {
+                    self.shelf.remove(&source);
+                    self.release_imports();
+                }
+                return task;
+            }
             Message::Compress => {
                 let sources = self
                     .shelf
@@ -1349,7 +1376,7 @@ impl Orbit {
     fn header_tools(&self, window: window::Id) -> Element<'_, Message> {
         let mut buttons = vec![self.new_orbit_button()];
         if !self.shelf.items.is_empty() || !self.pending_imports.is_empty() {
-            let items = [
+            let mut items = [
                 (
                     fl!("copy"),
                     "edit-copy-symbolic",
@@ -1396,6 +1423,42 @@ impl Orbit {
                 widget::menu::Tree::from(button)
             })
             .collect::<Vec<_>>();
+            let spacing = cosmic::theme::spacing().space_xxs;
+            let operation: Element<'static, Message> = widget::menu::menu_button(vec![
+                widget::icon::from_name("system-run-symbolic")
+                    .size(14)
+                    .icon()
+                    .into(),
+                widget::space::horizontal().width(spacing).into(),
+                widget::text(fl!("operation")).into(),
+                widget::space::horizontal().into(),
+                widget::icon::from_name("pan-end-symbolic")
+                    .size(16)
+                    .icon()
+                    .into(),
+            ])
+            .class(cosmic::theme::Button::MenuFolder)
+            .into();
+            let convert: Element<'static, Message> = widget::menu::menu_button(vec![
+                widget::icon::from_name("image-x-generic-symbolic")
+                    .size(14)
+                    .icon()
+                    .into(),
+                widget::space::horizontal().width(spacing).into(),
+                widget::text(fl!("webp-to-jpeg")).into(),
+            ])
+            .on_press_maybe(
+                self.shelf
+                    .items
+                    .iter()
+                    .any(|item| item.selected && crate::convert::candidate(&item.path))
+                    .then_some(Message::ConvertWebp),
+            )
+            .into();
+            items.push(widget::menu::Tree::with_children(
+                widget::RcElementWrapper::new(operation),
+                vec![widget::menu::Tree::from(convert)],
+            ));
             let root: Element<'static, Message> = widget::button::custom(
                 widget::icon::from_name("view-more-horizontal-symbolic")
                     .size(16)
@@ -1461,6 +1524,68 @@ impl Orbit {
             );
         }
         popover.into()
+    }
+
+    fn begin_conversion(&mut self) -> Task<cosmic::Action<Message>> {
+        let sources = self
+            .shelf
+            .items
+            .iter()
+            .filter(|item| item.selected && crate::convert::candidate(&item.path))
+            .cloned()
+            .collect::<Vec<_>>();
+        if sources.is_empty() {
+            return Task::none();
+        }
+        let first_pending = self.pending_imports.len();
+        let mut jobs = Vec::new();
+        let mut tasks = Vec::new();
+        for source in sources {
+            let id = self.shelf.reserve_order();
+            let (output, input) = iced::futures::channel::mpsc::unbounded();
+            let (task, handle) = cosmic::task::stream(input).abortable();
+            self.pending_imports.push((
+                id,
+                Progress {
+                    name: Some(source.name.clone()),
+                    status: Some(fl!("converting")),
+                    ..Default::default()
+                },
+                handle.abort_on_drop(),
+            ));
+            tasks.push(task);
+            jobs.push((id, source, output));
+        }
+        self.status.clear();
+        let worker = std::thread::Builder::new()
+            .name("orbit-convert".into())
+            .spawn(move || {
+                for (id, source, output) in jobs {
+                    if output.is_closed() {
+                        continue;
+                    }
+                    let result = crate::convert::webp_to_jpeg(&source.path, || output.is_closed())
+                        .map_err(|error| {
+                            if !output.is_closed() {
+                                eprintln!("Image conversion: {error}");
+                            }
+                            fl!("convert-error")
+                        });
+                    let _ = output.unbounded_send(Message::Converted(
+                        id,
+                        source.path,
+                        source.order,
+                        result,
+                    ));
+                }
+            });
+        if let Err(error) = worker {
+            eprintln!("Could not start conversion: {error}");
+            self.pending_imports.truncate(first_pending);
+            self.status = fl!("convert-error");
+            return Task::none();
+        }
+        Task::batch(tasks)
     }
 
     fn begin_compression(&mut self) -> Task<cosmic::Action<Message>> {

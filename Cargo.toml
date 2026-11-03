@@ -10,7 +10,7 @@ description = "A floating file shelf for the COSMIC desktop"
 base64 = "0.22.1"
 csscolorparser = "0.8.4"
 flate2 = "1.1"
-image = { version = "0.25.10", default-features = false }
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "webp"] }
 i18n-embed = { version = "0.16", features = ["fluent-system", "desktop-requester"] }
 i18n-embed-fl = "0.10"
 jiff = "0.2"

@@ -6,6 +6,7 @@ mod applet;
 mod archive;
 mod cache;
 mod config;
+mod convert;
 mod drag_preview;
 mod file_icon;
 mod history;
