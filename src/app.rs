@@ -410,9 +410,12 @@ impl cosmic::Application for Orbit {
             .on_close(Message::Quit)
             .focused(true);
         let header = if self.pin_collapsed {
-            header.start(widget::text::heading(
-                (self.shelf.items.len() + self.pending_imports.len()).to_string(),
-            ))
+            header.start(
+                widget::container(widget::text::heading(
+                    (self.shelf.items.len() + self.pending_imports.len()).to_string(),
+                ))
+                .padding([0, 8]),
+            )
         } else {
             header.title(fl!("app-title")).start(self.header_tools(id))
         };
