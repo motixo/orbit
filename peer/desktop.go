@@ -553,7 +553,7 @@ func (h *hub) connectDesktop(s *server, id string, open bool) {
 func (h *hub) dialDesktop(parent context.Context, s *server, peer *nearbyDevice, resume, open bool) (bool, bool, error) {
 	settings := webrtc.SettingEngine{}
 	settings.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4})
-	settings.SetSCTPMaxMessageSize(16384)
+	settings.SetSCTPMaxMessageSize(65536)
 	pc, err := webrtc.NewAPI(webrtc.WithSettingEngine(settings)).NewPeerConnection(webrtc.Configuration{Certificates: []webrtc.Certificate{*h.certificate}})
 	if err != nil {
 		return false, false, err
@@ -606,7 +606,7 @@ func (h *hub) dialDesktop(parent context.Context, s *server, peer *nearbyDevice,
 		return false, false, errors.New("missing ICE credentials")
 	}
 	credentials := "libp2p+webrtc+v2/" + password
-	answer := fmt.Sprintf("v=0\r\no=- 0 0 IN IP4 %s\r\ns=-\r\nt=0 0\r\na=ice-lite\r\nm=application %d UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 %s\r\na=mid:0\r\na=ice-options:ice2\r\na=ice-ufrag:%s\r\na=ice-pwd:%s\r\na=fingerprint:sha-256 %s\r\na=setup:passive\r\na=sctp-port:5000\r\na=max-message-size:16384\r\na=candidate:1 1 UDP 1 %s %d typ host\r\na=end-of-candidates\r\n", peer.IP, peer.Port, peer.IP, credentials, credentials, fingerprintSDP(peer.Fingerprint), peer.IP, peer.Port)
+	answer := fmt.Sprintf("v=0\r\no=- 0 0 IN IP4 %s\r\ns=-\r\nt=0 0\r\na=ice-lite\r\nm=application %d UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 %s\r\na=mid:0\r\na=ice-options:ice2\r\na=ice-ufrag:%s\r\na=ice-pwd:%s\r\na=fingerprint:sha-256 %s\r\na=setup:passive\r\na=sctp-port:5000\r\na=max-message-size:65536\r\na=candidate:1 1 UDP 1 %s %d typ host\r\na=end-of-candidates\r\n", peer.IP, peer.Port, peer.IP, credentials, credentials, fingerprintSDP(peer.Fingerprint), peer.IP, peer.Port)
 	if err = pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: answer}); err != nil {
 		return false, false, err
 	}

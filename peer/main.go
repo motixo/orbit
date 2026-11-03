@@ -25,7 +25,7 @@ import (
 	"github.com/pion/webrtc/v4"
 )
 
-const clientSDP = "v=0\r\no=- 0 0 IN IP4 %s\r\ns=-\r\nc=IN IP4 %s\r\nt=0 0\r\nm=application %d UDP/DTLS/SCTP webrtc-datachannel\r\na=mid:0\r\na=ice-options:ice2\r\na=ice-ufrag:%s\r\na=ice-pwd:%s\r\na=fingerprint:sha-256 ba:78:16:bf:8f:01:cf:ea:41:41:40:de:5d:ae:22:23:b0:03:61:a3:96:17:7a:9c:b4:10:ff:61:f2:00:15:ad\r\na=setup:actpass\r\na=sctp-port:5000\r\na=max-message-size:16384\r\n"
+const clientSDP = "v=0\r\no=- 0 0 IN IP4 %s\r\ns=-\r\nc=IN IP4 %s\r\nt=0 0\r\nm=application %d UDP/DTLS/SCTP webrtc-datachannel\r\na=mid:0\r\na=ice-options:ice2\r\na=ice-ufrag:%s\r\na=ice-pwd:%s\r\na=fingerprint:sha-256 ba:78:16:bf:8f:01:cf:ea:41:41:40:de:5d:ae:22:23:b0:03:61:a3:96:17:7a:9c:b4:10:ff:61:f2:00:15:ad\r\na=setup:actpass\r\na=sctp-port:5000\r\na=max-message-size:65536\r\n"
 
 type config struct {
 	Bind, URL, Token, Share, PWA, Open string
@@ -128,7 +128,7 @@ func (h *hub) accept(mux *udpmux.UDPMux, candidate udpmux.Candidate) error {
 	settings.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4})
 	// Browser consent checks can be six seconds apart.
 	settings.SetICETimeouts(15*time.Second, 15*time.Second, 2*time.Second)
-	settings.SetSCTPMaxMessageSize(16384)
+	settings.SetSCTPMaxMessageSize(65536)
 	// The browser pins the desktop certificate; the remote device proves its QR or pairing token.
 	settings.DisableCertificateFingerprintVerification(true)
 	pc, err := webrtc.NewAPI(webrtc.WithSettingEngine(settings)).NewPeerConnection(webrtc.Configuration{Certificates: []webrtc.Certificate{*h.certificate}})

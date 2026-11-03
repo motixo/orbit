@@ -314,7 +314,11 @@ func (s *server) prepareCroc(parent context.Context, command request, peer devic
 	if command.Action == "croc-file" {
 		transfer.direction = "upload"
 	}
-	listeners := make([]net.Listener, 0, 2)
+	portCount := 2
+	if peer.native {
+		portCount = 5
+	}
+	listeners := make([]net.Listener, 0, portCount)
 	defer func() {
 		if !ok {
 			for _, listener := range listeners {
@@ -323,7 +327,7 @@ func (s *server) prepareCroc(parent context.Context, command request, peer devic
 		}
 	}()
 	if command.Relay == nil {
-		for range 2 {
+		for range portCount {
 			listener, err := net.Listen("tcp4", net.JoinHostPort(transfer.Host, "0"))
 			if err != nil {
 				return nil, err
@@ -334,9 +338,13 @@ func (s *server) prepareCroc(parent context.Context, command request, peer devic
 		transfer.Port = strconv.Itoa(listeners[0].Addr().(*net.TCPAddr).Port)
 		dataPort := strconv.Itoa(listeners[1].Addr().(*net.TCPAddr).Port)
 		transfer.DataPort = dataPort
+		dataPorts := make([]string, 0, len(listeners)-1)
+		for _, listener := range listeners[1:] {
+			dataPorts = append(dataPorts, strconv.Itoa(listener.Addr().(*net.TCPAddr).Port))
+		}
 		for _, listener := range listeners {
 			go func() {
-				if err := tcp.RunWithListener(listener, transfer.Password, tcp.WithCtx(ctx), tcp.WithBanner(dataPort), tcp.WithLogLevel("error")); err != nil && ctx.Err() == nil {
+				if err := tcp.RunWithListener(listener, transfer.Password, tcp.WithCtx(ctx), tcp.WithBanner(strings.Join(dataPorts, ",")), tcp.WithLogLevel("error")); err != nil && ctx.Err() == nil {
 					cancel()
 				}
 			}()
@@ -353,7 +361,11 @@ func (s *server) prepareCroc(parent context.Context, command request, peer devic
 		args = append(args, "--quiet")
 	}
 	if command.Action == "croc-file" {
-		args = append(args, "send", "--no-local", "--no-multi", "--transport", "relay", "--hash", "xxhash", "--", filename)
+		args = append(args, "send", "--no-local")
+		if !peer.native {
+			args = append(args, "--no-multi")
+		}
+		args = append(args, "--transport", "relay", "--hash", "xxhash", "--", filename)
 	}
 	// Keep transfers on this core when an update replaces its executable.
 	child := exec.CommandContext(ctx, "/proc/self/exe", args...)
@@ -539,8 +551,16 @@ func (s *server) crocChannel(parent context.Context, dc *webrtc.DataChannel, own
 	}
 	dc.OnClose(cancel)
 	dc.OnError(func(error) { cancel() })
-	const window = 512 * 1024
-	credits := make(chan int, 64)
+	const window = 2 * 1024 * 1024
+	credits := make(chan int, 256)
+	writable := make(chan struct{}, 1)
+	dc.SetBufferedAmountLowThreshold(512 * 1024)
+	dc.OnBufferedAmountLow(func() {
+		select {
+		case writable <- struct{}{}:
+		default:
+		}
+	})
 	dc.OnMessage(func(message webrtc.DataChannelMessage) {
 		if message.IsString {
 			if len(message.Data) > 16 || !strings.HasPrefix(string(message.Data), "read:") {
@@ -559,7 +579,7 @@ func (s *server) crocChannel(parent context.Context, dc *webrtc.DataChannel, own
 			}
 			return
 		}
-		if len(message.Data) > 16384 {
+		if len(message.Data) > 65536 {
 			cancel()
 			return
 		}
@@ -570,7 +590,7 @@ func (s *server) crocChannel(parent context.Context, dc *webrtc.DataChannel, own
 	dc.OnOpen(func() {
 		go func() {
 			defer cancel()
-			buffer := make([]byte, 16384)
+			buffer := make([]byte, 65536)
 			budget := window
 			for {
 				select {
@@ -595,8 +615,17 @@ func (s *server) crocChannel(parent context.Context, dc *webrtc.DataChannel, own
 				}
 				n, err := conn.Read(buffer[:min(len(buffer), budget)])
 				budget -= n
-				if n > 0 && send(ctx, dc, buffer[:n], false) != nil {
-					return
+				if n > 0 {
+					for dc.BufferedAmount() > 1024*1024 {
+						select {
+						case <-ctx.Done():
+							return
+						case <-writable:
+						}
+					}
+					if ctx.Err() != nil || dc.Send(buffer[:n]) != nil {
+						return
+					}
 				}
 				if err != nil {
 					for dc.BufferedAmount() > 0 && ctx.Err() == nil {
