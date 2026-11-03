@@ -158,8 +158,6 @@ func (h *hub) register(connection net.Conn) {
 	}
 	h.broadcastPairings()
 	if h.discovered != nil {
-		stopAdvertising := h.advertise(s)
-		defer stopAdvertising()
 		s.emit(map[string]any{"nearby": h.nearby()})
 	}
 	defer func() {
@@ -419,11 +417,15 @@ func runService() error {
 		emptySince := time.Now()
 		executable, _ := os.Executable()
 		running, _ := os.Stat("/proc/self/exe")
-		var stopHost func()
+		advertisements := make(map[string]func())
+		var stopHostname func()
 		advertisedBind := ""
 		defer func() {
-			if stopHost != nil {
-				stopHost()
+			for _, stop := range advertisements {
+				stop()
+			}
+			if stopHostname != nil {
+				stopHostname()
 			}
 		}()
 		for {
@@ -432,13 +434,14 @@ func runService() error {
 				return
 			case <-ticker.C:
 				addresses, addressErr := networkAddresses()
-				h.mu.Lock()
-				empty := len(h.sessions) == 0
 				if addressErr == nil {
-					h.bind = selectBind(h.bind, addresses)
+					h.updateNetwork(addresses)
 				}
+				h.mu.Lock()
+				sessions := append([]*server(nil), h.sessions...)
 				bind := h.bind
 				h.mu.Unlock()
+				empty := len(sessions) == 0
 				if _, err := os.Stat(h.opener); os.IsNotExist(err) {
 					mux.Close()
 					return
@@ -451,13 +454,38 @@ func runService() error {
 					}
 				}
 				paired := h.store.hasPairings()
-				if stopHost != nil && (!paired || bind != advertisedBind) {
-					stopHost()
-					stopHost = nil
+				shares := make(map[string]bool, len(sessions)+1)
+				if bind != "" {
+					if paired {
+						shares[h.store.Host] = true
+					}
+					for _, s := range sessions {
+						shares[s.Share] = true
+					}
 				}
-				if paired && stopHost == nil && bind != "" {
-					if stop, err := h.advertiseShare(h.store.Host, bind); err == nil {
-						stopHost, advertisedBind = stop, bind
+				for share, stop := range advertisements {
+					if !shares[share] || bind != advertisedBind {
+						stop()
+						delete(advertisements, share)
+					}
+				}
+				if stopHostname != nil && (len(shares) == 0 || bind != advertisedBind) {
+					stopHostname()
+					stopHostname = nil
+				}
+				advertisedBind = bind
+				if len(shares) > 0 && stopHostname == nil {
+					stopHostname, _ = h.answerHostname(bind)
+				}
+				for share := range shares {
+					if advertisements[share] == nil {
+						if stop, err := h.advertiseShare(share, bind); err == nil {
+							advertisements[share] = stop
+						} else {
+							for _, s := range sessions {
+								s.emit(map[string]string{"discoveryError": "Network discovery is unavailable"})
+							}
+						}
 					}
 				}
 				if !empty || paired {

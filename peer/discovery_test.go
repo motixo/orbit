@@ -27,6 +27,26 @@ func TestDiscoveryBindFollowsNetworkChangesAndRetainsASelectedInterface(t *testi
 	}
 }
 
+func TestOpenSharesFollowDesktopAddressChangesWithoutChangingIdentity(t *testing.T) {
+	first, second := "192.168.1.2", "192.168.2.2"
+	one := &server{config: config{Bind: first, Share: "first"}}
+	two := &server{config: config{Bind: first, Share: "second"}}
+	h := &hub{bind: first, hostname: "desktop.local", port: 42000, sessions: []*server{one, two}}
+	for _, addresses := range [][]string{{second}, nil, {first}} {
+		h.updateNetwork(addresses)
+		want := ""
+		if len(addresses) > 0 {
+			want = addresses[0]
+		}
+		if h.bind != want || one.networkAddress() != want || two.networkAddress() != want {
+			t.Fatal("open shares retained a disconnected network address")
+		}
+		if h.hostname != "desktop.local" || h.port != 42000 || one.Share != "first" || two.Share != "second" {
+			t.Fatal("a network change replaced the pairing or share identity")
+		}
+	}
+}
+
 func TestDiscoveryRejectsForeignAddressesAndExpiresPresence(t *testing.T) {
 	self, remote, share := uuid.NewString(), uuid.NewString(), uuid.NewString()
 	now := time.Now()

@@ -65,6 +65,12 @@ type device struct {
 	Reconnecting bool   `json:"reconnecting,omitempty"`
 }
 
+func (s *server) networkAddress() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.Bind
+}
+
 func connectedDevices(clients map[string]device) []device {
 	devices := make([]device, 0, len(clients))
 	for _, client := range clients {
@@ -256,7 +262,7 @@ func (h *hub) accept(mux *udpmux.UDPMux, candidate udpmux.Candidate) error {
 						name, _ := os.Hostname()
 						sendJSON(ctx, dc, map[string]any{
 							"type": "paired", "id": pairID, "token": authToken,
-							"host": selected.Bind, "mdns": h.hostname, "name": cleanDeviceName(name),
+							"host": selected.networkAddress(), "mdns": h.hostname, "name": cleanDeviceName(name),
 							"port": h.port, "fingerprint": h.fingerprint, "share": selected.Share,
 						})
 					case "forget":

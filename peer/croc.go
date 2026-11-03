@@ -204,6 +204,10 @@ func (s *server) respondCroc(parent, ctx context.Context, dc *webrtc.DataChannel
 }
 
 func (s *server) prepareCroc(parent context.Context, command request, peer device) (*crocTransfer, error) {
+	address := s.networkAddress()
+	if address == "" {
+		return nil, errors.New("local network unavailable")
+	}
 	ctx, cancel := context.WithCancel(parent)
 	ok := false
 	defer func() {
@@ -211,7 +215,7 @@ func (s *server) prepareCroc(parent context.Context, command request, peer devic
 			cancel()
 		}
 	}()
-	transfer := &crocTransfer{crocTicket: crocTicket{ID: uuid.NewString(), Name: command.Name, Size: command.Size, Host: s.Bind},
+	transfer := &crocTransfer{crocTicket: crocTicket{ID: uuid.NewString(), Name: command.Name, Size: command.Size, Host: address},
 		owner: peer.connection, ctx: ctx, cancel: cancel, done: make(chan struct{}), ports: make(map[string]bool)}
 	if command.Action == "croc-upload" && !peer.native {
 		transfer.Verify = true
@@ -320,7 +324,7 @@ func (s *server) prepareCroc(parent context.Context, command request, peer devic
 	}()
 	if command.Relay == nil {
 		for range 2 {
-			listener, err := net.Listen("tcp4", net.JoinHostPort(s.Bind, "0"))
+			listener, err := net.Listen("tcp4", net.JoinHostPort(transfer.Host, "0"))
 			if err != nil {
 				return nil, err
 			}
@@ -527,7 +531,7 @@ func (s *server) crocChannel(parent context.Context, dc *webrtc.DataChannel, own
 	transfer.bridges++
 	transfer.mu.Unlock()
 	ctx, cancel := context.WithCancel(transfer.ctx)
-	conn, err := (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, "tcp4", net.JoinHostPort(s.Bind, parts[2]))
+	conn, err := (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, "tcp4", net.JoinHostPort(transfer.Host, parts[2]))
 	if err != nil {
 		cancel()
 		dc.Close()

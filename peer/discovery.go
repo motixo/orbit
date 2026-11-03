@@ -15,6 +15,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/libp2p/zeroconf/v2"
+	"github.com/pion/mdns/v2"
+	"golang.org/x/net/ipv4"
 )
 
 const discoveryService = "_orbit-share._udp"
@@ -62,6 +64,36 @@ func selectBind(preferred string, addresses []string) string {
 		return addresses[0]
 	}
 	return ""
+}
+
+func (h *hub) updateNetwork(addresses []string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.bind = selectBind(h.bind, addresses)
+	for _, s := range h.sessions {
+		s.mu.Lock()
+		s.Bind = h.bind
+		s.mu.Unlock()
+	}
+}
+
+func (h *hub) answerHostname(bind string) (func(), error) {
+	address, err := net.ResolveUDPAddr("udp4", mdns.DefaultAddressIPv4)
+	if err != nil {
+		return nil, err
+	}
+	socket, err := net.ListenUDP("udp4", address)
+	if err != nil {
+		return nil, err
+	}
+	// DNS-SD advertisements alone do not answer direct browser hostname queries.
+	responder, err := mdns.NewServer(ipv4.NewPacketConn(socket), nil,
+		mdns.WithLocalNames(h.hostname), mdns.WithLocalAddress(net.ParseIP(bind)), mdns.WithResponseTTL(10))
+	if err != nil {
+		socket.Close()
+		return nil, err
+	}
+	return func() { responder.Close() }, nil
 }
 
 type nearbyDevice struct {
@@ -167,15 +199,6 @@ func (h *hub) advertiseShare(share, bind string) (func(), error) {
 		return nil, err
 	}
 	return advertiser.Shutdown, nil
-}
-
-func (h *hub) advertise(s *server) func() {
-	stop, err := h.advertiseShare(s.Share, s.Bind)
-	if err != nil {
-		s.emit(map[string]string{"discoveryError": "Network discovery is unavailable"})
-		return func() {}
-	}
-	return stop
 }
 
 func (h *hub) discover(ctx context.Context) {
