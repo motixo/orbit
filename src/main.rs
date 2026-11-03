@@ -6,6 +6,7 @@ mod applet;
 mod archive;
 mod cache;
 mod config;
+mod convert;
 mod device_share;
 mod drag_preview;
 mod file_icon;
@@ -36,13 +37,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut independent = false;
     if !matches!(
         paths.first().and_then(|arg| arg.to_str()),
-        Some("--help" | "-h" | "--version" | "-V" | "--sharing-setup")
+        Some("--help" | "-h" | "--version" | "-V" | "--sharing-setup" | "--convert-image")
     ) {
         sharing_setup::launch(false);
         device_share::listen();
     }
     match paths.first().and_then(|arg| arg.to_str()) {
         Some("--sharing-setup") => return sharing_setup::run(),
+        Some("--convert-image") => {
+            convert::run_worker(&paths[1..])?;
+            return Ok(());
+        }
         Some("--help" | "-h") => {
             println!(
                 "Orbit — a file shelf for COSMIC\n\nUsage: orbit [FILE_OR_FOLDER ...]\n       orbit --new\n       orbit --share\n       orbit --applet\n       orbit --tray\n       orbit --menu\n       orbit --version"

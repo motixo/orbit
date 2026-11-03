@@ -21,6 +21,9 @@
     <release version="0.5.0" type="development" date="2026-11-03">
       <description><p>Local device sharing with Croc, paired and nearby devices, AirDrop transfers, and sharing settings.</p></description>
     </release>
+    <release version="0.4.4" date="2026-11-03">
+      <description><p>Convert selected WebP, HEIC, AVIF, PNG and JPEG images without changing the originals. Image codecs are included.</p></description>
+    </release>
     <release version="0.4.3" date="2026-11-03">
       <description><p>Smaller collapsed Orbits with file drops and optional outlines; improved pinned spacing and header sizing.</p></description>
     </release>

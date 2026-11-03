@@ -2,21 +2,26 @@
 name = "orbit"
 version = "0.5.0"
 edition = "2024"
-rust-version = "1.93"
+rust-version = "1.97"
 license = "GPL-3.0-only"
 description = "A floating file shelf for the COSMIC desktop"
 
 [dependencies]
 axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "json"] }
+avif-decode = { package = "ferri-pdf-avif-decode", version = "3.0.2" }
 base64 = "0.22.1"
+bytemuck = { version = "1.25", features = ["extern_crate_alloc"] }
 csscolorparser = "0.8.4"
 dirs = "6.0"
 flate2 = "1.1"
-image = { version = "0.25.10", default-features = false }
+heic-decoder = "0.1.1"
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
+image-webp = "0.2.4"
 i18n-embed = { version = "0.16", features = ["fluent-system", "desktop-requester"] }
 i18n-embed-fl = "0.10"
 jiff = "0.2"
 mime_guess = "2.0"
+moxcms = "0.8.1"
 notify = "8.2.1"
 owly-radio = { git = "https://github.com/t4t5/owly", rev = "0f2ca4087e6d938d823e76c856fcd04d0a0162b6" }
 percent-encoding = "2.3"
@@ -24,6 +29,7 @@ quick-xml = { version = "0.41", features = ["escape-html"] }
 reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls"] }
 roxmltree = "0.20"
 ron = "0.12"
+rustix = { version = "1.1.6", features = ["process"] }
 rust-embed = "8.8"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -38,6 +44,7 @@ unicode-segmentation = "1.13.3"
 zbus = { version = "5.19", default-features = false, features = ["tokio"] }
 zip = { version = "3", default-features = false, features = ["deflate-flate2", "jiff-02"] }
 ksni = "0.3.7"
+oxideav-avif = { version = "0.0.16", default-features = false }
 
 [dependencies.libcosmic]
 git = "https://github.com/pop-os/libcosmic"
