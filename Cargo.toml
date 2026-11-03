@@ -8,7 +8,6 @@ description = "A floating file shelf for the COSMIC desktop"
 
 [dependencies]
 avif-decode = { package = "ferri-pdf-avif-decode", version = "3.0.2" }
-avif-parse = "2.1"
 base64 = "0.22.1"
 bytemuck = { version = "1.25", features = ["extern_crate_alloc"] }
 csscolorparser = "0.8.4"
@@ -39,6 +38,7 @@ unicode-segmentation = "1.13.3"
 zbus = { version = "5.19", default-features = false, features = ["tokio"] }
 zip = { version = "3", default-features = false, features = ["deflate-flate2", "jiff-02"] }
 ksni = "0.3.7"
+oxideav-avif = { version = "0.0.16", default-features = false }
 
 [dependencies.libcosmic]
 git = "https://github.com/pop-os/libcosmic"

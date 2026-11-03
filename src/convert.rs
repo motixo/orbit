@@ -10,7 +10,7 @@ use image_webp::{DecodingError, WebPDecoder};
 use std::{
     error::Error,
     fs::File,
-    io::{self, BufWriter, Cursor, Read, Write},
+    io::{self, BufWriter, Read, Write},
     path::Path,
     process::{Child, Command, Stdio},
     time::{Duration, Instant},
@@ -303,13 +303,22 @@ fn decode_heic(source: &Path) -> Result<(DynamicImage, Option<Vec<u8>>)> {
 
 fn decode_avif(source: &Path) -> Result<(DynamicImage, Option<Vec<u8>>)> {
     let bytes = read_input(source)?;
-    let avif = avif_parse::read_avif(&mut Cursor::new(&bytes))?;
+    let avif = oxideav_avif::parse(&bytes)?;
+    let alpha_id = oxideav_avif::find_alpha_item_id(&avif.meta, avif.primary_item_id);
+    let alpha = alpha_id
+        .map(|id| oxideav_avif::inspect::item_payload_bytes(&bytes, id))
+        .transpose()?;
+    let premultiplied = alpha_id.is_some_and(|alpha_id| {
+        avif.meta.irefs.iter().any(|reference| {
+            reference.reference_type == *b"prem"
+                && ((reference.from_id == avif.primary_item_id
+                    && reference.to_ids.contains(&alpha_id))
+                    || (reference.from_id == alpha_id
+                        && reference.to_ids.contains(&avif.primary_item_id)))
+        })
+    });
     let mut decoder = avif_decode::Decoder::new(2, (MEMORY_LIMIT / 8) as u32)?;
-    let image = decoder.decode(
-        &avif.primary_item,
-        avif.alpha_item.as_deref(),
-        avif.premultiplied_alpha,
-    )?;
+    let image = decoder.decode(&avif.primary_item_data, alpha.as_deref(), premultiplied)?;
     macro_rules! image {
         ($pixels:ident, $variant:ident) => {
             DynamicImage::$variant(
@@ -330,7 +339,75 @@ fn decode_avif(source: &Path) -> Result<(DynamicImage, Option<Vec<u8>>)> {
         avif_decode::Image::Gray8(pixels) => image!(pixels, ImageLuma8),
         avif_decode::Image::Gray16(pixels) => image!(pixels, ImageLuma16),
     };
-    Ok((image, None))
+    apply_avif_properties(image, &avif.meta.properties_for(avif.primary_item_id))
+}
+
+fn apply_avif_properties(
+    mut image: DynamicImage,
+    properties: &[&oxideav_avif::meta::Property],
+) -> Result<(DynamicImage, Option<Vec<u8>>)> {
+    use oxideav_avif::meta::{Colr, Property};
+    let mut profile = None;
+    for property in properties {
+        match property {
+            Property::Colr(Colr::Icc(icc)) => profile = Some(icc.clone()),
+            Property::Clap(crop) => {
+                let (left, width) = crop_axis(
+                    image.width(),
+                    crop.clean_aperture_width_n,
+                    crop.clean_aperture_width_d,
+                    crop.horiz_off_n,
+                    crop.horiz_off_d,
+                )?;
+                let (top, height) = crop_axis(
+                    image.height(),
+                    crop.clean_aperture_height_n,
+                    crop.clean_aperture_height_d,
+                    crop.vert_off_n,
+                    crop.vert_off_d,
+                )?;
+                image = image.crop_imm(left, top, width, height);
+            }
+            Property::Irot(rotation) => image.apply_orientation(match rotation.angle {
+                0 => Orientation::NoTransforms,
+                1 => Orientation::Rotate270,
+                2 => Orientation::Rotate180,
+                3 => Orientation::Rotate90,
+                _ => return Err(io::Error::other("Invalid image rotation").into()),
+            }),
+            Property::Imir(mirror) => image.apply_orientation(match mirror.axis {
+                0 => Orientation::FlipVertical,
+                1 => Orientation::FlipHorizontal,
+                _ => return Err(io::Error::other("Invalid image mirror").into()),
+            }),
+            _ => (),
+        }
+    }
+    Ok((image, profile))
+}
+
+fn crop_axis(
+    full: u32,
+    extent_n: i32,
+    extent_d: i32,
+    offset_n: i32,
+    offset_d: i32,
+) -> Result<(u32, u32)> {
+    let invalid = || io::Error::other("Invalid or fractional image crop");
+    if extent_n <= 0 || extent_d <= 0 || offset_d <= 0 || extent_n % extent_d != 0 {
+        return Err(invalid().into());
+    }
+    let size = (extent_n / extent_d) as u32;
+    let remaining = full.checked_sub(size).ok_or_else(invalid)?;
+    let denominator = 2 * i128::from(offset_d);
+    let numerator = i128::from(remaining) * i128::from(offset_d) + 2 * i128::from(offset_n);
+    if numerator < 0
+        || numerator > i128::from(remaining) * denominator
+        || numerator % denominator != 0
+    {
+        return Err(invalid().into());
+    }
+    Ok(((numerator / denominator) as u32, size))
 }
 
 #[cfg(test)]
@@ -403,6 +480,101 @@ mod tests {
                 .bit_depth_luma,
             10
         );
+    }
+
+    #[test]
+    fn avif_properties_preserve_crop_transform_order_and_icc() {
+        use oxideav_avif::meta::{Clap, Colr, Imir, Irot, Property};
+        let image = DynamicImage::ImageRgb8(image::RgbImage::from_fn(6, 4, |x, y| {
+            image::Rgb([(x + y * 6) as u8, 0, 0])
+        }));
+        let crop = Property::Clap(Clap::new(4, 1, 2, 1, 0, 1, 0, 1));
+        let rotation = Property::Irot(Irot::new(1));
+        let mirror = Property::Imir(Imir::new(0));
+        let icc = Property::Colr(Colr::Icc(vec![1, 2, 3]));
+        let (converted, profile) =
+            apply_avif_properties(image.clone(), &[&crop, &rotation, &mirror, &icc]).unwrap();
+        assert_eq!((converted.width(), converted.height()), (2, 4));
+        assert_eq!(
+            converted
+                .to_rgb8()
+                .pixels()
+                .map(|pixel| pixel[0])
+                .collect::<Vec<_>>(),
+            [7, 13, 8, 14, 9, 15, 10, 16]
+        );
+        assert_eq!(profile.unwrap(), [1, 2, 3]);
+        let mirror = Property::Imir(Imir::new(1));
+        let (converted, _) = apply_avif_properties(image, &[&crop, &mirror]).unwrap();
+        assert_eq!(
+            converted
+                .to_rgb8()
+                .pixels()
+                .map(|pixel| pixel[0])
+                .collect::<Vec<_>>(),
+            [10, 9, 8, 7, 16, 15, 14, 13]
+        );
+        for crop in [
+            (4, 0, 0, 1),
+            (4, 1, 0, 0),
+            (7, 1, 0, 1),
+            (3, 2, 0, 1),
+            (4, 1, 5, 1),
+            (3, 1, 0, 1),
+        ] {
+            assert!(crop_axis(6, crop.0, crop.1, crop.2, crop.3).is_err());
+        }
+        assert_eq!(crop_axis(6, 4, 1, -1, 1).unwrap(), (0, 4));
+    }
+
+    #[test]
+    fn converts_avif_with_container_transforms_and_icc() {
+        // Fixtures: AOMediaCodec/libavif, tests/data (see AVIF-LICENSE).
+        let fixture = tempfile::tempdir().unwrap();
+        for (name, bytes) in [
+            (
+                "transforms.avif",
+                include_bytes!("fixtures/avif-transforms.avif").as_slice(),
+            ),
+            (
+                "profile.avif",
+                include_bytes!("fixtures/avif-icc.avif").as_slice(),
+            ),
+        ] {
+            let source = fixture.path().join(name);
+            std::fs::write(&source, bytes).unwrap();
+            for conversion in [Conversion::AvifToJpeg, Conversion::AvifToPng] {
+                let converted = convert(&source, conversion, || false).unwrap();
+                let mut decoder = ImageReader::open(&converted.files.0[0])
+                    .unwrap()
+                    .with_guessed_format()
+                    .unwrap()
+                    .into_decoder()
+                    .unwrap();
+                if name == "profile.avif" {
+                    let avif = oxideav_avif::parse(bytes).unwrap();
+                    let original_icc = avif
+                        .meta
+                        .properties_for(avif.primary_item_id)
+                        .into_iter()
+                        .find_map(|property| {
+                            if let oxideav_avif::meta::Property::Colr(
+                                oxideav_avif::meta::Colr::Icc(profile),
+                            ) = property
+                            {
+                                Some(profile)
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap();
+                    assert_eq!(&decoder.icc_profile().unwrap().unwrap(), original_icc);
+                } else {
+                    assert_eq!(decoder.dimensions(), (10, 8));
+                }
+                assert_eq!(std::fs::read(&source).unwrap(), bytes);
+            }
+        }
     }
 
     #[test]
