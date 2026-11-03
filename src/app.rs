@@ -426,7 +426,12 @@ impl cosmic::Application for Orbit {
         });
         let header = iced::widget::sensor(header)
             .on_resize(move |size| Message::PinHeaderHeight(size.height + 2.0 * hint_width));
-        let mut children = vec![header.into()];
+        let header = if self.pin_collapsed {
+            self.drop_destination(header.into())
+        } else {
+            header.into()
+        };
+        let mut children = vec![header];
         if !self.pin_collapsed {
             children.push(self.shelf_view(id));
         }
@@ -1721,27 +1726,9 @@ impl Orbit {
                 }
             }))
             .padding(spacing.space_xxs);
-        let destination = widget::DndDestination::with_id(
-            drop_area,
-            self.drop_target.clone(),
-            crate::import::MIME_TYPES
-                .iter()
-                .map(|mime| (*mime).into())
-                .collect(),
-        )
-        .action(if self.dragged_paths.is_empty() {
-            DndAction::Copy
-        } else {
-            DndAction::empty()
-        })
-        .preferred_action(DndAction::Copy)
-        .on_enter(|_, _, _| Message::Hover(true))
-        .on_leave(|| Message::Hover(false))
-        // Dropping back into this shelf keeps its entries.
-        .on_drop(|_, _| Message::DragCancelled)
-        .on_finish(|mime, bytes, _, _, _| Message::DropData(bytes, mime));
+        let destination = self.drop_destination(drop_area.into());
 
-        let mut content = widget::column::with_children(vec![destination.into()])
+        let mut content = widget::column::with_children(vec![destination])
             .spacing(spacing.space_xs)
             .height(Length::Fill);
         if count > 0 {
@@ -1794,6 +1781,29 @@ impl Orbit {
             .padding([0, spacing.space_xs, spacing.space_xs, spacing.space_xs])
             .height(Length::Fill)
             .into()
+    }
+
+    fn drop_destination<'a>(&'a self, content: Element<'a, Message>) -> Element<'a, Message> {
+        widget::DndDestination::with_id(
+            content,
+            self.drop_target.clone(),
+            crate::import::MIME_TYPES
+                .iter()
+                .map(|mime| (*mime).into())
+                .collect(),
+        )
+        .action(if self.dragged_paths.is_empty() {
+            DndAction::Copy
+        } else {
+            DndAction::empty()
+        })
+        .preferred_action(DndAction::Copy)
+        .on_enter(|_, _, _| Message::Hover(true))
+        .on_leave(|| Message::Hover(false))
+        // Dropping back into this shelf keeps its entries.
+        .on_drop(|_, _| Message::DragCancelled)
+        .on_finish(|mime, bytes, _, _, _| Message::DropData(bytes, mime))
+        .into()
     }
 
     fn import_view<'a>(&self, id: u64, progress: &'a Progress) -> Element<'a, Message> {
