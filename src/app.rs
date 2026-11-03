@@ -391,12 +391,7 @@ impl cosmic::Application for Orbit {
         } else {
             0.0
         };
-        let mut header = widget::header_bar()
-            .title(if self.pin_collapsed {
-                (self.shelf.items.len() + self.pending_imports.len()).to_string()
-            } else {
-                fl!("app-title")
-            })
+        let header = widget::header_bar()
             .end(
                 widget::button::icon(widget::icon::from_name(if self.pin_collapsed {
                     "insert-rectangle-symbolic"
@@ -414,9 +409,13 @@ impl cosmic::Application for Orbit {
             .on_double_click(Message::TogglePin)
             .on_close(Message::Quit)
             .focused(true);
-        if !self.pin_collapsed {
-            header = header.start(self.header_tools(id));
-        }
+        let header = if self.pin_collapsed {
+            header.start(widget::text::heading(
+                (self.shelf.items.len() + self.pending_imports.len()).to_string(),
+            ))
+        } else {
+            header.title(fl!("app-title")).start(self.header_tools(id))
+        };
         let header = widget::mouse_area(header).interaction(if self.pin_drag_start.is_some() {
             mouse::Interaction::Grabbing
         } else {
