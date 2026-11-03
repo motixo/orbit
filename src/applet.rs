@@ -101,6 +101,7 @@ pub enum Message {
     Share,
     Restore(String),
     ChooseWatch,
+    SharingSetup,
     WatchChosen(Result<Option<std::path::PathBuf>, String>),
     RemoveWatch(std::path::PathBuf),
     Launched(bool),
@@ -386,6 +387,11 @@ impl cosmic::Application for OrbitApplet {
                         widget::toggler(self.preferences.pinned_hint)
                             .on_toggle(Message::PinnedHint),
                     )));
+                body = body.push(Self::popup_row(widget::settings::item(
+                    fl!("sharing-setup-setting"),
+                    widget::button::standard(fl!("sharing-setup-open"))
+                        .on_press(Message::SharingSetup),
+                )));
                 body = body.push(widget::divider::horizontal::default()).push(
                     widget::container(widget::text::caption(fl!("watch-folders")))
                         .padding([0, spacing.space_xxs]),
@@ -648,6 +654,7 @@ impl cosmic::Application for OrbitApplet {
                 self.preferences.pinned = mode == 1;
                 self.save();
             }
+            Message::SharingSetup => crate::sharing_setup::launch(true),
             Message::Corner(index) => {
                 if let Some(corner) = Corner::ALL.get(index) {
                     self.preferences.corner = *corner;

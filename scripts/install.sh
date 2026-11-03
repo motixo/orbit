@@ -16,7 +16,7 @@ orbit_staged=$(mktemp "$orbit_prefix/bin/.orbit.XXXXXX")
 trap 'rm -f "$orbit_staged"' EXIT HUP INT TERM
 install -m0755 "${CARGO_TARGET_DIR:-target}/$orbit_profile/orbit" "$orbit_staged"
 mv -f "$orbit_staged" "$orbit_prefix/bin/orbit"
-for orbit_desktop in "$orbit_appid" "$orbit_appid.Applet" "$orbit_appid.Preview" "$orbit_appid.Menu" "$orbit_appid.Share"; do
+for orbit_desktop in "$orbit_appid" "$orbit_appid.Applet" "$orbit_appid.Preview" "$orbit_appid.Menu" "$orbit_appid.Share" "$orbit_appid.Setup"; do
     install -Dm0644 "resources/$orbit_desktop.desktop" "$orbit_prefix/share/applications/$orbit_desktop.desktop"
 done
 install -Dm0644 "resources/$orbit_appid.metainfo.xml" "$orbit_prefix/share/metainfo/$orbit_appid.metainfo.xml"
