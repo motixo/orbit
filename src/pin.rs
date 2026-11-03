@@ -4,6 +4,7 @@ use crate::app::SHELF_SIZE;
 use cosmic::cctk::sctk::shell::wlr_layer::Anchor;
 use cosmic::iced::platform_specific::runtime::wayland::layer_surface::IcedMargin;
 use std::{
+    collections::BTreeSet,
     env,
     fs::{self, File, OpenOptions, TryLockError},
     hash::{DefaultHasher, Hash, Hasher},
@@ -268,13 +269,33 @@ impl Placement {
                 Err(TryLockError::Error(error)) => return Err(error),
             }
         }
-        let columns = self.area.width.saturating_sub(GAP) / (self.width + GAP);
-        let rows = self.area.height.saturating_sub(GAP) / (self.height + GAP);
+        let mut columns = BTreeSet::from([u64::from(GAP)]);
+        let mut rows = BTreeSet::from([u64::from(GAP)]);
+        for &(x, y, width, height) in &occupied {
+            columns.insert(if anchor.contains(Anchor::RIGHT) {
+                u64::from(self.area.width)
+                    .saturating_sub(x)
+                    .saturating_add(u64::from(GAP))
+            } else {
+                x.saturating_add(width).saturating_add(u64::from(GAP))
+            });
+            rows.insert(if anchor.contains(Anchor::BOTTOM) {
+                u64::from(self.area.height)
+                    .saturating_sub(y)
+                    .saturating_add(u64::from(GAP))
+            } else {
+                y.saturating_add(height).saturating_add(u64::from(GAP))
+            });
+        }
+        let max_x = u64::from(self.area.width.saturating_sub(self.width + GAP));
+        let max_y = u64::from(self.area.height.saturating_sub(self.height + GAP));
         let mut candidates = Vec::new();
-        for row in 0..rows {
-            for column in 0..columns {
-                let offset_x = GAP + column * (self.width + GAP);
-                let offset_y = GAP + row * (self.height + GAP);
+        for offset_y in rows {
+            for &offset_x in &columns {
+                if offset_x > max_x || offset_y > max_y {
+                    continue;
+                }
+                let (offset_x, offset_y) = (offset_x as u32, offset_y as u32);
                 let x = if anchor.contains(Anchor::RIGHT) {
                     self.area.width - self.width - offset_x
                 } else {
