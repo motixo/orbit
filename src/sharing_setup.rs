@@ -187,8 +187,8 @@ impl cosmic::Application for Setup {
                     body = body.push(widget::text::body(fl!("sharing-setup-installed")));
                 } else {
                     body = body.push(widget::text::caption(fl!("sharing-setup-hint")));
-                    if install::is_arch() {
-                        body = body.push(widget::text::caption(fl!("sharing-setup-arch")));
+                    if install::builds_from_source() {
+                        body = body.push(widget::text::caption(fl!("sharing-setup-source")));
                     }
                 }
                 if report.exclusive {

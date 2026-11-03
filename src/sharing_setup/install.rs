@@ -4,7 +4,12 @@ use super::Message;
 use crate::fl;
 use cosmic::iced::futures::{SinkExt, channel::mpsc::Sender};
 use sha2::{Digest, Sha256};
-use std::{path::Path, process::Stdio, time::Duration};
+use std::{
+    os::unix::fs::PermissionsExt,
+    path::{Path, PathBuf},
+    process::Stdio,
+    time::Duration,
+};
 use tokio::{io::AsyncWriteExt, process::Command};
 
 const SOURCE: &str = "0f2ca4087e6d938d823e76c856fcd04d0a0162b6";
@@ -12,6 +17,7 @@ const SOURCE: &str = "0f2ca4087e6d938d823e76c856fcd04d0a0162b6";
 #[derive(Clone, Copy, Debug)]
 pub enum Step {
     Downloading(f32),
+    Toolchain,
     Dependencies,
     Building,
     Installing,
@@ -22,6 +28,7 @@ impl Step {
     pub fn label(self) -> String {
         match self {
             Self::Downloading(_) => fl!("sharing-setup-download"),
+            Self::Toolchain => fl!("sharing-setup-toolchain"),
             Self::Dependencies => fl!("sharing-setup-dependencies"),
             Self::Building => fl!("sharing-setup-building"),
             Self::Installing => fl!("sharing-setup-installing"),
@@ -54,8 +61,10 @@ fn distribution() -> Option<Distribution> {
     None
 }
 
-pub fn is_arch() -> bool {
-    distribution() == Some(Distribution::Arch)
+pub fn builds_from_source() -> bool {
+    distribution().is_some_and(|distribution| {
+        distribution == Distribution::Arch || std::env::consts::ARCH == "aarch64"
+    })
 }
 
 async fn command(command: &mut Command) -> Result<(), String> {
@@ -87,6 +96,7 @@ async fn download(
     checksum: &str,
     destination: &Path,
     output: &mut Sender<Message>,
+    stage: fn(f32) -> Step,
 ) -> Result<(), String> {
     let result = async {
         let client = reqwest::Client::builder()
@@ -110,7 +120,7 @@ async fn download(
             if let Some(total) = total {
                 let percent = (size.saturating_mul(100) / total).min(100) as u8;
                 if percent != previous {
-                    progress(output, Step::Downloading(f32::from(percent))).await;
+                    progress(output, stage(f32::from(percent))).await;
                     previous = percent;
                 }
             }
@@ -134,48 +144,192 @@ async fn download(
     }
 }
 
+async fn prepare_rust(
+    build: &mut Command,
+    directory: &Path,
+    output: &mut Sender<Message>,
+) -> Result<(), String> {
+    let rust = tokio::time::timeout(
+        Duration::from_secs(5),
+        Command::new("rustc")
+            .arg("--version")
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .ok()
+    .and_then(Result::ok)
+    .filter(|result| result.status.success())
+    .and_then(|result| String::from_utf8(result.stdout).ok())
+    .and_then(|version| {
+        version
+            .split_whitespace()
+            .nth(1)
+            .and_then(|version| semver::Version::parse(version).ok())
+    });
+    let cargo = tokio::time::timeout(
+        Duration::from_secs(5),
+        Command::new("cargo")
+            .arg("--version")
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .is_ok_and(|result| result.is_ok_and(|result| result.status.success()));
+    if rust.is_some_and(|version| version >= semver::Version::new(1, 88, 0)) && cargo {
+        return Ok(());
+    }
+
+    progress(output, Step::Toolchain).await;
+    let bootstrap = directory.join("rustup-init");
+    download(
+        "https://static.rust-lang.org/rustup/archive/1.29.2/aarch64-unknown-linux-gnu/rustup-init",
+        "a9c168dbea81a84671c6b7a5c1795cb0eb699020110d107ddfca427bd797e697",
+        &bootstrap,
+        output,
+        |_| Step::Toolchain,
+    )
+    .await
+    .map_err(|error| {
+        eprintln!("Rust setup download: {error}");
+        fl!("sharing-setup-toolchain-error")
+    })?;
+    std::fs::set_permissions(&bootstrap, std::fs::Permissions::from_mode(0o700))
+        .map_err(|_| fl!("sharing-setup-toolchain-error"))?;
+    let cargo_directory = directory.join("cargo");
+    let rustup_directory = directory.join("rustup");
+    command(
+        Command::new(bootstrap)
+            .args([
+                "-y",
+                "--no-modify-path",
+                "--profile",
+                "minimal",
+                "--default-toolchain",
+                "1.93.0",
+            ])
+            .env("CARGO_HOME", &cargo_directory)
+            .env("RUSTUP_HOME", &rustup_directory)
+            .env("RUSTUP_TOOLCHAIN", "1.93.0")
+            .env("RUSTUP_INIT_SKIP_PATH_CHECK", "yes"),
+    )
+    .await
+    .map_err(|_| fl!("sharing-setup-toolchain-error"))?;
+    let search = std::env::var_os("PATH").unwrap_or_default();
+    let search = std::env::join_paths(
+        std::iter::once(cargo_directory.join("bin")).chain(std::env::split_paths(&search)),
+    )
+    .map_err(|_| fl!("sharing-setup-toolchain-error"))?;
+    build
+        .env("PATH", search)
+        .env("CARGO_HOME", cargo_directory)
+        .env("RUSTUP_HOME", rustup_directory)
+        .env("RUSTUP_TOOLCHAIN", "1.93.0");
+    Ok(())
+}
+
+async fn build_arm_package(
+    distribution: Distribution,
+    directory: &Path,
+    output: &mut Sender<Message>,
+) -> Result<PathBuf, String> {
+    progress(output, Step::Dependencies).await;
+    let (format, filename) = match distribution {
+        Distribution::Debian => {
+            command(Command::new("pkexec").args(["/usr/bin/apt-get", "update"])).await?;
+            command(Command::new("pkexec").args([
+                "/usr/bin/apt-get",
+                "install",
+                "--yes",
+                "--no-install-recommends",
+                "build-essential",
+                "ca-certificates",
+                "curl",
+                "dpkg-dev",
+            ]))
+            .await?;
+            ("deb", "owly_0.4.2-1_arm64.deb")
+        }
+        Distribution::Fedora => {
+            command(Command::new("pkexec").args([
+                "/usr/bin/dnf",
+                "install",
+                "--assumeyes",
+                "gcc",
+                "binutils",
+                "rpm-build",
+                "curl",
+                "ca-certificates",
+            ]))
+            .await?;
+            ("rpm", "owly-0.4.2-1.aarch64.rpm")
+        }
+        Distribution::Arch => return Err(fl!("sharing-setup-platform-error")),
+    };
+    let packages = directory.join("packages");
+    std::fs::create_dir(&packages).map_err(|_| fl!("sharing-setup-install-error"))?;
+    let mut build = Command::new("sh");
+    build
+        .args(["packaging/package.sh", format])
+        .current_dir(directory.join(format!("owly-{SOURCE}")))
+        .env("OUT", &packages)
+        .env_remove("CARGO_TARGET_DIR");
+    prepare_rust(&mut build, directory, output).await?;
+    progress(output, Step::Building).await;
+    command(&mut build).await?;
+    let package = packages.join(filename);
+    if !package.is_file() {
+        return Err(fl!("sharing-setup-install-error"));
+    }
+    Ok(package)
+}
+
 pub async fn run(output: &mut Sender<Message>) -> Result<(), String> {
     let distribution = distribution().ok_or_else(|| fl!("sharing-setup-platform-error"))?;
     let architecture = std::env::consts::ARCH;
-    if !matches!(architecture, "x86_64" | "aarch64")
-        || (distribution != Distribution::Arch && architecture != "x86_64")
-    {
+    if !matches!(architecture, "x86_64" | "aarch64") {
         return Err(fl!("sharing-setup-architecture-error"));
     }
     let directory = tempfile::Builder::new()
         .prefix("orbit-owly-")
         .tempdir()
         .map_err(|_| fl!("sharing-setup-install-error"))?;
-    let (url, checksum, filename) = match distribution {
-        Distribution::Arch => (
+    let source_build = distribution == Distribution::Arch || architecture == "aarch64";
+    let (url, checksum, filename) = match (distribution, architecture) {
+        (Distribution::Arch, _) | (_, "aarch64") => (
             format!("https://codeload.github.com/t4t5/owly/tar.gz/{SOURCE}"),
             "2df3b08f9e7c1b8e29f4511065f599b8c887c28dc0a272a059f9f995ea2ca487",
             "owly.tar.gz",
         ),
-        Distribution::Debian => (
+        (Distribution::Debian, _) => (
             "https://github.com/t4t5/owly/releases/download/v0.4.2/owly_0.4.2-1_amd64.deb".into(),
             "9e891f9cf23a7697d849115fbe93eec64743651c58ca7eb79957f1d4e00e9a08",
             "owly.deb",
         ),
-        Distribution::Fedora => (
+        (Distribution::Fedora, _) => (
             "https://github.com/t4t5/owly/releases/download/v0.4.2/owly-0.4.2-1.x86_64.rpm".into(),
             "82b155cf0defda58ac85f683fe9f2888926b92dd38757c01f6083bd4f379e768",
             "owly.rpm",
         ),
     };
-    let package = directory.path().join(filename);
-    download(&url, checksum, &package, output).await?;
+    let mut package = directory.path().join(filename);
+    download(&url, checksum, &package, output, Step::Downloading).await?;
+    if source_build {
+        let source = package.clone();
+        let destination = directory.path().to_owned();
+        tokio::task::spawn_blocking(move || {
+            tar::Archive::new(flate2::read::GzDecoder::new(std::fs::File::open(source)?))
+                .unpack(destination)
+        })
+        .await
+        .map_err(|_| fl!("sharing-setup-install-error"))?
+        .map_err(|_| fl!("sharing-setup-install-error"))?;
+        if distribution != Distribution::Arch {
+            package = build_arm_package(distribution, directory.path(), output).await?;
+        }
+    }
     match distribution {
         Distribution::Arch => {
-            let source = package.clone();
-            let destination = directory.path().to_owned();
-            tokio::task::spawn_blocking(move || {
-                tar::Archive::new(flate2::read::GzDecoder::new(std::fs::File::open(source)?))
-                    .unpack(destination)
-            })
-            .await
-            .map_err(|_| fl!("sharing-setup-install-error"))?
-            .map_err(|_| fl!("sharing-setup-install-error"))?;
             progress(output, Step::Dependencies).await;
             let mut dependencies = Command::new("pkexec");
             dependencies.args([
