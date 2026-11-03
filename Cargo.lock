@@ -3646,6 +3646,7 @@ dependencies = [
  "iced_accessibility",
  "iced_winit",
  "image",
+ "image-webp",
  "jiff",
  "ksni",
  "libcosmic",
