@@ -24,6 +24,8 @@ pub struct SavedItem {
     pub uri: String,
     pub text: Option<String>,
     pub selected: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<crate::shelf::Sender>,
 }
 
 impl Entry {
@@ -105,6 +107,7 @@ pub fn save(
                         .into(),
                     text: item.text.clone(),
                     selected: item.selected,
+                    origin: item.origin.clone(),
                 })
             })
             .collect::<io::Result<_>>()?,
@@ -213,6 +216,7 @@ mod tests {
             uri: url::Url::from_file_path(&path).unwrap().into(),
             text: None,
             selected: false,
+            origin: None,
         };
         assert_eq!(item.path(), Some(path));
         let mut entries = Vec::new();

@@ -6,16 +6,16 @@ mod applet;
 mod archive;
 mod cache;
 mod config;
+mod device_share;
 mod drag_preview;
 mod file_icon;
 mod history;
 mod i18n;
 mod import;
-mod kdeconnect;
 mod launch;
 mod layer_input;
 mod orbit_icon;
-mod phone;
+mod owly;
 mod pin;
 mod pointer;
 mod presence;
@@ -39,6 +39,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some("--help" | "-h" | "--version" | "-V" | "--sharing-setup")
     ) {
         sharing_setup::launch(false);
+        device_share::listen();
     }
     match paths.first().and_then(|arg| arg.to_str()) {
         Some("--sharing-setup") => return sharing_setup::run(),
@@ -95,14 +96,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         None
     };
-    let share = paths.first().is_some_and(|arg| arg == "--share");
+    let remote_open = if paths.first().is_some_and(|arg| arg == "--remote-share") {
+        if paths.len() != 2 {
+            return Err("Invalid remote Orbit request".into());
+        }
+        let id = uuid::Uuid::parse_str(paths[1].to_str().ok_or("Invalid remote Orbit request")?)?;
+        paths.clear();
+        Some(id)
+    } else {
+        None
+    };
+    let share = remote_open.is_some() || paths.first().is_some_and(|arg| arg == "--share");
     if share {
-        if paths.len() != 1 {
+        if remote_open.is_none() && paths.len() != 1 {
             return Err("Usage: orbit --share".into());
         }
         paths.clear();
         independent = true;
     }
+    let share_activation = if share {
+        let token = std::env::var("XDG_ACTIVATION_TOKEN").ok();
+        let Some(session) = tray::Session::open_share(token.as_deref())? else {
+            return Ok(());
+        };
+        Some(session)
+    } else {
+        None
+    };
     let restored = if paths.first().is_some_and(|arg| arg == "--restore") {
         if paths.len() != 2 {
             return Err("Usage: orbit --new --restore ID".into());
@@ -164,7 +184,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     cache::start_cleanup()?;
     let startup_area = always_on_top::start()?;
     let flags = app::Flags {
-        share,
+        share_activation,
+        remote_open,
         uris,
         incoming_drop,
         restored,

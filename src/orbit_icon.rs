@@ -17,6 +17,7 @@ use cosmic::{
     },
 };
 use std::{
+    cell::Cell,
     f32::consts::TAU,
     sync::LazyLock,
     time::{Duration, Instant},
@@ -38,15 +39,21 @@ pub fn animated<'a, Message: 'a>(size: u16, count: usize, hovering: bool) -> Ele
         count,
         hovering,
         binary: None,
+        speed: 1.0,
     })
 }
 
-pub fn binary<'a, Message: 'a>(connected: bool) -> Element<'a, Message> {
+pub fn binary<'a, Message: 'a>(
+    connected: bool,
+    bytes_per_second: Option<f64>,
+    scale: f32,
+) -> Element<'a, Message> {
     Element::new(OrbitIcon {
-        size: BINARY_SIZE,
+        size: Size::new(BINARY_SIZE.width, BINARY_SIZE.height * scale),
         count: 2,
         hovering: false,
         binary: Some(connected),
+        speed: transfer_speed(bytes_per_second),
     })
 }
 
@@ -55,6 +62,7 @@ struct OrbitIcon {
     count: usize,
     hovering: bool,
     binary: Option<bool>,
+    speed: f32,
 }
 
 struct State {
@@ -63,6 +71,8 @@ struct State {
     hover: Animation<bool>,
     joined: Animation<bool>,
     half_turns: Animation<f32>,
+    speed: Animation<f32>,
+    binary_time: Cell<(Instant, f64)>,
     binary_cache: geometry::Cache<Renderer>,
 }
 
@@ -78,6 +88,10 @@ impl State {
             half_turns: Animation::new(1.0)
                 .duration(TRANSITION_DURATION)
                 .easing(Easing::EaseInOut),
+            speed: Animation::new(1.0)
+                .duration(Duration::from_millis(400))
+                .easing(Easing::EaseInOut),
+            binary_time: Cell::new((now, 0.0)),
             binary_cache: geometry::Cache::new(),
         }
     }
@@ -96,6 +110,23 @@ impl State {
             self.joined.go_mut(connected, now);
             self.half_turns.go_mut(self.half_turns.value() + 1.0, now);
         }
+    }
+
+    fn set_speed(&mut self, speed: f32, now: Instant) {
+        if speed != self.speed.value() {
+            self.binary_elapsed(now);
+            self.speed.go_mut(speed, now);
+        }
+    }
+
+    fn binary_elapsed(&self, now: Instant) -> f64 {
+        let (previous, elapsed) = self.binary_time.get();
+        let elapsed = (elapsed
+            + now.saturating_duration_since(previous).as_secs_f64()
+                * f64::from(self.speed.interpolate_with(|speed| speed, now)))
+        .rem_euclid(6.0);
+        self.binary_time.set((now, elapsed));
+        elapsed
     }
 
     fn pulse(&self, now: Instant) -> f32 {
@@ -117,6 +148,7 @@ impl<Message> Widget<Message, Theme, Renderer> for OrbitIcon {
         let mut state = State::new(now);
         state.set_hover(self.hovering, now);
         state.set_connected(self.binary.unwrap_or(false), now);
+        state.set_speed(self.speed, now);
         tree::State::new(state)
     }
 
@@ -125,6 +157,7 @@ impl<Message> Widget<Message, Theme, Renderer> for OrbitIcon {
         let now = Instant::now();
         state.set_hover(self.hovering, now);
         state.set_connected(self.binary.unwrap_or(false), now);
+        state.set_speed(self.speed, now);
     }
 
     fn size(&self) -> Size<Length> {
@@ -180,9 +213,9 @@ impl<Message> Widget<Message, Theme, Renderer> for OrbitIcon {
         let bounds = layout.bounds();
         let state = tree.state.downcast_ref::<State>();
         let now = Instant::now();
-        let elapsed = now.duration_since(state.started).as_secs_f64();
         if self.binary.is_some() {
             use geometry::Renderer as _;
+            let elapsed = state.binary_elapsed(now);
             // Repaint the full area so antialiased edges leave no trails.
             state.binary_cache.clear();
             let geometry = state.binary_cache.draw(renderer, bounds.size(), |frame| {
@@ -199,6 +232,7 @@ impl<Message> Widget<Message, Theme, Renderer> for OrbitIcon {
             });
             return;
         }
+        let elapsed = now.duration_since(state.started).as_secs_f64();
         let pulse = state.pulse(now);
         let scale = bounds.width / 24.0 * 1.2 * (1.0 - 0.10 * pulse);
         let mut icon_color = style.icon_color;
@@ -234,6 +268,12 @@ impl<Message> Widget<Message, Theme, Renderer> for OrbitIcon {
             );
         }
     }
+}
+
+fn transfer_speed(bytes_per_second: Option<f64>) -> f32 {
+    bytes_per_second.map_or(1.0, |speed| {
+        (0.4 + (1.0 + speed / 1_000_000.0).log2() as f32).clamp(0.4, 4.0)
+    })
 }
 
 fn draw_dot(renderer: &mut Renderer, color: Color, center: Point, radius: f32, depth: f32) {
@@ -288,20 +328,21 @@ fn project_binary(point: Point, orbit: usize) -> (Point, f32) {
 }
 
 fn transition_position(point: Point, orbit: usize, joined: f32, size: Size) -> (Point, f32) {
+    let scale = (size.height / BINARY_SIZE.height).min(1.0);
     let direction = if orbit == 0 { 1.0 } else { -1.0 };
     let circle = Point::new(
         if orbit == 0 { 0.0 } else { size.width }
-            + direction * WAITING_RADIUS * (point.x / 44.0 + ECCENTRICITY),
+            + direction * WAITING_RADIUS * scale * (point.x / 44.0 + ECCENTRICITY),
         size.height / 2.0
-            + direction * WAITING_RADIUS * point.y
+            + direction * WAITING_RADIUS * scale * point.y
                 / (44.0 * (1.0 - ECCENTRICITY * ECCENTRICITY).sqrt()),
     );
     let (target, perspective) =
         project_binary(Point::new(point.x * direction, point.y * direction), orbit);
     (
         Point::new(
-            circle.x + (size.width / 2.0 + target.x * BINARY_SCALE - circle.x) * joined,
-            circle.y + (size.height / 2.0 + target.y * BINARY_SCALE - circle.y) * joined,
+            circle.x + (size.width / 2.0 + target.x * BINARY_SCALE * scale - circle.x) * joined,
+            circle.y + (size.height / 2.0 + target.y * BINARY_SCALE * scale - circle.y) * joined,
         ),
         1.0 + (perspective - 1.0) * joined,
     )
@@ -389,6 +430,27 @@ mod tests {
     use std::time::Duration;
 
     #[test]
+    fn transfer_speed_changes_keep_the_orbital_phase_continuous() {
+        assert_eq!(transfer_speed(None), 1.0);
+        assert_eq!(transfer_speed(Some(0.0)), 0.4);
+        assert!((transfer_speed(Some(1_000_000.0)) - 1.4).abs() < 0.0001);
+        assert_eq!(transfer_speed(Some(100_000_000.0)), 4.0);
+        let started = Instant::now();
+        let mut state = State::new(started);
+        let changed = started + Duration::from_secs(1);
+        let before = state.binary_elapsed(changed);
+        state.set_speed(4.0, changed);
+        assert_eq!(state.binary_elapsed(changed), before);
+        let midway = changed + Duration::from_millis(200);
+        let phase = state.binary_elapsed(midway);
+        assert!(phase > before);
+        state.set_speed(0.4, midway);
+        assert_eq!(state.binary_elapsed(midway), phase);
+        let next = state.binary_elapsed(midway + Duration::from_millis(1));
+        assert!(next > phase && next - phase < 0.0041);
+    }
+
+    #[test]
     fn elliptic_motion_has_a_shared_focus_and_accelerates_near_it() {
         let periapsis = binary_position(0.0, 1.0);
         let apoapsis = binary_position(TAU / 2.0, 1.0);
@@ -406,7 +468,7 @@ mod tests {
 
     #[test]
     fn separate_circles_converge_to_the_first_layout_and_reverse_smoothly() {
-        let size = Size::new(340.0, 240.0);
+        let size = Size::new(340.0, BINARY_SIZE.height);
         for orbit in 0..2 {
             let center = Point::new(if orbit == 0 { 0.0 } else { size.width }, size.height / 2.0);
             for step in 0..16 {
@@ -469,6 +531,23 @@ mod tests {
                 let (point, _) = star_position(mean, orbit, 0.0, 1.0, size);
                 point.x >= -0.0001 && point.x <= size.width + 0.0001
             }));
+        }
+    }
+
+    #[test]
+    fn resizing_keeps_both_orbit_states_inside_the_animation_height() {
+        let size = Size::new(340.0, BINARY_SIZE.height * 360.0 / 520.0);
+        for joined in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            for orbit in 0..2 {
+                for step in 0..360 {
+                    let mean = TAU * step as f32 / 360.0;
+                    let (point, perspective) = star_position(mean, orbit, joined, 1.0, size);
+                    let radius = (9.0 - 1.5 * joined) * perspective;
+                    assert!(point.y - radius >= 0.0 && point.y + radius <= size.height);
+                    let (original, _) = star_position(mean, orbit, joined, 1.0, BINARY_SIZE);
+                    assert!(point.y < original.y);
+                }
+            }
         }
     }
 

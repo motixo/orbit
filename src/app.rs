@@ -17,7 +17,7 @@ use cosmic::{
     widget,
 };
 use iced::clipboard::dnd::DndAction;
-use iced::futures::SinkExt;
+use iced::futures::{SinkExt, StreamExt};
 use iced::platform_specific::{
     runtime::wayland::layer_surface::{IcedMargin, SctkLayerSurfaceSettings},
     shell::commands::{
@@ -25,13 +25,25 @@ use iced::platform_specific::{
         layer_surface::{destroy_layer_surface, set_anchor, set_margin, set_size},
     },
 };
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    sync::{Arc, LazyLock},
+};
 
 pub const SHELF_SIZE: u32 = 320;
 const PREVIEW_PADDING: u32 = 20;
+pub(crate) static COMPUTER_NAME: LazyLock<String> = LazyLock::new(|| {
+    std::fs::read_to_string("/proc/sys/kernel/hostname")
+        .ok()
+        .map(|name| name.trim().to_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| fl!("sender-desktop"))
+});
 
 pub struct Flags {
-    pub share: bool,
+    pub share_activation: Option<crate::tray::Session>,
+    pub remote_open: Option<uuid::Uuid>,
     pub uris: Vec<String>,
     pub watch: Option<crate::watch::Folder>,
     pub restored: Option<crate::history::Entry>,
@@ -60,8 +72,11 @@ pub struct Orbit {
     restored_id: Option<String>,
     copy_mode: bool,
     compression_dialog: Option<CompressionDialog>,
+    owly_capabilities: Option<crate::owly::Capabilities>,
+    owly_dialog: Option<crate::owly::Dialog>,
     preview: Option<crate::preview::Preview>,
     share: Option<crate::share::Share>,
+    remote_open: Option<uuid::Uuid>,
     focused_item: Option<PathBuf>,
     thumbnails: HashMap<PathBuf, Option<widget::image::Handle>>,
     pending_imports: Vec<(u64, Progress, iced::task::Handle)>,
@@ -112,21 +127,27 @@ pub enum Message {
     ClosePreview,
     DragPreview,
     Share,
+    ShareClaimed(Result<Option<crate::tray::Session>, String>),
+    ShareActivation(cosmic::dbus_activation::Message),
+    SyncShare,
     ShareReady(window::Id, Result<Arc<crate::share::Bundle>, String>),
-    RefreshDevices,
-    DevicesReady(window::Id, Result<Vec<crate::kdeconnect::Device>, String>),
-    SendToDevice(String),
-    ShareSent(window::Id, Result<(), String>),
     CloseShare,
     DragShare,
+    SharePage(crate::share::Page),
+    ConnectDevice(String),
+    OpenRemoteOrbit(String),
+    AllowRemoteOpen(String, bool),
+    DisconnectDevice(String),
+    PairDecision(String, bool),
     StartQr,
+    RetryQr(window::Id, u64),
     QrReady(
         window::Id,
         u64,
         Result<
             (
-                Arc<crate::phone::Session>,
-                Vec<crate::phone::Address>,
+                Arc<crate::device_share::Session>,
+                Vec<crate::device_share::Address>,
                 usize,
             ),
             String,
@@ -135,11 +156,38 @@ pub enum Message {
     QrAddress(usize),
     StopQr,
     CopyShareLink,
-    ShareInfo(bool),
-    PhoneEvent(window::Id, u64, crate::phone::Event),
+    SharePopup(Option<crate::share::Popup>),
+    EditDevice(Option<String>),
+    DeviceName(String),
+    SaveDeviceName,
+    ForgetDevice(String),
+    DeviceEvent(window::Id, u64, crate::device_share::Event),
+    ShareTick(std::time::Instant),
+    RefreshShareNetwork(window::Id),
+    ShareNetwork(
+        window::Id,
+        Result<Vec<crate::device_share::Address>, String>,
+    ),
     FocusItem(PathBuf),
     Copy,
     ToggleCopyMode,
+    OwlyProbe(Option<crate::owly::Capabilities>),
+    Owly,
+    OwlyRefresh,
+    OwlyReady(
+        window::Id,
+        u64,
+        Result<(Arc<crate::owly::Session>, Vec<crate::owly::Device>), String>,
+    ),
+    OwlySend(String),
+    OwlySending(window::Id, u64, crate::owly::SendEvent),
+    OwlyReceive,
+    OwlyReceiving(window::Id, u64, crate::owly::ReceiveEvent),
+    OwlyBack,
+    OwlyReleased(window::Id),
+    OwlyAnswer(uuid::Uuid, bool),
+    CloseOwly,
+    DragOwly,
     Compress,
     ArchiveName(String),
     ArchiveFormat(usize),
@@ -213,8 +261,11 @@ impl cosmic::Application for Orbit {
             restored_id: flags.restored.as_ref().map(|entry| entry.id.clone()),
             copy_mode: flags.restored.as_ref().is_some_and(|entry| entry.copy_mode),
             compression_dialog: None,
+            owly_capabilities: None,
+            owly_dialog: None,
             preview: None,
             share: None,
+            remote_open: flags.remote_open,
             focused_item: None,
             thumbnails: HashMap::new(),
             pending_imports: Vec::new(),
@@ -281,8 +332,8 @@ impl cosmic::Application for Orbit {
         } else {
             Task::none()
         };
-        let share = if flags.share {
-            app.update(Message::Share)
+        let share = if let Some(session) = flags.share_activation {
+            app.open_share(session)
         } else {
             Task::none()
         };
@@ -316,7 +367,7 @@ impl cosmic::Application for Orbit {
             )
             .maximized(self.core.window.is_maximized)
             .sharp_corners(self.core.window.sharp_corners);
-        self.with_compression_dialog(
+        self.with_tools_dialog(
             widget::column::with_children(vec![
                 header.into(),
                 self.shelf_view(self.core.main_window_id().unwrap_or(window::Id::NONE)),
@@ -327,6 +378,13 @@ impl cosmic::Application for Orbit {
     }
 
     fn on_close_requested(&self, id: window::Id) -> Option<Message> {
+        if self
+            .owly_dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.id == id)
+        {
+            return Some(Message::CloseOwly);
+        }
         if self.share.as_ref().is_some_and(|share| share.id == id) {
             return Some(Message::CloseShare);
         }
@@ -371,6 +429,17 @@ impl cosmic::Application for Orbit {
     }
 
     fn view_window(&self, id: window::Id) -> Element<'_, Message> {
+        if let Some(dialog) = &self.owly_dialog
+            && dialog.id == id
+        {
+            let selected = self
+                .shelf
+                .items
+                .iter()
+                .filter(|item| item.selected && !item.is_missing())
+                .count();
+            return dialog.view(selected);
+        }
         if let Some(share) = &self.share
             && share.id == id
         {
@@ -537,7 +606,7 @@ impl cosmic::Application for Orbit {
             }))
             .width(Length::Fill)
             .height(Length::Fill);
-        self.with_compression_dialog(
+        self.with_tools_dialog(
             iced::widget::Stack::new()
                 .push(content)
                 .push(outline)
@@ -573,9 +642,22 @@ impl cosmic::Application for Orbit {
             Subscription::none()
         };
         let sharing = if self.share.as_ref().is_some_and(|share| {
-            share.qr.is_some() && share.connected.is_animating(std::time::Instant::now())
+            share.qr.is_some()
+                && (share.connected.is_animating(std::time::Instant::now())
+                    || share.qr_visibility.is_animating(std::time::Instant::now())
+                    || share
+                        .connected_devices
+                        .iter()
+                        .any(|remote| remote.reconnecting))
         }) {
-            iced::time::every(std::time::Duration::from_millis(16)).map(|_| Message::Noop)
+            iced::time::every(std::time::Duration::from_millis(16)).map(Message::ShareTick)
+        } else {
+            Subscription::none()
+        };
+        let network = if let Some(share) = &self.share {
+            iced::time::every(std::time::Duration::from_secs(3))
+                .with(share.id)
+                .map(|(id, _)| Message::RefreshShareNetwork(id))
         } else {
             Subscription::none()
         };
@@ -598,14 +680,53 @@ impl cosmic::Application for Orbit {
         } else {
             Subscription::none()
         };
+        let owly = if self.owly_dialog.is_none() {
+            crate::owly::capabilities().map(Message::OwlyProbe)
+        } else {
+            Subscription::none()
+        };
+        let share_activation = self
+            .share
+            .as_ref()
+            .and_then(|share| share.activation.as_ref())
+            .map(|session| session.subscription().map(Message::ShareActivation))
+            .unwrap_or_else(Subscription::none);
         Subscription::batch([
-            keyboard, layout, pointer, animation, sharing, opened, config, watch, presence,
+            keyboard,
+            layout,
+            pointer,
+            animation,
+            sharing,
+            network,
+            opened,
+            config,
+            watch,
+            presence,
+            owly,
+            share_activation,
         ])
     }
 
     fn update(&mut self, message: Message) -> Task<cosmic::Action<Message>> {
         match message {
             Message::Key(event, window) => {
+                if self
+                    .owly_dialog
+                    .as_ref()
+                    .is_some_and(|dialog| dialog.id == window)
+                {
+                    return if matches!(
+                        &event,
+                        iced::keyboard::Event::KeyPressed {
+                            key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+                            ..
+                        }
+                    ) {
+                        self.update(Message::CloseOwly)
+                    } else {
+                        Task::none()
+                    };
+                }
                 if self.share.as_ref().is_some_and(|share| share.id == window) {
                     if matches!(
                         &event,
@@ -614,9 +735,20 @@ impl cosmic::Application for Orbit {
                             ..
                         }
                     ) {
+                        if self
+                            .share
+                            .as_ref()
+                            .is_some_and(|share| share.device_edit.is_some())
+                        {
+                            return self.update(Message::EditDevice(None));
+                        }
                         return self.update(
-                            if self.share.as_ref().is_some_and(|share| share.info_open) {
-                                Message::ShareInfo(false)
+                            if self
+                                .share
+                                .as_ref()
+                                .is_some_and(|share| share.popup.is_some())
+                            {
+                                Message::SharePopup(None)
                             } else {
                                 Message::CloseShare
                             },
@@ -693,6 +825,8 @@ impl cosmic::Application for Orbit {
             }
             Message::Config(mut preferences) => {
                 preferences.shortcuts.complete();
+                let pwa_changed = crate::config::pwa_url(&self.preferences.share_pwa_url)
+                    != crate::config::pwa_url(&preferences.share_pwa_url);
                 let removed = self
                     .watch
                     .as_ref()
@@ -701,6 +835,15 @@ impl cosmic::Application for Orbit {
                 if removed {
                     self.watch = None;
                     return self.update(Message::Quit);
+                }
+                if let Some(session) = self.share.as_ref().and_then(|share| share.session.as_ref())
+                    && let Ok(directory) = self.preferences.download_directory()
+                {
+                    session.set_directory(directory);
+                }
+                if pwa_changed && self.share.is_some() {
+                    let _ = self.update(Message::StopQr);
+                    return self.start_qr();
                 }
             }
             Message::WatchArea(area) => {
@@ -763,7 +906,10 @@ impl cosmic::Application for Orbit {
                     }
                     Err(message) => message,
                 };
-                return self.load_thumbnails();
+                return Task::batch([
+                    self.load_thumbnails(),
+                    cosmic::task::message(Message::SyncShare),
+                ]);
             }
             Message::Choose(folders) => {
                 return cosmic::task::future(async move {
@@ -823,100 +969,75 @@ impl cosmic::Application for Orbit {
                 if let Some(share) = &self.share {
                     return window::gain_focus(share.id);
                 }
-                let paths = self.shelf.export_paths();
-                let items = self
-                    .shelf
-                    .items
-                    .iter()
-                    .filter(|item| paths.contains(&item.path))
-                    .cloned()
-                    .collect();
-                let transfer = Arc::new(self.shelf.transfer(paths, false));
-                let (share, open) = crate::share::Share::open();
-                let id = share.id;
-                self.share = Some(share);
-                let (output, input) = iced::futures::channel::mpsc::unbounded();
-                if let Err(error) = std::thread::Builder::new()
-                    .name("orbit-share".into())
-                    .spawn(move || {
-                        let _ = output.unbounded_send(Message::ShareReady(
-                            id,
-                            crate::share::Bundle::prepare(items, transfer),
-                        ));
-                    })
-                {
-                    eprintln!("Could not prepare sharing: {error}");
-                    self.share.as_mut().unwrap().status = fl!("share-error");
-                }
-                return Task::batch([
-                    open,
-                    self.set_window_title(fl!("share"), id),
-                    cosmic::task::stream(input),
-                    self.update(Message::RefreshDevices),
-                ]);
+                let source = self.pinned.or(self.core.main_window_id());
+                return activation::request_token(Some(Self::APP_ID.into()), source).then(
+                    |token| {
+                        cosmic::task::future(async move {
+                            let result = tokio::task::spawn_blocking(move || {
+                                crate::tray::Session::open_share(token.as_deref())
+                            })
+                            .await
+                            .map_err(|error| error.to_string())
+                            .and_then(|result| result.map_err(|error| error.to_string()));
+                            Message::ShareClaimed(result)
+                        })
+                    },
+                );
             }
+            Message::ShareClaimed(result) => match result {
+                Ok(Some(session)) => return self.open_share(session),
+                Ok(None) => (),
+                Err(error) => {
+                    eprintln!("Could not open Orbit Share: {error}");
+                    self.status = fl!("share-error");
+                }
+            },
+            Message::ShareActivation(message) => {
+                if let Some(share) = &self.share {
+                    let focus = if let Some(token) = message.activation_token {
+                        activation::activate(share.id, token)
+                    } else {
+                        window::gain_focus(share.id)
+                    };
+                    return window::minimize(share.id, false).chain(focus);
+                }
+            }
+            Message::SyncShare => return self.sync_share(),
             Message::ShareReady(id, result) => {
                 if let Some(share) = &mut self.share
                     && share.id == id
                 {
+                    share.updating = false;
                     match result {
                         Ok(bundle) => {
+                            if let Some(session) = &share.session {
+                                session.update(bundle.clone());
+                            }
                             share.bundle = Some(bundle);
-                            return self.update(Message::StartQr);
                         }
                         Err(error) => {
                             eprintln!("Could not prepare sharing: {error}");
                             share.status = fl!("share-error");
                         }
                     }
-                }
-            }
-            Message::RefreshDevices => {
-                if let Some(share) = &mut self.share {
-                    let id = share.id;
-                    share.devices = None;
-                    return cosmic::task::future(async move {
-                        Message::DevicesReady(id, crate::kdeconnect::devices().await)
-                    });
-                }
-            }
-            Message::DevicesReady(id, devices) => {
-                if let Some(share) = &mut self.share
-                    && share.id == id
-                {
-                    share.devices = Some(devices);
-                }
-            }
-            Message::SendToDevice(device) => {
-                if let Some(share) = &mut self.share
-                    && !share.busy
-                    && let Some(bundle) = share.bundle.clone()
-                {
-                    let id = share.id;
-                    share.busy = true;
-                    share.status.clear();
-                    return cosmic::task::future(async move {
-                        Message::ShareSent(id, crate::kdeconnect::send(&device, &bundle).await)
-                    });
-                }
-            }
-            Message::ShareSent(id, result) => {
-                if let Some(share) = &mut self.share
-                    && share.id == id
-                {
-                    share.busy = false;
-                    share.status = match result {
-                        Ok(()) => fl!("share-queued"),
-                        Err(error) => {
-                            eprintln!("Could not send files: {error}");
-                            fl!("share-error")
-                        }
-                    };
+                    let sync = self.sync_share();
+                    let start = self.start_qr();
+                    return Task::batch([sync, start]);
                 }
             }
             Message::CloseShare => {
-                if let Some(share) = self.share.take() {
-                    return window::close(share.id);
+                self.cleanup_received(true);
+                if let Some(mut share) = self.share.take() {
+                    let id = share.id;
+                    let session = share.session.take();
+                    let activation = share.activation.take();
+                    return Task::future(async move {
+                        let _activation = activation;
+                        if let Some(session) = session {
+                            session.disconnect().await;
+                        }
+                    })
+                    .then(move |()| window::close(id));
                 }
             }
             Message::DragShare => {
@@ -925,16 +1046,81 @@ impl cosmic::Application for Orbit {
                 }
             }
             Message::StartQr => return self.start_qr(),
+            Message::SharePage(page) => {
+                if let Some(share) = &mut self.share {
+                    share.show_page(page, std::time::Instant::now());
+                }
+            }
+            Message::AllowRemoteOpen(id, allowed) => {
+                if let Some(share) = &mut self.share
+                    && let Some(session) = &share.session
+                {
+                    share.device_error = (!session
+                        .command(serde_json::json!({"allowOpen": {"id":id, "allowed":allowed}})))
+                    .then(|| fl!("share-permission-error"));
+                }
+            }
+            Message::OpenRemoteOrbit(id) => {
+                if let Some(share) = &mut self.share
+                    && let Some(session) = &share.session
+                {
+                    share.device_error = (!session.command(serde_json::json!({"openOrbit":id})))
+                        .then(|| fl!("share-open-error"));
+                }
+            }
+            Message::ConnectDevice(id) => {
+                if let Some(share) = &mut self.share
+                    && let Some(session) = &share.session
+                {
+                    share.transfer_error = None;
+                    share.device_error = (!session.command(serde_json::json!({"connect": id})))
+                        .then(|| fl!("share-connect-error"));
+                }
+            }
+            Message::DisconnectDevice(id) => {
+                if let Some(share) = &self.share
+                    && let Some(session) = &share.session
+                {
+                    session.command(serde_json::json!({"disconnectPeer": id}));
+                }
+            }
+            Message::PairDecision(id, approved) => {
+                if let Some(share) = &self.share
+                    && let Some(session) = &share.session
+                {
+                    session.command(if approved {
+                        serde_json::json!({"approve": id})
+                    } else {
+                        serde_json::json!({"reject": id})
+                    });
+                }
+            }
+            Message::RetryQr(id, generation) => {
+                if self
+                    .share
+                    .as_ref()
+                    .is_some_and(|share| share.id == id && share.generation == generation)
+                {
+                    return self.start_qr();
+                }
+            }
             Message::QrReady(id, generation, result) => {
                 if let Some(share) = &mut self.share
                     && share.id == id
                     && share.generation == generation
                 {
                     share.qr_busy = false;
+                    share.qr_task = None;
                     match result {
                         Ok((session, addresses, index)) => {
                             match widget::qr_code::Data::new(session.url.as_bytes()) {
                                 Ok(qr) => {
+                                    if let Some(bundle) = &share.bundle {
+                                        session.update(bundle.clone());
+                                    }
+                                    if let Ok(directory) = self.preferences.download_directory() {
+                                        session.set_directory(directory);
+                                    }
                                     share.qr = Some(qr);
                                     share.session = Some(session);
                                     share.addresses = addresses;
@@ -947,8 +1133,9 @@ impl cosmic::Application for Orbit {
                             }
                         }
                         Err(error) => {
-                            eprintln!("Could not start phone sharing: {error}");
+                            eprintln!("Could not start device sharing: {error}");
                             share.status = fl!("share-network-error");
+                            return self.retry_qr();
                         }
                     }
                 }
@@ -968,7 +1155,20 @@ impl cosmic::Application for Orbit {
                     share.session = None;
                     share.qr = None;
                     share.qr_busy = false;
-                    share.info_open = false;
+                    share.qr_task = None;
+                    share.popup = None;
+                    share.device_edit = None;
+                    share.device_error = None;
+                    share.transfer_error = None;
+                    share.downloads.clear();
+                    share.uploads.clear();
+                    share.connected_devices.clear();
+                    share.pairings.clear();
+                    share.nearby.clear();
+                    share.pair_requests.clear();
+                    share.connecting.clear();
+                    share.forgotten.clear();
+                    share.set_connected(false, std::time::Instant::now());
                     share.connected = iced::Animation::new(false)
                         .duration(crate::orbit_icon::TRANSITION_DURATION)
                         .easing(iced::animation::Easing::EaseInOut);
@@ -979,29 +1179,251 @@ impl cosmic::Application for Orbit {
                 if let Some(share) = &mut self.share
                     && let Some(session) = &share.session
                 {
-                    share.info_open = false;
+                    share.popup = None;
                     return iced::clipboard::write(session.url.clone());
                 }
             }
-            Message::ShareInfo(open) => {
+            Message::SharePopup(popup) => {
                 if let Some(share) = &mut self.share {
-                    share.info_open = open && share.session.is_some();
+                    share.popup = popup.filter(|_| share.session.is_some());
+                    share.device_edit = None;
+                    share.device_error = None;
                 }
             }
-            Message::PhoneEvent(id, generation, event) => {
+            Message::EditDevice(id) => {
+                if let Some(share) = &mut self.share {
+                    share.device_edit = None;
+                    share.device_error = None;
+                    if share.popup == Some(crate::share::Popup::Devices)
+                        && let Some(device) = share
+                            .pairings
+                            .iter()
+                            .find(|device| Some(&device.id) == id.as_ref())
+                    {
+                        let input = widget::Id::unique();
+                        share.device_edit = Some(crate::share::DeviceEdit {
+                            id: device.id.clone(),
+                            name: device.name.clone(),
+                            input: input.clone(),
+                        });
+                        return widget::text_input::focus(input);
+                    }
+                }
+            }
+            Message::DeviceName(name) => {
+                if let Some(share) = &mut self.share
+                    && let Some(edit) = &mut share.device_edit
+                {
+                    edit.name = name.chars().take(80).collect();
+                }
+            }
+            Message::SaveDeviceName => {
+                if let Some(share) = &mut self.share
+                    && let Some(edit) = &share.device_edit
+                    && !edit.name.trim().is_empty()
+                    && let Some(session) = &share.session
+                {
+                    if session.rename(&edit.id, edit.name.trim()) {
+                        share.device_edit = None;
+                        share.device_error = None;
+                    } else {
+                        share.device_error = Some(fl!("rename-error"));
+                    }
+                }
+            }
+            Message::ForgetDevice(id) => {
+                if let Some(share) = &mut self.share
+                    && let Some(session) = &share.session
+                {
+                    share.device_error = (!session.forget(&id)).then(|| fl!("forget-error"));
+                }
+            }
+            Message::DeviceEvent(id, generation, event) => {
                 if let Some(share) = &mut self.share
                     && share.id == id
                     && share.generation == generation
                 {
+                    let names_changed = matches!(
+                        &event,
+                        crate::device_share::Event::Devices(..)
+                            | crate::device_share::Event::Pairings(_)
+                    );
                     match event {
-                        crate::phone::Event::Connected(connected) => {
-                            share.connected.go_mut(connected, std::time::Instant::now());
+                        crate::device_share::Event::Stopped => {
+                            let _ = self.update(Message::StopQr);
+                            return self.retry_qr();
                         }
-                        crate::phone::Event::Received(imported) => {
+                        crate::device_share::Event::Devices(mut devices, intentional) => {
+                            devices.retain(|remote| !share.forgotten.contains(&remote.pair_id));
+                            let newly_connected = devices.iter().any(|remote| {
+                                !remote.reconnecting
+                                    && !share.connected_devices.iter().any(|known| {
+                                        !known.reconnecting
+                                            && (known.same_device(remote)
+                                                || remote.paired_from(known))
+                                    })
+                            });
+                            let now = std::time::Instant::now();
+                            if newly_connected {
+                                share.show_page(crate::share::Page::Connected, now);
+                            }
+                            if intentional {
+                                share.connected_devices.retain(|known| {
+                                    devices.iter().any(|remote| remote.same_device(known))
+                                });
+                            }
+                            crate::device_share::update_devices(
+                                &mut share.connected_devices,
+                                devices,
+                                now,
+                            );
+                            if share.connected_devices.is_empty() {
+                                share.set_connected(false, now);
+                            } else if share
+                                .connected_devices
+                                .iter()
+                                .any(|remote| !remote.reconnecting)
+                            {
+                                share.set_connected(true, now);
+                            }
+                        }
+                        crate::device_share::Event::Pairings(devices) => {
+                            let had_devices = !share.connected_devices.is_empty();
+                            share
+                                .forgotten
+                                .retain(|id| !devices.iter().any(|device| device.id == *id));
+                            share.forgotten.extend(
+                                share
+                                    .pairings
+                                    .iter()
+                                    .filter(|previous| {
+                                        !devices.iter().any(|device| device.id == previous.id)
+                                    })
+                                    .map(|device| device.id.clone()),
+                            );
+                            share
+                                .connected_devices
+                                .retain(|remote| !share.forgotten.contains(&remote.pair_id));
+                            if had_devices && share.connected_devices.is_empty() {
+                                share.set_connected(false, std::time::Instant::now());
+                            }
+                            if share.device_edit.as_ref().is_some_and(|edit| {
+                                !devices.iter().any(|device| device.id == edit.id)
+                            }) {
+                                share.device_edit = None;
+                            }
+                            share.pairings = devices;
+                        }
+                        crate::device_share::Event::TransferError(name, error) => {
+                            share.transfer_error = if error.is_empty() {
+                                None
+                            } else {
+                                eprintln!("Could not send {name}: {error}");
+                                Some(fl!("share-send-error", name = name, error = error))
+                            };
+                        }
+                        crate::device_share::Event::PairingError(error) => {
+                            share.device_error = Some(error);
+                        }
+                        crate::device_share::Event::Nearby(devices) => {
+                            share.nearby = devices;
+                        }
+                        crate::device_share::Event::Connecting(id, active) => {
+                            if active {
+                                share.connecting.insert(id);
+                            } else {
+                                share.connecting.remove(&id);
+                            }
+                        }
+                        crate::device_share::Event::PairRequest(request) => {
+                            share
+                                .pair_requests
+                                .retain(|previous| previous.id != request.id);
+                            if !request.code.is_empty() {
+                                share.pair_requests.push(request);
+                            }
+                        }
+                        crate::device_share::Event::Received(imported, remote) => {
                             share.status = fl!("share-received");
+                            let sender = remote
+                                .as_deref()
+                                .and_then(|key| {
+                                    crate::device_share::sender_name(
+                                        key,
+                                        &share.pairings,
+                                        &share.connected_devices,
+                                    )
+                                })
+                                .map(str::to_owned);
                             let order = self.shelf.reserve_order();
-                            return self.accept_import(order, Ok(imported));
+                            let first_added = self.shelf.items.len();
+                            let task = self.accept_import(order, Ok(imported));
+                            for item in &mut self.shelf.items[first_added..] {
+                                item.origin = Some(crate::shelf::Sender {
+                                    id: remote.clone().unwrap_or_default(),
+                                    name: sender.clone().unwrap_or_else(|| fl!("sender-device")),
+                                });
+                                match crate::share::ReceivedFile::new(
+                                    &item.path,
+                                    remote.clone().unwrap_or_default(),
+                                    item.order,
+                                ) {
+                                    Ok(received) => {
+                                        self.share
+                                            .as_mut()
+                                            .unwrap()
+                                            .received
+                                            .insert(item.path.clone(), received);
+                                    }
+                                    Err(error) => {
+                                        eprintln!("Could not track received file: {error}")
+                                    }
+                                }
+                            }
+                            return task;
                         }
+                        crate::device_share::Event::Remove(path, order) => {
+                            if self
+                                .shelf
+                                .items
+                                .iter()
+                                .any(|item| item.path == path && item.order == order)
+                            {
+                                self.shelf.remove_with_undo(&path);
+                                self.release_imports();
+                                self.status.clear();
+                                return self.sync_share();
+                            }
+                        }
+                        crate::device_share::Event::Transfer(id, direction, progress) => {
+                            let transfers = match direction {
+                                crate::device_share::Direction::Download => &mut share.downloads,
+                                crate::device_share::Direction::Upload => &mut share.uploads,
+                            };
+                            match progress {
+                                Some(progress) => {
+                                    transfers.insert(id, progress);
+                                }
+                                None => {
+                                    transfers.remove(&id);
+                                }
+                            }
+                        }
+                    }
+                    if names_changed {
+                        for item in &mut self.shelf.items {
+                            if let Some(origin) = &mut item.origin
+                                && let Some(name) = crate::device_share::sender_name(
+                                    &origin.id,
+                                    &share.pairings,
+                                    &share.connected_devices,
+                                )
+                            {
+                                origin.name = name.to_owned();
+                            }
+                        }
+                        self.cleanup_received(false);
+                        return self.sync_share();
                     }
                 }
             }
@@ -1106,22 +1528,34 @@ impl cosmic::Application for Orbit {
             }
             Message::SelectAll => self.shelf.select_all(),
             Message::Remove(path) => {
+                if !self
+                    .shelf
+                    .items
+                    .iter()
+                    .any(|item| item.path == path && Self::can_remove(item, self.share.as_ref()))
+                {
+                    return Task::none();
+                }
                 self.shelf.remove_with_undo(&path);
                 self.release_imports();
                 self.status.clear();
+                return self.sync_share();
             }
             Message::Clear => {
                 if self.shelf.selected_count() == 0 {
                     self.pending_imports.clear();
                 }
-                self.shelf.clear_with_undo();
+                let share = self.share.as_ref();
+                self.shelf
+                    .clear_with_undo(|item| Self::can_remove(item, share));
                 self.release_imports();
                 self.status.clear();
+                return self.sync_share();
             }
             Message::Undo => {
                 self.shelf.undo();
                 self.status.clear();
-                return self.load_thumbnails();
+                return Task::batch([self.load_thumbnails(), self.sync_share()]);
             }
             Message::Copy => {
                 let paths = self.shelf.export_paths();
@@ -1135,6 +1569,329 @@ impl cosmic::Application for Orbit {
                 }
             }
             Message::ToggleCopyMode => self.copy_mode = !self.copy_mode,
+            Message::OwlyProbe(capabilities) => self.owly_capabilities = capabilities,
+            Message::Owly => {
+                if let Some(dialog) = &self.owly_dialog {
+                    return window::gain_focus(dialog.id);
+                }
+                let Some(capabilities) = self.owly_capabilities.clone() else {
+                    return Task::none();
+                };
+                if self.compression_dialog.is_some() {
+                    return Task::none();
+                }
+                let (dialog, open) = crate::owly::Dialog::open(capabilities);
+                let id = dialog.id;
+                self.owly_dialog = Some(dialog);
+                return Task::batch([open, self.set_window_title(fl!("owly"), id)]);
+            }
+            Message::OwlyRefresh => {
+                let has_selection = self
+                    .shelf
+                    .items
+                    .iter()
+                    .any(|item| item.selected && !item.is_missing());
+                let Some(dialog) = self.owly_dialog.as_mut().filter(|dialog| {
+                    !dialog.busy && !dialog.receiving && !dialog.sending && has_selection
+                }) else {
+                    return Task::none();
+                };
+                let id = dialog.id;
+                dialog.generation = dialog.generation.wrapping_add(1);
+                let generation = dialog.generation;
+                let session = dialog.session.clone();
+                let (task, handle) = cosmic::task::future(async move {
+                    let result = async {
+                        let session = match session {
+                            Some(session) => session,
+                            None => crate::owly::Session::start().await?,
+                        };
+                        let devices = session.browse().await?;
+                        Ok((session, devices))
+                    }
+                    .await;
+                    Message::OwlyReady(id, generation, result)
+                })
+                .abortable();
+                dialog.busy = true;
+                dialog.sending = true;
+                dialog.status.clear();
+                dialog.task = Some(handle.abort_on_drop());
+                return task;
+            }
+            Message::OwlyReady(id, generation, result) => {
+                if let Some(dialog) = self.owly_dialog.as_mut().filter(|dialog| {
+                    dialog.id == id && dialog.sending && dialog.generation == generation
+                }) {
+                    dialog.task = None;
+                    dialog.busy = false;
+                    match result {
+                        Ok((session, devices)) => {
+                            dialog.session = Some(session);
+                            dialog.devices = devices;
+                        }
+                        Err(error) => {
+                            eprintln!("Owly: {error}");
+                            dialog.session = None;
+                            dialog.devices.clear();
+                            dialog.status = fl!("owly-search-error");
+                        }
+                    }
+                }
+            }
+            Message::OwlySend(target) => {
+                if self.shelf.selected_count() == 0 {
+                    return Task::none();
+                }
+                let paths = self.shelf.export_paths();
+                if paths.is_empty() {
+                    return Task::none();
+                }
+                let Some(dialog) = self.owly_dialog.as_mut().filter(|dialog| {
+                    !dialog.busy
+                        && dialog.sending
+                        && dialog.devices.iter().any(|device| device.id == target)
+                }) else {
+                    return Task::none();
+                };
+                let Some(session) = dialog.session.clone() else {
+                    return Task::none();
+                };
+                let id = dialog.id;
+                dialog.generation = dialog.generation.wrapping_add(1);
+                let generation = dialog.generation;
+                let transfer = Arc::new(self.shelf.transfer(paths, false));
+                let (task, handle) = cosmic::task::stream(
+                    iced::stream::channel(16, async move |mut output| {
+                        let result = session.send(&target, &transfer, &mut output).await;
+                        let _ = output.send(crate::owly::SendEvent::Finished(result)).await;
+                    })
+                    .map(move |event| Message::OwlySending(id, generation, event)),
+                )
+                .abortable();
+                dialog.busy = true;
+                dialog.progress = None;
+                dialog.status.clear();
+                dialog.task = Some(handle.abort_on_drop());
+                return task;
+            }
+            Message::OwlySending(id, generation, crate::owly::SendEvent::Progress(progress)) => {
+                if let Some(dialog) = self.owly_dialog.as_mut().filter(|dialog| {
+                    dialog.id == id
+                        && dialog.sending
+                        && dialog.generation == generation
+                        && dialog.busy
+                }) {
+                    dialog.progress = Some(progress);
+                }
+            }
+            Message::OwlySending(id, generation, crate::owly::SendEvent::Finished(result)) => {
+                if let Some(dialog) = self.owly_dialog.as_mut().filter(|dialog| {
+                    dialog.id == id && dialog.sending && dialog.generation == generation
+                }) {
+                    dialog.task = None;
+                    dialog.busy = false;
+                    dialog.progress = None;
+                    match result {
+                        Ok(()) => {
+                            dialog.devices.clear();
+                            dialog.sending = false;
+                            dialog.status.clear();
+                            if let Some(session) = dialog.session.take() {
+                                dialog.busy = true;
+                                return cosmic::task::future(async move {
+                                    session.close().await;
+                                    Message::OwlyReleased(id)
+                                });
+                            }
+                        }
+                        Err(error) => {
+                            eprintln!("Owly: {error}");
+                            dialog.status = fl!("owly-send-error");
+                        }
+                    }
+                }
+            }
+            Message::CloseOwly => {
+                if let Some(mut dialog) = self.owly_dialog.take() {
+                    dialog.task = None;
+                    let session = dialog.session.take();
+                    return Task::batch([
+                        window::close(dialog.id),
+                        cosmic::task::future(async move {
+                            if let Some(session) = session {
+                                session.close().await;
+                            }
+                            Message::Noop
+                        }),
+                    ]);
+                }
+            }
+            Message::DragOwly => {
+                if let Some(dialog) = &self.owly_dialog {
+                    return window::drag(dialog.id);
+                }
+            }
+            Message::OwlyReceive => {
+                let directory = match self.preferences.download_directory() {
+                    Ok(directory) => directory,
+                    Err(_) => {
+                        if let Some(dialog) = &mut self.owly_dialog {
+                            dialog.status = fl!("share-folder-error");
+                        }
+                        return Task::none();
+                    }
+                };
+                let Some(dialog) = self
+                    .owly_dialog
+                    .as_mut()
+                    .filter(|dialog| !dialog.busy && !dialog.receiving && !dialog.sending)
+                else {
+                    return Task::none();
+                };
+                let id = dialog.id;
+                dialog.generation = dialog.generation.wrapping_add(1);
+                let generation = dialog.generation;
+                let session = dialog.session.clone();
+                let (replies, input) = iced::futures::channel::mpsc::unbounded();
+                let (task, handle) = cosmic::task::stream(
+                    iced::stream::channel(16, async move |mut output| {
+                        let result = async {
+                            let session = match session {
+                                Some(session) => session,
+                                None => crate::owly::Session::start().await?,
+                            };
+                            output
+                                .send(crate::owly::ReceiveEvent::Ready(session.clone()))
+                                .await
+                                .map_err(|error| error.to_string())?;
+                            session.receive(directory, input, &mut output).await
+                        }
+                        .await;
+                        if let Err(error) = result {
+                            let _ = output.send(crate::owly::ReceiveEvent::Failed(error)).await;
+                        }
+                    })
+                    .map(move |event| Message::OwlyReceiving(id, generation, event)),
+                )
+                .abortable();
+                dialog.busy = true;
+                dialog.receiving = true;
+                dialog.sending = false;
+                dialog.downloads.clear();
+                dialog.devices.clear();
+                dialog.status.clear();
+                dialog.replies = Some(replies);
+                dialog.task = Some(handle.abort_on_drop());
+                return task;
+            }
+            Message::OwlyBack => {
+                if let Some(dialog) = self
+                    .owly_dialog
+                    .as_mut()
+                    .filter(|dialog| dialog.receiving || dialog.sending)
+                {
+                    dialog.generation = dialog.generation.wrapping_add(1);
+                    dialog.replies = None;
+                    dialog.task = None;
+                    dialog.receiving = false;
+                    dialog.sending = false;
+                    dialog.busy = false;
+                    dialog.request = None;
+                    dialog.devices.clear();
+                    dialog.progress = None;
+                    dialog.downloads.clear();
+                    dialog.status.clear();
+                    if let Some(session) = dialog.session.take() {
+                        let id = dialog.id;
+                        dialog.busy = true;
+                        return cosmic::task::future(async move {
+                            session.close().await;
+                            Message::OwlyReleased(id)
+                        });
+                    }
+                }
+            }
+            Message::OwlyReleased(id) => {
+                if let Some(dialog) = self.owly_dialog.as_mut().filter(|dialog| dialog.id == id) {
+                    dialog.busy = false;
+                }
+            }
+            Message::OwlyReceiving(id, generation, event) => {
+                let Some(dialog) = self.owly_dialog.as_mut().filter(|dialog| {
+                    dialog.id == id && dialog.receiving && dialog.generation == generation
+                }) else {
+                    return Task::none();
+                };
+                match event {
+                    crate::owly::ReceiveEvent::Ready(session) => {
+                        dialog.session = Some(session);
+                        dialog.busy = false;
+                    }
+                    crate::owly::ReceiveEvent::Request(request) => {
+                        dialog.request = Some(request);
+                        dialog.status.clear();
+                    }
+                    crate::owly::ReceiveEvent::RequestClosed(id) => {
+                        if dialog
+                            .request
+                            .as_ref()
+                            .is_some_and(|request| request.id == id)
+                        {
+                            dialog.request = None;
+                        }
+                    }
+                    crate::owly::ReceiveEvent::Progress { id, progress, file } => {
+                        if let Some(progress) = progress {
+                            dialog.downloads.insert(id, (progress, file));
+                            dialog.status.clear();
+                        } else {
+                            dialog.downloads.remove(&id);
+                        }
+                    }
+                    crate::owly::ReceiveEvent::Files(files) => {
+                        dialog.status = fl!("share-received");
+                        return self.update(Message::Incoming(Ok(FileList(files))));
+                    }
+                    crate::owly::ReceiveEvent::Link(url) => {
+                        dialog.status = fl!("share-received");
+                        if !self.shelf.contains_link(&url) {
+                            return self.begin_import(
+                                url.into_bytes(),
+                                crate::transfer::TEXT.into(),
+                                Source::Clipboard,
+                            );
+                        }
+                    }
+                    crate::owly::ReceiveEvent::TransferFailed(error) => {
+                        eprintln!("Owly transfer: {error}");
+                        dialog.status = fl!("owly-receive-error");
+                    }
+                    crate::owly::ReceiveEvent::Failed(error) => {
+                        eprintln!("Owly receive: {error}");
+                        dialog.task = None;
+                        dialog.session = None;
+                        dialog.receiving = false;
+                        dialog.downloads.clear();
+                        dialog.replies = None;
+                        dialog.request = None;
+                        dialog.busy = false;
+                        dialog.status = fl!("owly-receive-error");
+                    }
+                }
+            }
+            Message::OwlyAnswer(id, accept) => {
+                if let Some(dialog) = &mut self.owly_dialog
+                    && dialog
+                        .request
+                        .as_ref()
+                        .is_some_and(|request| request.id == id)
+                    && let Some(replies) = &dialog.replies
+                {
+                    let _ = replies.unbounded_send((id, accept));
+                    dialog.request = None;
+                }
+            }
             Message::Compress => {
                 let sources = self
                     .shelf
@@ -1190,12 +1947,11 @@ impl cosmic::Application for Orbit {
                 if archive.is_some_and(|path| self.shelf.items.iter().any(|item| item.path == path))
                 {
                     for (path, order) in sources {
-                        if self
-                            .shelf
-                            .items
-                            .iter()
-                            .any(|item| item.path == path && item.order == order)
-                        {
+                        if self.shelf.items.iter().any(|item| {
+                            item.path == path
+                                && item.order == order
+                                && Self::can_remove(item, self.share.as_ref())
+                        }) {
                             self.shelf.remove(&path);
                         }
                     }
@@ -1224,18 +1980,77 @@ impl cosmic::Application for Orbit {
             Message::DragFinished => {
                 self.status.clear();
                 if !self.dragged_paths.is_empty() {
-                    for path in self.dragged_paths.drain(..) {
-                        self.shelf.remove(&path);
+                    for path in std::mem::take(&mut self.dragged_paths) {
+                        if let Some(received) = self
+                            .share
+                            .as_mut()
+                            .and_then(|share| share.received.get_mut(&path))
+                        {
+                            received.dragged = true;
+                        }
+                        if self.shelf.items.iter().any(|item| {
+                            item.path == path && Self::can_remove(item, self.share.as_ref())
+                        }) {
+                            self.shelf.remove(&path);
+                        }
                     }
+                    self.cleanup_received(false);
                     self.release_imports();
                     if self.shelf.items.is_empty() && self.pending_imports.is_empty() {
                         return self.close_shelf();
                     }
+                    return self.sync_share();
                 }
             }
             Message::DragCancelled => {
                 self.dragged_paths.clear();
                 self.status.clear();
+            }
+            Message::RefreshShareNetwork(id) => {
+                if self.share.as_ref().is_some_and(|share| share.id == id) {
+                    return cosmic::task::future(async move {
+                        let addresses = tokio::task::spawn_blocking(crate::device_share::addresses)
+                            .await
+                            .map_err(|e| e.to_string())
+                            .and_then(|result| result);
+                        Message::ShareNetwork(id, addresses)
+                    });
+                }
+            }
+            Message::ShareNetwork(id, addresses) => {
+                if let Some(share) = &mut self.share
+                    && share.id == id
+                {
+                    let selected = share.addresses.get(share.address).map(|address| address.ip);
+                    share.addresses = addresses.unwrap_or_default();
+                    share.address = share
+                        .addresses
+                        .iter()
+                        .position(|address| Some(address.ip) == selected)
+                        .unwrap_or(0);
+                    let next = share.addresses.get(share.address).map(|address| address.ip);
+                    if selected != next && share.session.is_some() {
+                        let _ = self.update(Message::StopQr);
+                        return self.start_qr();
+                    }
+                    if share.session.is_none() && !share.qr_busy {
+                        return self.start_qr();
+                    }
+                }
+            }
+            Message::ShareTick(now) => {
+                if let Some(share) = &mut self.share {
+                    let had_devices = !share.connected_devices.is_empty();
+                    share
+                        .connected_devices
+                        .retain(|remote| !remote.expired(now));
+                    if had_devices && share.connected_devices.is_empty() {
+                        share.set_connected(false, now);
+                    }
+                }
+                if self.cleanup_received(false) {
+                    return self.sync_share();
+                }
             }
             Message::Noop => (),
             Message::WindowAction(action) => {
@@ -1498,6 +2313,7 @@ impl cosmic::Application for Orbit {
                 return cosmic::task::message(cosmic::Action::Surface(surface));
             }
             Message::Quit => {
+                self.cleanup_received(true);
                 let corner = crate::config::Corner::ALL
                     .into_iter()
                     .find(|corner| corner.anchor() == self.pin_anchor)
@@ -1520,6 +2336,111 @@ impl cosmic::Application for Orbit {
 }
 
 impl Orbit {
+    fn can_remove(item: &crate::shelf::Item, share: Option<&crate::share::Share>) -> bool {
+        item.origin.as_ref().is_none_or(|origin| {
+            share.is_none_or(|share| {
+                !share
+                    .connected_devices
+                    .iter()
+                    .any(|remote| remote.is_sender(&origin.id))
+            })
+        })
+    }
+
+    fn cleanup_received(&mut self, all: bool) -> bool {
+        let Some(share) = &mut self.share else {
+            return false;
+        };
+        let mut removed = Vec::new();
+        share.received.retain(|path, received| {
+            if !received.dragged
+                || !all
+                    && share
+                        .connected_devices
+                        .iter()
+                        .any(|remote| remote.is_sender(&received.sender))
+            {
+                return true;
+            }
+            if let Err(error) = received.remove_copy(path) {
+                eprintln!("Could not remove received copy {}: {error}", path.display());
+                return true;
+            }
+            removed.push((path.clone(), received.order));
+            false
+        });
+        for (path, order) in &removed {
+            self.shelf.forget(path, *order);
+        }
+        if !removed.is_empty() {
+            self.release_imports();
+        }
+        !removed.is_empty()
+    }
+
+    fn retry_qr(&self) -> Task<cosmic::Action<Message>> {
+        let Some(share) = &self.share else {
+            return Task::none();
+        };
+        let (id, generation) = (share.id, share.generation);
+        cosmic::task::future(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            Message::RetryQr(id, generation)
+        })
+    }
+
+    fn open_share(&mut self, activation: crate::tray::Session) -> Task<cosmic::Action<Message>> {
+        let (mut share, open) = crate::share::Share::open();
+        let id = share.id;
+        share.activation = Some(activation);
+        self.share = Some(share);
+        let sync = self.sync_share();
+        Task::batch([open, self.set_window_title(fl!("share"), id), sync])
+    }
+
+    fn sync_share(&mut self) -> Task<cosmic::Action<Message>> {
+        let Some(share) = &mut self.share else {
+            return Task::none();
+        };
+        if share.updating {
+            return Task::none();
+        }
+        let items = self.shelf.items.clone();
+        let sources = items
+            .iter()
+            .map(|item| (item.path.clone(), item.order, item.origin.clone()))
+            .collect::<Vec<_>>();
+        if share.sources.as_ref() == Some(&sources) {
+            return Task::none();
+        }
+        let transfer = Arc::new(
+            self.shelf
+                .transfer(items.iter().map(|item| item.path.clone()).collect(), false),
+        );
+        let previous = share.bundle.clone();
+        let cancelled = share.cancelled.clone();
+        let id = share.id;
+        share.sources = Some(sources);
+        share.updating = true;
+        let (output, input) = iced::futures::channel::mpsc::unbounded();
+        if let Err(error) = std::thread::Builder::new()
+            .name("orbit-share".into())
+            .spawn(move || {
+                let _ = output.unbounded_send(Message::ShareReady(
+                    id,
+                    crate::share::Bundle::prepare(items, transfer, previous.as_deref(), || {
+                        cancelled.load(std::sync::atomic::Ordering::Relaxed)
+                    }),
+                ));
+            })
+        {
+            eprintln!("Could not prepare sharing: {error}");
+            share.updating = false;
+            share.status = fl!("share-error");
+        }
+        cosmic::task::stream(input)
+    }
+
     fn start_qr(&mut self) -> Task<cosmic::Action<Message>> {
         let Some(share) = &mut self.share else {
             return Task::none();
@@ -1530,35 +2451,59 @@ impl Orbit {
         let Some(bundle) = share.bundle.clone() else {
             return Task::none();
         };
+        let Some(pwa_url) = crate::config::pwa_url(&self.preferences.share_pwa_url) else {
+            share.status = fl!("share-pwa-error");
+            return Task::none();
+        };
+        let directory = match self.preferences.download_directory() {
+            Ok(directory) => directory,
+            Err(_) => {
+                share.status = fl!("share-folder-error");
+                return Task::none();
+            }
+        };
         share.generation += 1;
         let generation = share.generation;
+        let session_id = share.session_id;
+        let received_sources = share.received_sources.clone();
         let id = share.id;
-        let index = share.address;
-        let addresses = share.addresses.clone();
+        let selected = share.addresses.get(share.address).map(|address| address.ip);
         share.qr_busy = true;
         share.status.clear();
+        let remote_open = self.remote_open.take();
         let (output, input) = iced::futures::channel::mpsc::unbounded();
-        let start = cosmic::task::future(async move {
+        let (start, handle) = cosmic::task::future(async move {
             let result = async move {
-                let addresses = if addresses.is_empty() {
-                    tokio::task::spawn_blocking(crate::phone::addresses)
-                        .await
-                        .map_err(|e| e.to_string())??
-                } else {
-                    addresses
-                };
-                let index = index.min(addresses.len() - 1);
-                let session = crate::phone::start(&addresses[index], bundle, output).await?;
+                let addresses = tokio::task::spawn_blocking(crate::device_share::addresses)
+                    .await
+                    .map_err(|e| e.to_string())??;
+                let index = addresses
+                    .iter()
+                    .position(|address| Some(address.ip) == selected)
+                    .unwrap_or(0);
+                let session = crate::device_share::start(
+                    &addresses[index],
+                    session_id,
+                    remote_open,
+                    bundle,
+                    pwa_url,
+                    directory,
+                    received_sources,
+                    output,
+                )
+                .await?;
                 Ok((session, addresses, index))
             }
             .await;
             Message::QrReady(id, generation, result)
-        });
+        })
+        .abortable();
+        share.qr_task = Some(handle.abort_on_drop());
         use iced::futures::StreamExt;
         Task::batch([
             start,
             cosmic::task::stream(
-                input.map(move |event| Message::PhoneEvent(id, generation, event)),
+                input.map(move |event| Message::DeviceEvent(id, generation, event)),
             ),
         ])
     }
@@ -1621,8 +2566,23 @@ impl Orbit {
     }
 
     fn close_shelf(&mut self) -> Task<cosmic::Action<Message>> {
+        let owly_window = self.owly_dialog.as_ref().map(|dialog| dialog.id);
+        let owly = self.owly_dialog.take().and_then(|mut dialog| {
+            dialog.task = None;
+            dialog.session.take()
+        });
+        self.cleanup_received(true);
         if self.watch.is_none() {
-            return iced::exit();
+            let session = self.share.take().and_then(|mut share| share.session.take());
+            return Task::future(async move {
+                if let Some(owly) = owly {
+                    owly.close().await;
+                }
+                if let Some(session) = session {
+                    session.disconnect().await;
+                }
+            })
+            .then(|()| iced::exit());
         }
         let preview = self.update(Message::ClosePreview);
         let share = self.update(Message::CloseShare);
@@ -1648,94 +2608,130 @@ impl Orbit {
         self.focused_item = None;
         self.copy_mode = false;
         self.status.clear();
-        Task::batch([preview, share, ghost, floating, pinned])
+        Task::batch([
+            preview,
+            share,
+            owly_window.map(window::close).unwrap_or_else(Task::none),
+            ghost,
+            floating,
+            pinned,
+            cosmic::task::future(async move {
+                if let Some(owly) = owly {
+                    owly.close().await;
+                }
+                Message::Noop
+            }),
+        ])
     }
 
     fn header_tools(&self, window: window::Id) -> Element<'_, Message> {
         let mut buttons = vec![self.new_orbit_button()];
-        if !self.shelf.items.is_empty() || !self.pending_imports.is_empty() {
-            let items = [
-                (
-                    fl!("copy"),
-                    "edit-copy-symbolic",
-                    Some(Message::ToggleCopyMode),
-                    self.copy_mode,
-                ),
-                (
-                    fl!("compress"),
-                    "mail-archive-symbolic",
-                    self.shelf
-                        .items
-                        .iter()
-                        .any(|item| item.selected && !item.is_missing())
-                        .then_some(Message::Compress),
-                    false,
-                ),
-                (
-                    fl!("share"),
-                    "send-to-symbolic",
-                    Some(Message::Share),
-                    false,
-                ),
-            ]
-            .into_iter()
-            .map(|(label, icon, message, checked)| {
-                let check: Element<'static, Message> = if checked {
-                    widget::icon::from_name("object-select-symbolic")
-                        .size(16)
-                        .icon()
-                        .class(cosmic::theme::Svg::Custom(std::rc::Rc::new(|theme| {
-                            widget::svg::Style {
-                                color: Some(theme.cosmic().accent_text_color().into()),
-                            }
-                        })))
-                        .into()
-                } else {
-                    widget::space::horizontal().width(16).into()
-                };
-                let button: Element<'static, Message> = widget::menu::menu_button(vec![
-                    widget::icon::from_name(icon).size(14).icon().into(),
+        let item = |label: String, icon: Option<&'static str>, message, checked: bool| {
+            let check: Element<'static, Message> = if checked {
+                widget::icon::from_name("object-select-symbolic")
+                    .size(16)
+                    .icon()
+                    .class(cosmic::theme::Svg::Custom(std::rc::Rc::new(|theme| {
+                        widget::svg::Style {
+                            color: Some(theme.cosmic().accent_text_color().into()),
+                        }
+                    })))
+                    .into()
+            } else {
+                widget::space::horizontal().width(16).into()
+            };
+            let mut contents = Vec::with_capacity(5);
+            if let Some(icon) = icon {
+                contents.push(widget::icon::from_name(icon).size(14).icon().into());
+                contents.push(
                     widget::space::horizontal()
                         .width(cosmic::theme::spacing().space_xxs)
                         .into(),
-                    widget::text(label).into(),
-                    widget::space::horizontal().into(),
-                    check,
-                ])
+                );
+            }
+            contents.extend([
+                widget::text(label).into(),
+                widget::space::horizontal().into(),
+                check,
+            ]);
+            let button: Element<'static, Message> = widget::menu::menu_button(contents)
                 .on_press_maybe(message)
                 .into();
-                widget::menu::Tree::from(button)
-            })
-            .collect::<Vec<_>>();
-            let root: Element<'static, Message> = widget::button::custom(
-                widget::icon::from_name("view-more-horizontal-symbolic")
-                    .size(16)
-                    .icon(),
-            )
-            .padding(cosmic::theme::spacing().space_xxs)
-            .class(cosmic::theme::Button::Icon)
-            .force_enabled(true)
-            .name(fl!("tools"))
-            .into();
-            let menu = widget::menu::bar(vec![widget::menu::Tree::with_children(
-                widget::RcElementWrapper::new(root),
-                items,
-            )])
-            .item_width(widget::menu::ItemWidth::Uniform(160))
-            .item_height(widget::menu::ItemHeight::Uniform(36))
-            .window_id(window)
-            .on_surface_action(Message::Surface);
-            buttons.push(menu.into());
+            widget::menu::Tree::from(button)
+        };
+        let mut items = vec![
+            item(
+                fl!("copy"),
+                Some("edit-copy-symbolic"),
+                Some(Message::ToggleCopyMode),
+                self.copy_mode,
+            ),
+            item(
+                fl!("compress"),
+                Some("mail-archive-symbolic"),
+                self.shelf
+                    .items
+                    .iter()
+                    .any(|item| item.selected && !item.is_missing())
+                    .then_some(Message::Compress),
+                false,
+            ),
+        ];
+        let mut sharing = vec![item(fl!("share"), None, Some(Message::Share), false)];
+        if self.owly_capabilities.is_some() {
+            sharing.push(item(fl!("owly"), None, Some(Message::Owly), false));
         }
+        let share: Element<'static, Message> = widget::menu::menu_button(vec![
+            widget::icon::from_name("send-to-symbolic")
+                .size(14)
+                .icon()
+                .into(),
+            widget::space::horizontal()
+                .width(cosmic::theme::spacing().space_xxs)
+                .into(),
+            widget::text(fl!("share-menu")).into(),
+            widget::space::horizontal().into(),
+            widget::icon::from_name("pan-end-symbolic")
+                .size(16)
+                .icon()
+                .into(),
+        ])
+        .class(cosmic::theme::Button::MenuFolder)
+        .into();
+        items.push(
+            widget::menu::Tree::with_children(widget::RcElementWrapper::new(share), sharing).width(
+                if self.owly_capabilities.is_some() {
+                    192
+                } else {
+                    160
+                },
+            ),
+        );
+        let root: Element<'static, Message> = widget::button::custom(
+            widget::icon::from_name("view-more-horizontal-symbolic")
+                .size(16)
+                .icon(),
+        )
+        .padding(cosmic::theme::spacing().space_xxs)
+        .class(cosmic::theme::Button::Icon)
+        .force_enabled(true)
+        .name(fl!("tools"))
+        .into();
+        let menu = widget::menu::bar(vec![widget::menu::Tree::with_children(
+            widget::RcElementWrapper::new(root),
+            items,
+        )])
+        .item_width(widget::menu::ItemWidth::Static(160))
+        .item_height(widget::menu::ItemHeight::Uniform(36))
+        .window_id(window)
+        .on_surface_action(Message::Surface);
+        buttons.push(menu.into());
         widget::row::with_children(buttons)
             .align_y(Alignment::Center)
             .into()
     }
 
-    fn with_compression_dialog<'a>(
-        &'a self,
-        content: Element<'a, Message>,
-    ) -> Element<'a, Message> {
+    fn with_tools_dialog<'a>(&'a self, content: Element<'a, Message>) -> Element<'a, Message> {
         let mut popover = widget::popover(content)
             .modal(true)
             .on_close(Message::CancelCompress);
@@ -1980,6 +2976,10 @@ impl Orbit {
 
     fn shelf_view(&self, window: window::Id) -> Element<'_, Message> {
         let spacing = cosmic::theme::spacing();
+        let sharing = self
+            .share
+            .as_ref()
+            .is_some_and(|share| share.session.is_some());
         let count = self.shelf.items.len() + self.pending_imports.len();
         let body: Element<_> = if count == 0 {
             widget::container(
@@ -2062,7 +3062,7 @@ impl Orbit {
         let mut content = widget::column::with_children(vec![destination])
             .spacing(spacing.space_xs)
             .height(Length::Fill);
-        if count > 0 {
+        if count > 0 || sharing {
             let selected = self.shelf.selected_count();
             let muted = cosmic::theme::Text::Custom(|theme| iced::widget::text::Style {
                 color: Some(
@@ -2084,6 +3084,15 @@ impl Orbit {
                         .into(),
                 );
             }
+            if sharing {
+                count_items.push(
+                    widget::icon::from_name("send-to-symbolic")
+                        .size(14)
+                        .icon()
+                        .opacity(0.5)
+                        .into(),
+                );
+            }
             let selection = widget::row::with_children(vec![
                 widget::row::with_children(count_items)
                     .spacing(spacing.space_xs)
@@ -2099,7 +3108,13 @@ impl Orbit {
                 .into(),
                 widget::button::text(fl!("clear-shelf"))
                     .class(cosmic::theme::Button::Icon)
-                    .on_press(Message::Clear)
+                    .on_press_maybe(
+                        (self.shelf.items.iter().any(|item| {
+                            (selected == 0 || item.selected)
+                                && Self::can_remove(item, self.share.as_ref())
+                        }) || selected == 0 && !self.pending_imports.is_empty())
+                        .then_some(Message::Clear),
+                    )
                     .into(),
             ])
             .align_y(Alignment::Center);
@@ -2219,6 +3234,10 @@ impl Orbit {
         use iced::advanced::text::{Ellipsize, EllipsizeHeightLimit};
 
         let spacing = cosmic::theme::spacing();
+        let sharing = self
+            .share
+            .as_ref()
+            .is_some_and(|share| share.session.is_some());
         let ellipsize = Ellipsize::Middle(EllipsizeHeightLimit::Lines(1));
         let missing = item.is_missing();
         let text_style = if missing {
@@ -2259,12 +3278,59 @@ impl Orbit {
                 .wrapping(iced::widget::text::Wrapping::None)
                 .ellipsize(ellipsize)
                 .into(),
-            widget::text::caption(parent)
-                .class(text_style)
-                .width(Length::Fill)
-                .wrapping(iced::widget::text::Wrapping::None)
-                .ellipsize(ellipsize)
-                .into(),
+            widget::row::with_children(vec![
+                widget::text::caption(parent)
+                    .class(text_style)
+                    .width(Length::Fill)
+                    .wrapping(iced::widget::text::Wrapping::None)
+                    .ellipsize(ellipsize)
+                    .into(),
+            ])
+            .push_maybe(sharing.then(|| {
+                let sender = if let Some(origin) = &item.origin {
+                    self.share
+                        .as_ref()
+                        .and_then(|share| {
+                            crate::device_share::sender_name(
+                                &origin.id,
+                                &share.pairings,
+                                &share.connected_devices,
+                            )
+                        })
+                        .unwrap_or(&origin.name)
+                        .to_owned()
+                } else {
+                    COMPUTER_NAME.clone()
+                };
+                widget::container(
+                    widget::text::caption(sender)
+                        .size(11)
+                        .wrapping(iced::widget::text::Wrapping::None)
+                        .ellipsize(Ellipsize::End(EllipsizeHeightLimit::Lines(1))),
+                )
+                .max_width(80)
+                .padding([2, 4])
+                .class(cosmic::theme::Container::custom(|theme| {
+                    let cosmic = theme.cosmic();
+                    widget::container::Style {
+                        background: Some(
+                            iced::Color::from(cosmic.accent_color())
+                                .scale_alpha(0.18)
+                                .into(),
+                        ),
+                        text_color: Some(cosmic.accent_text_color().into()),
+                        border: iced::Border {
+                            radius: cosmic.corner_radii.radius_s.into(),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }
+                }))
+            }))
+            .width(Length::Fill)
+            .spacing(spacing.space_xxs)
+            .align_y(Alignment::Center)
+            .into(),
         ])
         .width(Length::Fill);
         let preview: Element<'_, Message> = if missing {
@@ -2344,7 +3410,9 @@ impl Orbit {
                 .name(fl!("remove-item", name = item.name.as_str()))
                 .width(32)
                 .height(32)
-                .on_press(Message::Remove(path))
+                .on_press_maybe(
+                    Self::can_remove(item, self.share.as_ref()).then_some(Message::Remove(path)),
+                )
                 .into(),
         ])
         .width(Length::Fill)
@@ -2374,7 +3442,14 @@ impl Orbit {
         } else {
             fl!("drag-files", count = data.files.0.len())
         };
-        let action = data.drag_actions(self.copy_mode);
+        let protected = self.shelf.items.iter().any(|item| {
+            data.files.0.contains(&item.path) && !Self::can_remove(item, self.share.as_ref())
+        });
+        let action = if protected {
+            DndAction::Copy
+        } else {
+            data.drag_actions(self.copy_mode)
+        };
         let content = widget::mouse_area(content)
             .on_press(Message::FocusItem(path.to_owned()))
             .on_double_click(Message::Preview(Some(path.to_owned())));
@@ -2401,4 +3476,379 @@ impl Orbit {
 fn files_from_uris(uris: Vec<String>) -> Result<FileList, String> {
     FileList::try_from((uris.join("\r\n").into_bytes(), URI_LIST.into()))
         .map_err(|_| fl!("unsupported-files"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn shared_app() -> Orbit {
+        let (mut app, _) = Orbit::init(
+            cosmic::Core::default(),
+            Flags {
+                share_activation: None,
+                remote_open: None,
+                uris: Vec::new(),
+                watch: None,
+                restored: None,
+                incoming_drop: None,
+                action: String::new(),
+                startup: None,
+                preferences: crate::config::Preferences::default(),
+                startup_area: None,
+            },
+        );
+        let (mut share, _) = crate::share::Share::open();
+        let bundle = crate::share::Bundle::prepare(
+            Vec::new(),
+            Arc::new(app.shelf.transfer(Vec::new(), false)),
+            None,
+            || false,
+        )
+        .unwrap();
+        let (output, _input) = iced::futures::channel::mpsc::unbounded();
+        share.session = Some(Arc::new(
+            crate::device_share::start_http(
+                bundle.clone(),
+                output,
+                tempfile::tempdir().unwrap().path().join("received"),
+                Default::default(),
+            )
+            .await
+            .unwrap(),
+        ));
+        share.qr = Some(widget::qr_code::Data::new("stale invitation").unwrap());
+        share.bundle = Some(bundle);
+        app.share = Some(share);
+        app
+    }
+
+    #[tokio::test]
+    async fn connected_shares_restrict_removal_to_the_sender() {
+        let fixture = tempfile::tempdir().unwrap();
+        let local = fixture.path().join("desktop.txt");
+        let remote = fixture.path().join("remote.txt");
+        for path in [&local, &remote] {
+            std::fs::write(path, "keep").unwrap();
+        }
+        let mut app = shared_app().await;
+        app.shelf.add([local.clone(), remote.clone()]);
+        app.shelf.items[1].origin = Some(crate::shelf::Sender {
+            id: "aabbccdd-1234-4567-8901-123456789abc".into(),
+            name: "Phone".into(),
+        });
+        app.share.as_mut().unwrap().connected_devices = serde_json::from_value(serde_json::json!([
+            {"ip": "192.168.1.2", "pair_id": "aabbccdd-1234-4567-8901-123456789abc"}
+        ]))
+        .unwrap();
+
+        let _ = app.update(Message::Remove(remote.clone()));
+        app.dragged_paths = vec![remote.clone()];
+        let _ = app.update(Message::DragFinished);
+        assert_eq!(app.shelf.items.len(), 2);
+        let _ = app.update(Message::Clear);
+        assert_eq!(app.shelf.items.len(), 1);
+        assert_eq!(app.shelf.items[0].path, remote);
+        let _ = app.update(Message::Undo);
+        assert_eq!(app.shelf.items.len(), 2);
+        app.shelf
+            .items
+            .iter_mut()
+            .find(|item| item.path == local)
+            .unwrap()
+            .selected = false;
+        let _ = app.update(Message::Clear);
+        assert_eq!(app.shelf.items.len(), 2);
+
+        let received = app
+            .shelf
+            .items
+            .iter()
+            .find(|item| item.path == remote)
+            .unwrap()
+            .clone();
+        let share = app.share.as_ref().unwrap();
+        let _ = app.update(Message::DeviceEvent(
+            share.id,
+            share.generation,
+            crate::device_share::Event::Remove(remote.clone(), received.order),
+        ));
+        assert_eq!(app.shelf.items.len(), 1);
+        assert_eq!(app.shelf.items[0].path, local);
+        app.shelf.items.push(received);
+        app.share.as_mut().unwrap().connected_devices.clear();
+        let _ = app.update(Message::Clear);
+        assert_eq!(app.shelf.items.len(), 1);
+        assert_eq!(app.shelf.items[0].path, local);
+        assert_eq!(std::fs::read_to_string(remote).unwrap(), "keep");
+        assert_eq!(std::fs::read_to_string(local).unwrap(), "keep");
+    }
+
+    #[tokio::test]
+    async fn only_successfully_dragged_received_copies_are_cleaned_when_the_sender_leaves() {
+        let fixture = tempfile::tempdir().unwrap();
+        let download = fixture.path().join("Orbit-Share");
+        std::fs::create_dir(&download).unwrap();
+        let local = fixture.path().join("local.txt");
+        std::fs::write(&local, "local").unwrap();
+        let dragged = download.join("dragged.txt");
+        let untouched = download.join("untouched.txt");
+        let cancelled = download.join("cancelled.txt");
+        let other = download.join("other.txt");
+        let mut app = shared_app().await;
+        app.shelf.add([local.clone()]);
+        let share = app.share.as_mut().unwrap();
+        share.connected_devices = serde_json::from_value(serde_json::json!([
+            {"ip": "192.168.1.2", "pair_id": "first"},
+            {"ip": "192.168.1.3", "pair_id": "second"}
+        ]))
+        .unwrap();
+        let (id, generation) = (share.id, share.generation);
+        for (path, sender) in [
+            (&dragged, "first"),
+            (&untouched, "first"),
+            (&cancelled, "first"),
+            (&other, "second"),
+        ] {
+            std::fs::write(path, "received").unwrap();
+            let _ = app.update(Message::DeviceEvent(
+                id,
+                generation,
+                crate::device_share::Event::Received(
+                    ImportedFiles {
+                        files: FileList(vec![path.clone()]),
+                        directory: None,
+                        text: None,
+                    },
+                    Some(sender.into()),
+                ),
+            ));
+        }
+        let destination = fixture.path().join("saved.txt");
+        std::fs::copy(&dragged, &destination).unwrap();
+        app.dragged_paths = vec![cancelled.clone()];
+        let _ = app.update(Message::DragCancelled);
+        app.dragged_paths = vec![dragged.clone()];
+        let _ = app.update(Message::DragFinished);
+        assert!(dragged.is_file());
+        assert!(app.shelf.items.iter().any(|item| item.path == dragged));
+        assert!(app.share.as_ref().unwrap().received[&dragged].dragged);
+        assert!(!app.share.as_ref().unwrap().received[&cancelled].dragged);
+        let remaining = vec![app.share.as_ref().unwrap().connected_devices[1].clone()];
+        let _ = app.update(Message::DeviceEvent(
+            id,
+            generation,
+            crate::device_share::Event::Devices(remaining.clone(), false),
+        ));
+        assert!(dragged.is_file());
+        let _ = app.update(Message::DeviceEvent(
+            id,
+            generation,
+            crate::device_share::Event::Devices(remaining, true),
+        ));
+        assert!(!dragged.exists());
+        assert!(!app.shelf.items.iter().any(|item| item.path == dragged));
+        for path in [&untouched, &cancelled, &other, &local, &destination] {
+            assert!(path.is_file());
+        }
+        app.dragged_paths = vec![other.clone()];
+        let _ = app.update(Message::DragFinished);
+        let order = app.share.as_ref().unwrap().received[&other].order;
+        let _ = app.update(Message::DeviceEvent(
+            id,
+            generation,
+            crate::device_share::Event::Remove(other.clone(), order),
+        ));
+        assert!(other.is_file());
+        let _ = app.update(Message::CloseShare);
+        assert!(!other.exists());
+        let _ = app.update(Message::Undo);
+        assert!(!app.shelf.items.iter().any(|item| item.path == other));
+        assert!(
+            untouched.is_file() && cancelled.is_file() && local.is_file() && destination.is_file()
+        );
+        assert!(app.shelf.items.iter().any(|item| item.path == untouched));
+    }
+
+    #[tokio::test]
+    async fn share_navigation_keeps_connections_and_only_animates_visible_qr() {
+        let mut app = shared_app().await;
+        let device: crate::device_share::ConnectedDevice =
+            serde_json::from_value(serde_json::json!({
+                "ip": "192.168.1.2", "name": "iPhone", "pair_id": "paired-device"
+            }))
+            .unwrap();
+        let share = app.share.as_mut().unwrap();
+        share.pairings.push(crate::device_share::PairedDevice {
+            id: device.pair_id.clone(),
+            name: device.name.clone(),
+            desktop: false,
+            allow_open: false,
+        });
+        let mut anonymous = device.clone();
+        anonymous.pair_id.clear();
+        let (id, generation) = (share.id, share.generation);
+        assert_eq!(share.page, crate::share::Page::Devices);
+        let _ = app.update(Message::DeviceEvent(
+            id,
+            generation,
+            crate::device_share::Event::Devices(vec![anonymous], false),
+        ));
+        let share = app.share.as_ref().unwrap();
+        assert_eq!(share.page, crate::share::Page::Connected);
+        assert!(share.connected.value());
+        assert_eq!(
+            share
+                .qr_visibility
+                .interpolate(0.0, 1.0, std::time::Instant::now()),
+            0.0
+        );
+        assert_eq!(share.connected_devices[0].ip, device.ip);
+        assert_eq!(share.connected_devices[0].name, device.name);
+        let _ = app.update(Message::SharePage(crate::share::Page::Devices));
+        let share = app.share.as_ref().unwrap();
+        assert_eq!(share.page, crate::share::Page::Devices);
+        assert!(share.connected.value());
+        assert!(share.session.is_some());
+        assert_eq!(share.connected_devices.len(), 1);
+        let _ = app.update(Message::DeviceEvent(
+            id,
+            generation,
+            crate::device_share::Event::Devices(vec![device.clone()], false),
+        ));
+        assert_eq!(
+            app.share.as_ref().unwrap().page,
+            crate::share::Page::Devices
+        );
+        assert_eq!(app.share.as_ref().unwrap().connected_devices.len(), 1);
+        assert_eq!(
+            app.share.as_ref().unwrap().connected_devices[0].pair_id,
+            device.pair_id
+        );
+        let _ = app.update(Message::SharePage(crate::share::Page::Connected));
+        let share = app.share.as_ref().unwrap();
+        assert_eq!(share.page, crate::share::Page::Connected);
+        assert!(share.connected.value() && share.session.is_some());
+        assert!(!share.qr_visibility.value());
+        assert_eq!(share.connected_devices[0].ip, device.ip);
+        let _ = app.update(Message::SharePage(crate::share::Page::Pair));
+        let share = app.share.as_ref().unwrap();
+        assert_eq!(share.page, crate::share::Page::Pair);
+        assert!(share.connected.value());
+        assert_eq!(
+            share
+                .qr_visibility
+                .interpolate(0.0, 1.0, std::time::Instant::now()),
+            1.0
+        );
+        let mut another = device.clone();
+        another.pair_id = "another-device".into();
+        another.ip = "192.168.1.3".parse().unwrap();
+        let _ = app.update(Message::DeviceEvent(
+            id,
+            generation,
+            crate::device_share::Event::Devices(vec![device, another], false),
+        ));
+        let share = app.share.as_ref().unwrap();
+        assert_eq!(share.page, crate::share::Page::Connected);
+        assert!(!share.qr_visibility.value());
+        assert!(share.qr_visibility.is_animating(std::time::Instant::now()));
+        let _ = app.update(Message::DeviceEvent(
+            id,
+            generation,
+            crate::device_share::Event::Devices(Vec::new(), true),
+        ));
+        let share = app.share.as_ref().unwrap();
+        assert_eq!(share.page, crate::share::Page::Devices);
+        assert!(!share.qr_visibility.value());
+        assert!(!share.connected.value());
+    }
+
+    #[tokio::test]
+    async fn intentional_disconnect_removes_the_device_without_reconnection_grace() {
+        let mut app = shared_app().await;
+        let devices = serde_json::from_value(serde_json::json!([
+            {"ip": "192.168.1.2", "name": "iPhone"},
+            {"ip": "192.168.1.3", "name": "Computer"}
+        ]))
+        .unwrap();
+        let share = app.share.as_mut().unwrap();
+        share.connected_devices = devices;
+        let (id, generation) = (share.id, share.generation);
+        let remaining = vec![app.share.as_ref().unwrap().connected_devices[1].clone()];
+        let _ = app.update(Message::DeviceEvent(
+            id,
+            generation,
+            crate::device_share::Event::Devices(remaining, true),
+        ));
+        let share = app.share.as_ref().unwrap();
+        assert_eq!(share.connected_devices.len(), 1);
+        assert_eq!(share.connected_devices[0].name, "Computer");
+        assert!(!share.connected_devices[0].reconnecting);
+        let _ = app.update(Message::DeviceEvent(
+            id,
+            generation,
+            crate::device_share::Event::Devices(Vec::new(), false),
+        ));
+        assert!(app.share.as_ref().unwrap().connected_devices[0].reconnecting);
+        let _ = app.update(Message::DeviceEvent(
+            id,
+            generation,
+            crate::device_share::Event::Devices(Vec::new(), true),
+        ));
+        assert!(app.share.as_ref().unwrap().connected_devices.is_empty());
+        assert!(app.share.as_ref().unwrap().session.is_some());
+    }
+
+    #[tokio::test]
+    async fn changed_pwa_replaces_live_invitation_but_equivalent_urls_do_not() {
+        let mut app = shared_app().await;
+        let generation = app.share.as_ref().unwrap().generation;
+        let mut preferences = app.preferences.clone();
+        preferences.share_pwa_url = crate::config::SHARE_PWA_URL.into();
+        let _ = app.update(Message::Config(preferences.clone()));
+        assert!(app.share.as_ref().unwrap().session.is_some());
+        preferences.share_pwa_url = "https://self-hosted.example/".into();
+        let _ = app.update(Message::Config(preferences));
+        let share = app.share.as_ref().unwrap();
+        assert!(share.session.is_none() && share.qr.is_none() && share.qr_busy);
+        assert_ne!(share.generation, generation);
+    }
+
+    #[tokio::test]
+    async fn network_loss_clears_the_old_invitation() {
+        let mut app = shared_app().await;
+        let id = app.share.as_ref().unwrap().id;
+        // A live session always has a selected address.
+        app.share.as_mut().unwrap().addresses = vec![crate::device_share::Address {
+            ip: "192.168.1.2".parse().unwrap(),
+            label: "Wi-Fi".into(),
+        }];
+        let _ = app.update(Message::ShareNetwork(id, Err("No local network".into())));
+        let share = app.share.as_ref().unwrap();
+        assert!(share.session.is_none() && share.qr.is_none() && share.addresses.is_empty());
+    }
+
+    #[tokio::test]
+    async fn stopped_shares_clear_dead_sessions_and_ignore_obsolete_retries() {
+        let mut app = shared_app().await;
+        let share = app.share.as_ref().unwrap();
+        let (id, generation) = (share.id, share.generation);
+        let _ = app.update(Message::DeviceEvent(
+            id,
+            generation,
+            crate::device_share::Event::Stopped,
+        ));
+        let share = app.share.as_ref().unwrap();
+        assert!(share.session.is_none() && share.qr.is_none());
+        let next = share.generation;
+        assert_ne!(next, generation);
+        let _ = app.update(Message::RetryQr(id, generation));
+        assert!(!app.share.as_ref().unwrap().qr_busy);
+        let _ = app.update(Message::RetryQr(id, next));
+        assert!(app.share.as_ref().unwrap().qr_busy);
+        let _ = app.update(Message::CloseShare);
+        let _ = app.update(Message::RetryQr(id, next));
+        assert!(app.share.is_none());
+    }
 }

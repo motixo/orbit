@@ -12,10 +12,13 @@ use std::{
 };
 use tokio::{io::AsyncWriteExt, process::Command};
 
+const VERSION: &str = "0.4.2";
 const SOURCE: &str = "0f2ca4087e6d938d823e76c856fcd04d0a0162b6";
 
 #[derive(Clone, Copy, Debug)]
 pub enum Step {
+    CrocInstalling,
+    CrocVerifying,
     Downloading(f32),
     Toolchain,
     Dependencies,
@@ -27,6 +30,8 @@ pub enum Step {
 impl Step {
     pub fn label(self) -> String {
         match self {
+            Self::CrocInstalling => fl!("sharing-setup-croc-installing"),
+            Self::CrocVerifying => fl!("sharing-setup-croc-verifying"),
             Self::Downloading(_) => fl!("sharing-setup-download"),
             Self::Toolchain => fl!("sharing-setup-toolchain"),
             Self::Dependencies => fl!("sharing-setup-dependencies"),
@@ -35,6 +40,32 @@ impl Step {
             Self::Verifying => fl!("sharing-setup-verifying"),
         }
     }
+}
+
+pub async fn croc(output: &mut Sender<Message>) -> Result<(), String> {
+    tokio::task::spawn_blocking(crate::device_share::install)
+        .await
+        .map_err(|_| fl!("sharing-setup-croc-error"))?
+        .map_err(|error| {
+            eprintln!("Croc installer: {error}");
+            fl!("sharing-setup-croc-error")
+        })?;
+    progress(output, Step::CrocVerifying).await;
+    let executable =
+        crate::device_share::executable().map_err(|_| fl!("sharing-setup-croc-error"))?;
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        Command::new(executable)
+            .args(["--croc", "--version"])
+            .stdin(Stdio::null())
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await;
+    if !result.is_ok_and(|result| result.is_ok_and(|output| output.status.success())) {
+        return Err(fl!("sharing-setup-croc-error"));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -248,7 +279,7 @@ async fn build_arm_package(
                 "dpkg-dev",
             ]))
             .await?;
-            ("deb", "owly_0.4.2-1_arm64.deb")
+            ("deb", format!("owly_{VERSION}-1_arm64.deb"))
         }
         Distribution::Fedora => {
             command(Command::new("pkexec").args([
@@ -262,7 +293,7 @@ async fn build_arm_package(
                 "ca-certificates",
             ]))
             .await?;
-            ("rpm", "owly-0.4.2-1.aarch64.rpm")
+            ("rpm", format!("owly-{VERSION}-1.aarch64.rpm"))
         }
         Distribution::Arch => return Err(fl!("sharing-setup-platform-error")),
     };
@@ -302,12 +333,16 @@ pub async fn run(output: &mut Sender<Message>) -> Result<(), String> {
             "owly.tar.gz",
         ),
         (Distribution::Debian, _) => (
-            "https://github.com/t4t5/owly/releases/download/v0.4.2/owly_0.4.2-1_amd64.deb".into(),
+            format!(
+                "https://github.com/t4t5/owly/releases/download/v{VERSION}/owly_{VERSION}-1_amd64.deb"
+            ),
             "9e891f9cf23a7697d849115fbe93eec64743651c58ca7eb79957f1d4e00e9a08",
             "owly.deb",
         ),
         (Distribution::Fedora, _) => (
-            "https://github.com/t4t5/owly/releases/download/v0.4.2/owly-0.4.2-1.x86_64.rpm".into(),
+            format!(
+                "https://github.com/t4t5/owly/releases/download/v{VERSION}/owly-{VERSION}-1.x86_64.rpm"
+            ),
             "82b155cf0defda58ac85f683fe9f2888926b92dd38757c01f6083bd4f379e768",
             "owly.rpm",
         ),
@@ -414,7 +449,11 @@ pub async fn run(output: &mut Sender<Message>) -> Result<(), String> {
         }
     }
     progress(output, Step::Verifying).await;
-    if !super::installed().await {
+    if !super::installed_version().await.is_some_and(|version| {
+        version
+            .cmp_precedence(&semver::Version::parse(VERSION).unwrap())
+            .is_ge()
+    }) {
         return Err(fl!("sharing-setup-verify-error"));
     }
     Ok(())

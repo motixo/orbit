@@ -18,7 +18,7 @@ fn completed() -> bool {
 }
 
 pub fn launch(manual: bool) {
-    if !manual && completed() {
+    if !manual && completed() && crate::device_share::installed() {
         return;
     }
     let Ok(executable) = std::env::current_exe() else {
@@ -104,7 +104,11 @@ async fn check() -> Result<Report, String> {
 }
 
 async fn installed() -> bool {
-    tokio::time::timeout(
+    installed_version().await.is_some()
+}
+
+async fn installed_version() -> Option<semver::Version> {
+    let output = tokio::time::timeout(
         Duration::from_secs(5),
         tokio::process::Command::new("owly")
             .arg("--version")
@@ -113,13 +117,27 @@ async fn installed() -> bool {
             .output(),
     )
     .await
-    .is_ok_and(|result| result.is_ok_and(|output| output.status.success()))
+    .ok()?
+    .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    owly_version(&output.stdout)
+}
+
+fn owly_version(output: &[u8]) -> Option<semver::Version> {
+    let mut fields = std::str::from_utf8(output).ok()?.split_whitespace();
+    if fields.next()? != "owly" {
+        return None;
+    }
+    semver::Version::parse(fields.next()?.trim_start_matches('v')).ok()
 }
 
 struct Setup {
     core: cosmic::Core,
     _lease: File,
     report: Option<Report>,
+    croc_ready: bool,
     busy: bool,
     step: Option<install::Step>,
     error: Option<String>,
@@ -128,7 +146,9 @@ struct Setup {
 #[derive(Clone, Debug)]
 pub enum Message {
     Check,
+    CheckHardware,
     Checked(Result<Report, String>),
+    CrocInstalled(Result<(), String>),
     Install,
     Progress(install::Step),
     Installed(Result<(), String>),
@@ -153,26 +173,25 @@ impl cosmic::Application for Setup {
         core.window.show_maximize = false;
         core.set_header_title(fl!("sharing-setup-title"));
         let title = core.set_title(core.main_window_id(), fl!("sharing-setup-title"));
-        let app = Self {
+        let mut app = Self {
             core,
             _lease: lease,
             report: None,
+            croc_ready: false,
             busy: true,
             step: None,
             error: None,
         };
-        (
-            app,
-            Task::batch([
-                title,
-                cosmic::task::future(async { Message::Checked(check().await) }),
-            ]),
-        )
+        let prepare = app.update(Message::Check);
+        (app, Task::batch([title, prepare]))
     }
 
     fn view(&self) -> Element<'_, Message> {
         let spacing = cosmic::theme::active().cosmic().spacing;
         let mut body = widget::column::with_capacity(8).spacing(spacing.space_s);
+        if self.croc_ready {
+            body = body.push(widget::text::body(fl!("sharing-setup-croc-installed")));
+        }
         if let Some(report) = &self.report {
             body = body.push(widget::text::body(if report.supported {
                 fl!("sharing-setup-supported")
@@ -216,26 +235,30 @@ impl cosmic::Application for Setup {
             .report
             .as_ref()
             .is_some_and(|r| r.supported && !r.installed);
-        let mut buttons = widget::row::with_capacity(2).spacing(spacing.space_xs);
+        let mut buttons = widget::row::with_capacity(3).spacing(spacing.space_xs);
         if needs_install {
             buttons = buttons.push(
                 widget::button::suggested(fl!("sharing-setup-install"))
                     .on_press_maybe((!self.busy).then_some(Message::Install)),
             );
-        } else if self.error.is_some() {
+        } else if self.error.is_some() && !self.croc_ready {
             buttons = buttons.push(
                 widget::button::standard(fl!("sharing-setup-retry"))
                     .on_press_maybe((!self.busy).then_some(Message::Check)),
             );
         }
-        buttons = buttons.push(
-            widget::button::standard(if needs_install {
-                fl!("sharing-setup-later")
-            } else {
-                fl!("sharing-setup-done")
-            })
-            .on_press_maybe((!self.busy).then_some(Message::Finish)),
-        );
+        if self.croc_ready {
+            buttons = buttons.push(
+                widget::button::standard(fl!("sharing-setup-check-hardware"))
+                    .on_press_maybe((!self.busy).then_some(Message::CheckHardware)),
+            );
+        }
+        if needs_install || !self.croc_ready {
+            buttons = buttons.push(
+                widget::button::standard(fl!("sharing-setup-later"))
+                    .on_press_maybe((!self.busy).then_some(Message::Finish)),
+            );
+        }
         widget::container(
             widget::column::with_children(vec![
                 widget::scrollable(body).height(Length::Fill).into(),
@@ -259,18 +282,50 @@ impl cosmic::Application for Setup {
         match message {
             Message::Check => {
                 self.error = None;
+                self.report = None;
+                self.busy = true;
+                self.croc_ready = false;
+                self.step = Some(install::Step::CrocInstalling);
+                return cosmic::task::stream(iced::stream::channel(16, |mut output| async move {
+                    use iced::futures::SinkExt;
+                    let result = install::croc(&mut output).await;
+                    let _ = output.send(Message::CrocInstalled(result)).await;
+                }));
+            }
+            Message::CheckHardware if !self.busy && self.croc_ready => {
+                self.error = None;
+                self.report = None;
                 self.step = None;
                 self.busy = true;
                 return cosmic::task::future(async { Message::Checked(check().await) });
             }
             Message::Checked(result) => {
                 self.busy = false;
+                self.step = None;
                 match result {
                     Ok(report) => self.report = Some(report),
                     Err(error) => self.error = Some(error),
                 }
             }
-            Message::Install if !self.busy => {
+            Message::CrocInstalled(result) => {
+                self.busy = false;
+                self.step = None;
+                match result {
+                    Ok(()) => {
+                        self.croc_ready = true;
+                        return self.update(Message::CheckHardware);
+                    }
+                    Err(error) => self.error = Some(error),
+                }
+            }
+            Message::Install
+                if !self.busy
+                    && self.croc_ready
+                    && self
+                        .report
+                        .as_ref()
+                        .is_some_and(|report| report.supported && !report.installed) =>
+            {
                 self.busy = true;
                 self.error = None;
                 self.step = Some(install::Step::Downloading(0.0));
@@ -285,13 +340,13 @@ impl cosmic::Application for Setup {
                 self.busy = false;
                 self.step = None;
                 match result {
-                    Ok(()) => return self.update(Message::Check),
+                    Ok(()) => return self.update(Message::CheckHardware),
                     Err(error) => self.error = Some(error),
                 }
             }
             Message::Finish if !self.busy => {
                 match Config::new_state(ID, 1)
-                    .and_then(|state| state.set("sharing_setup_completed", true))
+                    .and_then(|state| state.set("sharing_setup_completed", self.croc_ready))
                 {
                     Ok(()) => return iced::exit(),
                     Err(_) => self.error = Some(fl!("sharing-setup-state-error")),
@@ -300,5 +355,58 @@ impl cosmic::Application for Setup {
             _ => (),
         }
         Task::none()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cosmic::Application;
+
+    #[test]
+    fn installed_owly_versions_are_parsed() {
+        for (output, expected) in [
+            ("owly 0.4.1\n", "0.4.1"),
+            ("owly v0.4.2\n", "0.4.2"),
+            ("owly 0.4.2+custom\n", "0.4.2+custom"),
+        ] {
+            assert_eq!(
+                owly_version(output.as_bytes()).unwrap().to_string(),
+                expected
+            );
+        }
+        for output in ["", "owly", "owly invalid", "other 0.4.1"] {
+            assert!(owly_version(output.as_bytes()).is_none());
+        }
+    }
+
+    #[test]
+    fn hardware_recheck_keeps_croc_and_discards_the_previous_card_report() {
+        let mut setup = Setup {
+            core: cosmic::Core::default(),
+            _lease: tempfile::tempfile().unwrap(),
+            report: Some(Report {
+                supported: true,
+                installed: false,
+                exclusive: false,
+                details: String::new(),
+            }),
+            croc_ready: true,
+            busy: false,
+            step: None,
+            error: Some("previous error".into()),
+        };
+        let _ = setup.update(Message::CheckHardware);
+        assert!(setup.busy && setup.croc_ready);
+        assert!(setup.report.is_none() && setup.error.is_none() && setup.step.is_none());
+        let _ = setup.update(Message::Checked(Ok(Report {
+            supported: false,
+            installed: false,
+            exclusive: false,
+            details: String::new(),
+        })));
+        let _ = setup.update(Message::Install);
+        assert!(!setup.busy && setup.croc_ready);
+        assert!(!setup.report.as_ref().unwrap().supported);
     }
 }
