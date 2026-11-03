@@ -1469,9 +1469,17 @@ impl Orbit {
             ])
             .class(cosmic::theme::Button::MenuFolder)
             .into();
-            let conversions = crate::convert::Conversion::ALL
+            let mut conversions = crate::convert::Conversion::ALL.map(|conversion| {
+                let enabled =
+                    self.shelf.items.iter().any(|item| {
+                        item.selected && !item.busy && conversion.candidate(&item.path)
+                    });
+                (conversion, enabled)
+            });
+            conversions.sort_by_key(|(_, enabled)| !*enabled);
+            let conversions = conversions
                 .into_iter()
-                .map(|conversion| {
+                .map(|(conversion, enabled)| {
                     use crate::convert::Conversion;
                     let label = match conversion {
                         Conversion::WebpToJpeg => fl!("webp-to-jpeg"),
@@ -1489,15 +1497,7 @@ impl Orbit {
                         widget::space::horizontal().width(spacing).into(),
                         widget::text(label).into(),
                     ])
-                    .on_press_maybe(
-                        self.shelf
-                            .items
-                            .iter()
-                            .any(|item| {
-                                item.selected && !item.busy && conversion.candidate(&item.path)
-                            })
-                            .then_some(Message::Convert(conversion)),
-                    )
+                    .on_press_maybe(enabled.then_some(Message::Convert(conversion)))
                     .into();
                     widget::menu::Tree::from(button)
                 })
