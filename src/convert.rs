@@ -298,7 +298,13 @@ fn decode_heic(source: &Path) -> Result<(DynamicImage, Option<Vec<u8>>)> {
         }
         image = DynamicImage::ImageRgba8(pixels);
     }
-    Ok((image, profile))
+    with_cicp_profile(
+        image,
+        profile,
+        decoded
+            .color_info
+            .map(|info| (info.color_primaries, info.transfer_characteristics)),
+    )
 }
 
 fn decode_avif(source: &Path) -> Result<(DynamicImage, Option<Vec<u8>>)> {
@@ -339,7 +345,61 @@ fn decode_avif(source: &Path) -> Result<(DynamicImage, Option<Vec<u8>>)> {
         avif_decode::Image::Gray8(pixels) => image!(pixels, ImageLuma8),
         avif_decode::Image::Gray16(pixels) => image!(pixels, ImageLuma16),
     };
-    apply_avif_properties(image, &avif.meta.properties_for(avif.primary_item_id))
+    let properties = avif.meta.properties_for(avif.primary_item_id);
+    let description = properties
+        .iter()
+        .find_map(|property| {
+            if let oxideav_avif::meta::Property::Colr(oxideav_avif::meta::Colr::Nclx {
+                colour_primaries,
+                transfer_characteristics,
+                ..
+            }) = property
+            {
+                Some((*colour_primaries, *transfer_characteristics))
+            } else {
+                None
+            }
+        })
+        .or_else(|| decoder.color_description());
+    let (image, profile) = apply_avif_properties(image, &properties)?;
+    with_cicp_profile(image, profile, description)
+}
+
+fn with_cicp_profile(
+    image: DynamicImage,
+    profile: Option<Vec<u8>>,
+    description: Option<(u16, u16)>,
+) -> Result<(DynamicImage, Option<Vec<u8>>)> {
+    if profile.is_some() {
+        return Ok((image, profile));
+    }
+    let Some((primaries, transfer)) =
+        description.filter(|&(primaries, transfer)| primaries != 2 && transfer != 2)
+    else {
+        return Ok((image, None));
+    };
+    // Matrix and range have already been expanded by the codec into full-range RGB.
+    let profile = moxcms::ColorProfile::new_from_cicp(moxcms::CicpProfile {
+        color_primaries: u8::try_from(primaries)?.try_into()?,
+        transfer_characteristics: u8::try_from(transfer)?.try_into()?,
+        matrix_coefficients: moxcms::MatrixCoefficients::Identity,
+        full_range: true,
+    });
+    if profile.cicp.is_none()
+        || profile.red_trc.is_none()
+        || profile.green_trc.is_none()
+        || profile.blue_trc.is_none()
+    {
+        return Err(io::Error::other("Unsupported image color description").into());
+    }
+    let image = match image.color() {
+        image::ColorType::L8 => DynamicImage::ImageRgb8(image.into_rgb8()),
+        image::ColorType::L16 => DynamicImage::ImageRgb16(image.into_rgb16()),
+        image::ColorType::La8 => DynamicImage::ImageRgba8(image.into_rgba8()),
+        image::ColorType::La16 => DynamicImage::ImageRgba16(image.into_rgba16()),
+        _ => image,
+    };
+    Ok((image, Some(profile.encode()?)))
 }
 
 fn apply_avif_properties(
@@ -413,6 +473,47 @@ fn crop_axis(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cicp_profiles_keep_primaries_transfer_and_existing_icc() {
+        let image = DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            2,
+            1,
+            image::Rgba([60, 110, 160, 128]),
+        ));
+        for description in [(12, 13), (9, 16), (9, 18)] {
+            let (output, profile) =
+                with_cicp_profile(image.clone(), None, Some(description)).unwrap();
+            assert_eq!(output.as_bytes(), image.as_bytes());
+            let profile = moxcms::ColorProfile::new_from_slice(&profile.unwrap()).unwrap();
+            let cicp = profile.cicp.unwrap();
+            assert_eq!(cicp.color_primaries as u16, description.0);
+            assert_eq!(cicp.transfer_characteristics as u16, description.1);
+            assert_eq!(
+                cicp.matrix_coefficients,
+                moxcms::MatrixCoefficients::Identity
+            );
+            assert!(cicp.full_range);
+        }
+        let (_, profile) =
+            with_cicp_profile(image.clone(), Some(vec![1, 2, 3]), Some((12, 13))).unwrap();
+        assert_eq!(profile.unwrap(), [1, 2, 3]);
+        let (_, profile) = with_cicp_profile(image.clone(), None, Some((2, 2))).unwrap();
+        assert!(profile.is_none());
+        assert!(with_cicp_profile(image, None, Some((255, 255))).is_err());
+        let (output, _) = with_cicp_profile(
+            DynamicImage::ImageLuma16(image::ImageBuffer::from_pixel(
+                1,
+                1,
+                image::Luma([32768_u16]),
+            )),
+            None,
+            Some((9, 16)),
+        )
+        .unwrap();
+        assert_eq!(output.color(), image::ColorType::Rgb16);
+        assert_eq!(output.into_rgb16().as_raw(), &[32768; 3]);
+    }
 
     fn convert(
         source: &Path,

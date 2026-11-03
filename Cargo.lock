@@ -3779,6 +3779,7 @@ dependencies = [
  "ksni",
  "libcosmic",
  "mime_guess",
+ "moxcms",
  "notify",
  "oxideav-avif",
  "percent-encoding",
