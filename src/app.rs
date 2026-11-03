@@ -113,7 +113,7 @@ pub enum Message {
     FocusItem(PathBuf),
     Copy,
     ToggleCopyMode,
-    ConvertWebp,
+    Convert(crate::convert::Conversion),
     Converted(uuid::Uuid, PathBuf, u64, Result<ImportedFiles, String>),
     Compress,
     ArchiveName(String),
@@ -930,7 +930,7 @@ impl cosmic::Application for Orbit {
                 }
             }
             Message::ToggleCopyMode => self.copy_mode = !self.copy_mode,
-            Message::ConvertWebp => return self.begin_conversion(),
+            Message::Convert(conversion) => return self.begin_conversion(conversion),
             Message::Converted(id, source, order, result) => {
                 if !self
                     .conversions
@@ -1469,27 +1469,42 @@ impl Orbit {
             ])
             .class(cosmic::theme::Button::MenuFolder)
             .into();
-            let convert: Element<'static, Message> = widget::menu::menu_button(vec![
-                widget::icon::from_name("image-x-generic-symbolic")
-                    .size(14)
-                    .icon()
-                    .into(),
-                widget::space::horizontal().width(spacing).into(),
-                widget::text(fl!("webp-to-jpeg")).into(),
-            ])
-            .on_press_maybe(
-                self.shelf
-                    .items
-                    .iter()
-                    .any(|item| {
-                        item.selected && !item.busy && crate::convert::candidate(&item.path)
-                    })
-                    .then_some(Message::ConvertWebp),
-            )
-            .into();
+            let conversions = crate::convert::Conversion::ALL
+                .into_iter()
+                .map(|conversion| {
+                    use crate::convert::Conversion;
+                    let label = match conversion {
+                        Conversion::WebpToJpeg => fl!("webp-to-jpeg"),
+                        Conversion::HeicToJpeg => fl!("heic-to-jpeg"),
+                        Conversion::AvifToJpeg => fl!("avif-to-jpeg"),
+                        Conversion::AvifToPng => fl!("avif-to-png"),
+                        Conversion::PngToJpeg => fl!("png-to-jpeg"),
+                        Conversion::JpegToPng => fl!("jpeg-to-png"),
+                    };
+                    let button: Element<'static, Message> = widget::menu::menu_button(vec![
+                        widget::icon::from_name("image-x-generic-symbolic")
+                            .size(14)
+                            .icon()
+                            .into(),
+                        widget::space::horizontal().width(spacing).into(),
+                        widget::text(label).into(),
+                    ])
+                    .on_press_maybe(
+                        self.shelf
+                            .items
+                            .iter()
+                            .any(|item| {
+                                item.selected && !item.busy && conversion.candidate(&item.path)
+                            })
+                            .then_some(Message::Convert(conversion)),
+                    )
+                    .into();
+                    widget::menu::Tree::from(button)
+                })
+                .collect();
             items.push(widget::menu::Tree::with_children(
                 widget::RcElementWrapper::new(operation),
-                vec![widget::menu::Tree::from(convert)],
+                conversions,
             ));
             let root: Element<'static, Message> = widget::button::custom(
                 widget::icon::from_name("view-more-horizontal-symbolic")
@@ -1558,12 +1573,15 @@ impl Orbit {
         popover.into()
     }
 
-    fn begin_conversion(&mut self) -> Task<cosmic::Action<Message>> {
+    fn begin_conversion(
+        &mut self,
+        conversion: crate::convert::Conversion,
+    ) -> Task<cosmic::Action<Message>> {
         let sources = self
             .shelf
             .items
             .iter()
-            .filter(|item| item.selected && !item.busy && crate::convert::candidate(&item.path))
+            .filter(|item| item.selected && !item.busy && conversion.candidate(&item.path))
             .cloned()
             .collect::<Vec<_>>();
         if sources.is_empty() {
@@ -1601,13 +1619,14 @@ impl Orbit {
                     if output.is_closed() {
                         continue;
                     }
-                    let result = crate::convert::webp_to_jpeg(&source.path, || output.is_closed())
-                        .map_err(|error| {
-                            if !output.is_closed() {
-                                eprintln!("Image conversion: {error}");
-                            }
-                            fl!("convert-error")
-                        });
+                    let result =
+                        crate::convert::convert(&source.path, conversion, || output.is_closed())
+                            .map_err(|error| {
+                                if !output.is_closed() {
+                                    eprintln!("Image conversion: {error}");
+                                }
+                                fl!("convert-error")
+                            });
                     let _ = output.unbounded_send(Message::Converted(
                         id,
                         source.path,

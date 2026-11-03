@@ -2,15 +2,18 @@
 name = "orbit"
 version = "0.4.3"
 edition = "2024"
-rust-version = "1.93"
+rust-version = "1.97"
 license = "GPL-3.0-only"
 description = "A floating file shelf for the COSMIC desktop"
 
 [dependencies]
+avif-decode = { package = "ferri-pdf-avif-decode", version = "3.0.2" }
+avif-parse = "2.1"
 base64 = "0.22.1"
+bytemuck = { version = "1.25", features = ["extern_crate_alloc"] }
 csscolorparser = "0.8.4"
 flate2 = "1.1"
-image = { version = "0.25.10", default-features = false, features = ["jpeg", "webp"] }
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
 image-webp = "0.2.4"
 i18n-embed = { version = "0.16", features = ["fluent-system", "desktop-requester"] }
 i18n-embed-fl = "0.10"
@@ -34,6 +37,7 @@ unicode-segmentation = "1.13.3"
 zbus = { version = "5.19", default-features = false, features = ["tokio"] }
 zip = { version = "3", default-features = false, features = ["deflate-flate2", "jiff-02"] }
 ksni = "0.3.7"
+zune-heic = "0.5.0"
 
 [dependencies.libcosmic]
 git = "https://github.com/pop-os/libcosmic"
