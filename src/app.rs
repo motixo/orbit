@@ -2813,7 +2813,8 @@ impl Orbit {
         ])
         .class(cosmic::theme::Button::MenuFolder)
         .into();
-        items.push(
+        items.insert(
+            0,
             widget::menu::Tree::with_children(widget::RcElementWrapper::new(share), sharing).width(
                 if self.owly_capabilities.is_some() {
                     192
