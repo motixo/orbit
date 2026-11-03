@@ -25,6 +25,9 @@ pub fn webp_to_jpeg(
         return Err(io::Error::other("Not a WebP image or conversion cancelled").into());
     }
     let mut decoder = reader.into_decoder()?;
+    let mut limits = image::Limits::default();
+    limits.reserve(decoder.total_bytes())?;
+    decoder.set_limits(limits)?;
     let orientation = decoder.orientation()?;
     let profile = decoder.icc_profile()?;
     let mut image = image::DynamicImage::from_decoder(decoder)?;
