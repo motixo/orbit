@@ -270,51 +270,21 @@ fn read_input(source: &Path) -> Result<Vec<u8>> {
 }
 
 fn decode_heic(source: &Path) -> Result<(DynamicImage, Option<Vec<u8>>)> {
-    use zune_heic::zune_core::{
-        bytestream::ZCursor, colorspace::ColorSpace, options::DecoderOptions,
-    };
     let bytes = read_input(source)?;
-    let options = DecoderOptions::default()
-        .set_hevc_max_mdat_size(INPUT_LIMIT as usize)
-        .set_num_threads(2);
-    let mut decoder = zune_heic::HeifDecoder::new_with_options(ZCursor::new(&bytes), options);
-    decoder.decode_headers()?;
-    let size = decoder
-        .output_buffer_size()
-        .ok_or_else(|| io::Error::other("Invalid image size"))?;
-    let mut limits = image::Limits::default();
-    limits.reserve_usize(size)?;
-    if let Some(profile) = decoder.icc_data() {
-        limits.reserve_usize(profile.len())?;
-    }
-    let profile = decoder.icc_data().cloned();
-    let width = decoder
-        .width()
-        .ok_or_else(|| io::Error::other("Missing image width"))?
-        .try_into()?;
-    let height = decoder
-        .height()
-        .ok_or_else(|| io::Error::other("Missing image height"))?
-        .try_into()?;
-    let colorspace = decoder.colorspace();
-    let premultiplied = decoder.is_alpha_premultiplied();
-    let pixels = decoder.decode()?;
-    let invalid = || io::Error::other("Invalid decoded image");
-    let mut image = match colorspace {
-        Some(ColorSpace::RGB) => DynamicImage::ImageRgb8(
-            image::RgbImage::from_raw(width, height, pixels).ok_or_else(invalid)?,
-        ),
-        Some(ColorSpace::RGBA) => DynamicImage::ImageRgba8(
-            image::RgbaImage::from_raw(width, height, pixels).ok_or_else(invalid)?,
-        ),
-        Some(ColorSpace::Luma) => DynamicImage::ImageLuma8(
-            image::GrayImage::from_raw(width, height, pixels).ok_or_else(invalid)?,
-        ),
-        Some(ColorSpace::LumaA) => DynamicImage::ImageLumaA8(
-            image::GrayAlphaImage::from_raw(width, height, pixels).ok_or_else(invalid)?,
-        ),
-        _ => return Err(io::Error::other("Unsupported image colorspace").into()),
-    };
+    let info = heic_decoder::probe(&bytes)?;
+    info.coded_width
+        .checked_mul(info.coded_height)
+        .and_then(|size| size.checked_mul(8))
+        .filter(|&size| size <= MEMORY_LIMIT)
+        .ok_or_else(|| io::Error::other("Image is too large"))?;
+    let decoded = heic_decoder::decode(&bytes)?;
+    let rgba = decoded.to_rgba8()?;
+    let premultiplied = rgba.premultiplied;
+    let mut image = DynamicImage::ImageRgba8(
+        image::RgbaImage::from_raw(rgba.width.try_into()?, rgba.height.try_into()?, rgba.data)
+            .ok_or_else(|| io::Error::other("Invalid decoded image"))?,
+    );
+    let profile = decoded.metadata.icc_profile;
     if premultiplied {
         let mut pixels = image.into_rgba8();
         for pixel in pixels.pixels_mut() {
@@ -399,6 +369,39 @@ mod tests {
         assert_eq!(
             rustix::process::test_kill_process(pid),
             Err(rustix::io::Errno::SRCH)
+        );
+    }
+
+    #[test]
+    fn converts_ten_bit_and_tiled_heic_without_changing_the_source() {
+        // Fixtures: Multipad-cyber/heic-decoder-rust, tests/fixtures (see HEIC-LICENSE).
+        let fixture = tempfile::tempdir().unwrap();
+        for (name, bytes) in [
+            (
+                "ten-bit.heic",
+                include_bytes!("fixtures/heic-10bit.heic").as_slice(),
+            ),
+            (
+                "grid.heic",
+                include_bytes!("fixtures/heic-grid.heic").as_slice(),
+            ),
+        ] {
+            let source = fixture.path().join(name);
+            std::fs::write(&source, bytes).unwrap();
+            let info = heic_decoder::probe(bytes).unwrap();
+            let converted = convert(&source, Conversion::HeicToJpeg, || false).unwrap();
+            let image = image::open(&converted.files.0[0]).unwrap();
+            assert_eq!(
+                (image.width() as usize, image.height() as usize),
+                (info.width, info.height)
+            );
+            assert_eq!(std::fs::read(source).unwrap(), bytes);
+        }
+        assert_eq!(
+            heic_decoder::probe(include_bytes!("fixtures/heic-10bit.heic"))
+                .unwrap()
+                .bit_depth_luma,
+            10
         );
     }
 
