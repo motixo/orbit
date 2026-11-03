@@ -22,6 +22,13 @@ In COSMIC Settings → Desktop → Panel or Dock → Applets, add **Orbit**. Dro
 
 Right-click the applet or tray → Settings → Watch folder. New files added directly to the selected folder appear automatically in a separate Orbit.
 
+## Sharing
+
+Open **⋯ → Share** in an Orbit.
+
+- **Orbit Share:** Files, text and links over your local network. [Croc](https://github.com/schollz/croc) handles encrypted file transfers, WebRTC connects devices and syncs items, and mDNS finds nearby computers. Browsers pair via QR or a link; the [PWA](https://github.com/motixo/orbit-share-pwa) works offline once cached.
+- **AirDrop:** Send and receive with Apple devices through [Owly](https://github.com/t4t5/owly), using Apple's AWDL Wi-Fi protocol. Requires compatible Wi-Fi hardware; Wi-Fi may disconnect while AirDrop is active.
+
 ## Shortcuts
 
 Defaults inside an Orbit window:
