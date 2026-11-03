@@ -1140,7 +1140,12 @@ impl cosmic::Application for Orbit {
                             && start.distance(self.pin_cursor) >= 4.0
                             && let Some(placement) = self.pin_placement.as_mut()
                         {
-                            let position = start + (self.pin_cursor - start) * 2.0;
+                            let delta = (self.pin_cursor - start) * 2.0;
+                            let position = start
+                                + iced::Vector::new(
+                                    delta.x * SHELF_SIZE as f32 / placement.width as f32,
+                                    delta.y * SHELF_SIZE as f32 / placement.height as f32,
+                                );
                             let anchor = placement.corner_at(position);
                             let from = placement.margin;
                             match placement.move_to(anchor) {
