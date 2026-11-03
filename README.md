@@ -12,6 +12,8 @@ curl -fsSL https://github.com/motixo/orbit/releases/latest/download/install.sh |
 
 Double-click the header to switch between floating and pinned. Drag a pinned header toward a screen corner to move it there.
 
+You can also drop files onto a collapsed pinned Orbit.
+
 ## Applet
 
 In COSMIC Settings → Desktop → Panel or Dock → Applets, add **Orbit**. Drop files directly onto the applet to open an Orbit with them. Right-click it for Settings and Shortcuts.
