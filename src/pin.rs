@@ -122,11 +122,21 @@ pub struct Placement {
     output: u64,
     lease: File,
     pub margin: IcedMargin,
+    pub width: u32,
     pub height: u32,
 }
 
 impl Placement {
-    pub fn new(area: Area, anchor: Anchor, near: Option<(u32, u32)>) -> io::Result<Self> {
+    pub fn new(
+        area: Area,
+        anchor: Anchor,
+        near: Option<(u32, u32)>,
+        width: u32,
+        height: u32,
+    ) -> io::Result<Self> {
+        if !(1..=SHELF_SIZE).contains(&width) || !(1..=SHELF_SIZE).contains(&height) {
+            return Err(io::Error::other("Invalid shelf size"));
+        }
         let runtime = env::var_os("XDG_RUNTIME_DIR")
             .ok_or_else(|| io::Error::other("Missing runtime directory"))?;
         let directory = PathBuf::from(runtime).join("io.github.motixo.Orbit/pins");
@@ -147,7 +157,8 @@ impl Placement {
             output: hasher.finish(),
             lease,
             margin: IcedMargin::default(),
-            height: SHELF_SIZE,
+            width,
+            height,
         };
         placement.place(anchor, near)?;
         Ok(placement)
@@ -188,18 +199,19 @@ impl Placement {
         self.place(anchor, None)
     }
 
-    pub fn resize(&mut self, height: u32, anchor: Anchor) -> io::Result<IcedMargin> {
-        if !(1..=SHELF_SIZE).contains(&height) {
-            return Err(io::Error::other("Invalid shelf height"));
+    pub fn resize(&mut self, width: u32, height: u32, anchor: Anchor) -> io::Result<IcedMargin> {
+        if !(1..=SHELF_SIZE).contains(&width) || !(1..=SHELF_SIZE).contains(&height) {
+            return Err(io::Error::other("Invalid shelf size"));
         }
         let registry = open(self.directory.join("layout.lock"))?;
         registry.lock()?;
-        let previous_height = self.height;
+        let previous_size = (self.width, self.height);
+        self.width = width;
         self.height = height;
         match self.place(anchor, None) {
             Ok(margin) => Ok(margin),
             Err(error) => {
-                self.height = previous_height;
+                (self.width, self.height) = previous_size;
                 Err(error)
             }
         }
@@ -256,15 +268,15 @@ impl Placement {
                 Err(TryLockError::Error(error)) => return Err(error),
             }
         }
-        let columns = self.area.width.saturating_sub(GAP) / (SHELF_SIZE + GAP);
+        let columns = self.area.width.saturating_sub(GAP) / (self.width + GAP);
         let rows = self.area.height.saturating_sub(GAP) / (self.height + GAP);
         let mut candidates = Vec::new();
         for row in 0..rows {
             for column in 0..columns {
-                let offset_x = GAP + column * (SHELF_SIZE + GAP);
+                let offset_x = GAP + column * (self.width + GAP);
                 let offset_y = GAP + row * (self.height + GAP);
                 let x = if anchor.contains(Anchor::RIGHT) {
-                    self.area.width - SHELF_SIZE - offset_x
+                    self.area.width - self.width - offset_x
                 } else {
                     offset_x
                 };
@@ -284,7 +296,7 @@ impl Placement {
             });
         }
         for (x, y) in candidates {
-            let size = u64::from(SHELF_SIZE + GAP);
+            let size = u64::from(self.width + GAP);
             if occupied.iter().any(|&(other_x, other_y, width, height)| {
                 u64::from(x) < other_x.saturating_add(width).saturating_add(u64::from(GAP))
                     && other_x < u64::from(x) + size
@@ -298,11 +310,12 @@ impl Placement {
             }
             let margin = IcedMargin {
                 top: y as i32,
-                right: (self.area.width - x - SHELF_SIZE) as i32,
+                right: (self.area.width - x - self.width) as i32,
                 bottom: (self.area.height - y - self.height) as i32,
                 left: x as i32,
             };
             if margin.left != self.margin.left
+                || margin.right != self.margin.right
                 || margin.top != self.margin.top
                 || margin.bottom != self.margin.bottom
             {
@@ -310,8 +323,8 @@ impl Placement {
                 self.lease.set_len(0)?;
                 writeln!(
                     self.lease,
-                    "{} {x} {y} {SHELF_SIZE} {}",
-                    self.output, self.height
+                    "{} {x} {y} {} {}",
+                    self.output, self.width, self.height
                 )?;
                 self.margin = margin;
             }

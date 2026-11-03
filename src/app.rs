@@ -348,7 +348,7 @@ impl cosmic::Application for Orbit {
             let preview = widget::container(
                 widget::container(
                     widget::image(image.clone())
-                        .width(SHELF_SIZE as f32)
+                        .width(placement.width as f32)
                         .height(placement.height as f32)
                         .opacity(0.7_f32),
                 )
@@ -391,9 +391,12 @@ impl cosmic::Application for Orbit {
         } else {
             0.0
         };
-        let header = widget::header_bar()
-            .title(fl!("app-title"))
-            .start(self.header_tools(id))
+        let mut header = widget::header_bar()
+            .title(if self.pin_collapsed {
+                (self.shelf.items.len() + self.pending_imports.len()).to_string()
+            } else {
+                fl!("app-title")
+            })
             .end(
                 widget::button::icon(widget::icon::from_name(if self.pin_collapsed {
                     "insert-rectangle-symbolic"
@@ -411,6 +414,9 @@ impl cosmic::Application for Orbit {
             .on_double_click(Message::TogglePin)
             .on_close(Message::Quit)
             .focused(true);
+        if !self.pin_collapsed {
+            header = header.start(self.header_tools(id));
+        }
         let header = widget::mouse_area(header).interaction(if self.pin_drag_start.is_some() {
             mouse::Interaction::Grabbing
         } else {
@@ -1194,18 +1200,16 @@ impl cosmic::Application for Orbit {
                     self.status = fl!("pin-error");
                     return self.ensure_floating();
                 };
-                let Ok(mut placement) = Placement::new(area, self.pin_anchor, near) else {
+                let (width, height) = if self.pin_collapsed {
+                    (SHELF_SIZE / 2, self.pin_header_height)
+                } else {
+                    (SHELF_SIZE, SHELF_SIZE)
+                };
+                let Ok(placement) = Placement::new(area, self.pin_anchor, near, width, height)
+                else {
                     self.status = fl!("pin-error");
                     return self.ensure_floating();
                 };
-                if self.pin_collapsed
-                    && placement
-                        .resize(self.pin_header_height, self.pin_anchor)
-                        .is_err()
-                {
-                    self.pin_collapsed = false;
-                }
-                let height = placement.height;
                 let margin = placement.margin;
                 self.status.clear();
                 self.pin_placement = Some(placement);
@@ -1219,7 +1223,7 @@ impl cosmic::Application for Orbit {
                     namespace: Self::APP_ID.into(),
                     keyboard_interactivity: KeyboardInteractivity::OnDemand,
                     margin,
-                    size: Some((Some(SHELF_SIZE), Some(height))),
+                    size: Some((Some(width), Some(height))),
                     exclusive_zone: 0,
                     ..Default::default()
                 };
@@ -1545,18 +1549,18 @@ impl Orbit {
         if let Some(id) = self.pinned
             && let Some(placement) = self.pin_placement.as_mut()
         {
-            let height = if collapsed {
-                self.pin_header_height
+            let (width, height) = if collapsed {
+                (SHELF_SIZE / 2, self.pin_header_height)
             } else {
-                SHELF_SIZE
+                (SHELF_SIZE, SHELF_SIZE)
             };
-            match placement.resize(height, self.pin_anchor) {
+            match placement.resize(width, height, self.pin_anchor) {
                 Ok(margin) => {
                     self.pin_collapsed = collapsed;
                     self.pin_motion = None;
                     self.status.clear();
                     return Task::batch([
-                        set_size(id, Some(SHELF_SIZE), Some(height)),
+                        set_size(id, Some(width), Some(height)),
                         set_margin(id, margin.top, margin.right, margin.bottom, margin.left),
                     ]);
                 }
