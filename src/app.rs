@@ -202,6 +202,11 @@ impl cosmic::Application for Orbit {
         core.window.show_maximize = false;
         core.window.border_padding = Some(0);
         let preferences = flags.preferences;
+        let hint_width = if preferences.pinned_hint {
+            cosmic::theme::active().cosmic().active_hint
+        } else {
+            0
+        };
         let mut app = Self {
             core,
             shelf: Shelf::default(),
@@ -232,7 +237,7 @@ impl cosmic::Application for Orbit {
             pin_preview: None,
             pin_motion: None,
             pin_collapsed: flags.restored.as_ref().is_some_and(|entry| entry.collapsed),
-            pin_header_height: 49,
+            pin_header_height: 49 + 2 * hint_width,
             preferences,
             drop_target: widget::Id::unique(),
             watch: flags.watch,
@@ -385,7 +390,7 @@ impl cosmic::Application for Orbit {
             let preview = widget::container(
                 widget::container(
                     widget::image(image.clone())
-                        .width(SHELF_SIZE as f32)
+                        .width(placement.width as f32)
                         .height(placement.height as f32)
                         .opacity(0.7_f32),
                 )
@@ -423,9 +428,17 @@ impl cosmic::Application for Orbit {
                 .height(Length::Fill)
                 .into();
         }
+        let hint_width = if self.preferences.pinned_hint {
+            cosmic::theme::active().cosmic().active_hint as f32
+        } else {
+            0.0
+        };
+        let border_width = if self.pin_collapsed && self.hovering && self.dragged_paths.is_empty() {
+            hint_width.max(1.0) * 1.5
+        } else {
+            hint_width
+        };
         let header = widget::header_bar()
-            .title(fl!("app-title"))
-            .start(self.header_tools(id))
             .end(
                 widget::button::icon(widget::icon::from_name(if self.pin_collapsed {
                     "insert-rectangle-symbolic"
@@ -443,18 +456,42 @@ impl cosmic::Application for Orbit {
             .on_double_click(Message::TogglePin)
             .on_close(Message::Quit)
             .focused(true);
+        let header = if self.pin_collapsed {
+            header.start(
+                widget::container(widget::text::heading(
+                    (self.shelf.items.len() + self.pending_imports.len()).to_string(),
+                ))
+                .padding([0, 8]),
+            )
+        } else {
+            header.title(fl!("app-title")).start(self.header_tools(id))
+        };
+        let header: Element<_> = header.into();
+        let header_height = header.as_widget().size().height;
         let header = widget::mouse_area(header).interaction(if self.pin_drag_start.is_some() {
             mouse::Interaction::Grabbing
         } else {
             mouse::Interaction::Grab
         });
-        let header =
-            iced::widget::sensor(header).on_resize(|size| Message::PinHeaderHeight(size.height));
-        let mut children = vec![header.into()];
+        let header = iced::widget::sensor(header)
+            .key((header_height, hint_width, self.core.scale_factor()))
+            .on_show(move |size| {
+                let height = match header_height {
+                    Length::Fixed(height) => height,
+                    _ => size.height,
+                };
+                Message::PinHeaderHeight(height + 2.0 * hint_width)
+            });
+        let header = if self.pin_collapsed {
+            self.drop_destination(header.into())
+        } else {
+            header.into()
+        };
+        let mut children = vec![header];
         if !self.pin_collapsed {
             children.push(self.shelf_view(id));
         }
-        self.with_compression_dialog(
+        let content =
             widget::container(widget::column::with_children(children).height(Length::Fill))
                 .padding(1)
                 .class(cosmic::theme::Container::custom(|theme| {
@@ -473,7 +510,37 @@ impl cosmic::Application for Orbit {
                     }
                 }))
                 .width(Length::Fill)
-                .height(Length::Fill)
+                .height(Length::Fill);
+        let content = widget::container(content)
+            .padding(hint_width)
+            .width(Length::Fill)
+            .height(Length::Fill);
+        let outline = widget::container(widget::Space::new())
+            .class(cosmic::theme::Container::custom(move |theme| {
+                let cosmic = theme.cosmic();
+                widget::container::Style {
+                    border: iced::Border {
+                        color: cosmic
+                            .window_hint
+                            .map(iced::Color::from)
+                            .unwrap_or_else(|| cosmic.accent_color().into()),
+                        width: border_width,
+                        radius: cosmic
+                            .radius_s()
+                            .map(|radius| {
+                                (if radius < 4.0 { radius } else { radius + 4.0 }) + hint_width
+                            })
+                            .into(),
+                    },
+                    ..Default::default()
+                }
+            }))
+            .width(Length::Fill)
+            .height(Length::Fill);
+        self.with_compression_dialog(
+            iced::widget::Stack::new()
+                .push(content)
+                .push(outline)
                 .into(),
         )
     }
@@ -1327,7 +1394,12 @@ impl cosmic::Application for Orbit {
                             && start.distance(self.pin_cursor) >= 4.0
                             && let Some(placement) = self.pin_placement.as_mut()
                         {
-                            let position = start + (self.pin_cursor - start) * 2.0;
+                            let delta = (self.pin_cursor - start) * 2.0;
+                            let position = start
+                                + iced::Vector::new(
+                                    delta.x * SHELF_SIZE as f32 / placement.width as f32,
+                                    delta.y * SHELF_SIZE as f32 / placement.height as f32,
+                                );
                             let anchor = placement.corner_at(position);
                             let from = placement.margin;
                             match placement.move_to(anchor) {
@@ -1386,18 +1458,16 @@ impl cosmic::Application for Orbit {
                     self.status = fl!("pin-error");
                     return self.ensure_floating();
                 };
-                let Ok(mut placement) = Placement::new(area, self.pin_anchor, near) else {
+                let (width, height) = if self.pin_collapsed {
+                    (SHELF_SIZE / 2, self.pin_header_height)
+                } else {
+                    (SHELF_SIZE, SHELF_SIZE)
+                };
+                let Ok(placement) = Placement::new(area, self.pin_anchor, near, width, height)
+                else {
                     self.status = fl!("pin-error");
                     return self.ensure_floating();
                 };
-                if self.pin_collapsed
-                    && placement
-                        .resize(self.pin_header_height, self.pin_anchor)
-                        .is_err()
-                {
-                    self.pin_collapsed = false;
-                }
-                let height = placement.height;
                 let margin = placement.margin;
                 self.status.clear();
                 self.pin_placement = Some(placement);
@@ -1411,7 +1481,7 @@ impl cosmic::Application for Orbit {
                     namespace: Self::APP_ID.into(),
                     keyboard_interactivity: KeyboardInteractivity::OnDemand,
                     margin,
-                    size: Some((Some(SHELF_SIZE), Some(height))),
+                    size: Some((Some(width), Some(height))),
                     exclusive_zone: 0,
                     ..Default::default()
                 };
@@ -1822,18 +1892,18 @@ impl Orbit {
         if let Some(id) = self.pinned
             && let Some(placement) = self.pin_placement.as_mut()
         {
-            let height = if collapsed {
-                self.pin_header_height
+            let (width, height) = if collapsed {
+                (SHELF_SIZE / 2, self.pin_header_height)
             } else {
-                SHELF_SIZE
+                (SHELF_SIZE, SHELF_SIZE)
             };
-            match placement.resize(height, self.pin_anchor) {
+            match placement.resize(width, height, self.pin_anchor) {
                 Ok(margin) => {
                     self.pin_collapsed = collapsed;
                     self.pin_motion = None;
                     self.status.clear();
                     return Task::batch([
-                        set_size(id, Some(SHELF_SIZE), Some(height)),
+                        set_size(id, Some(width), Some(height)),
                         set_margin(id, margin.top, margin.right, margin.bottom, margin.left),
                     ]);
                 }
@@ -1987,27 +2057,9 @@ impl Orbit {
                 }
             }))
             .padding(spacing.space_xxs);
-        let destination = widget::DndDestination::with_id(
-            drop_area,
-            self.drop_target.clone(),
-            crate::import::MIME_TYPES
-                .iter()
-                .map(|mime| (*mime).into())
-                .collect(),
-        )
-        .action(if self.dragged_paths.is_empty() {
-            DndAction::Copy
-        } else {
-            DndAction::empty()
-        })
-        .preferred_action(DndAction::Copy)
-        .on_enter(|_, _, _| Message::Hover(true))
-        .on_leave(|| Message::Hover(false))
-        // Dropping back into this shelf keeps its entries.
-        .on_drop(|_, _| Message::DragCancelled)
-        .on_finish(|mime, bytes, _, _, _| Message::DropData(bytes, mime));
+        let destination = self.drop_destination(drop_area.into());
 
-        let mut content = widget::column::with_children(vec![destination.into()])
+        let mut content = widget::column::with_children(vec![destination])
             .spacing(spacing.space_xs)
             .height(Length::Fill);
         if count > 0 {
@@ -2060,6 +2112,29 @@ impl Orbit {
             .padding([0, spacing.space_xs, spacing.space_xs, spacing.space_xs])
             .height(Length::Fill)
             .into()
+    }
+
+    fn drop_destination<'a>(&'a self, content: Element<'a, Message>) -> Element<'a, Message> {
+        widget::DndDestination::with_id(
+            content,
+            self.drop_target.clone(),
+            crate::import::MIME_TYPES
+                .iter()
+                .map(|mime| (*mime).into())
+                .collect(),
+        )
+        .action(if self.dragged_paths.is_empty() {
+            DndAction::Copy
+        } else {
+            DndAction::empty()
+        })
+        .preferred_action(DndAction::Copy)
+        .on_enter(|_, _, _| Message::Hover(true))
+        .on_leave(|| Message::Hover(false))
+        // Dropping back into this shelf keeps its entries.
+        .on_drop(|_, _| Message::DragCancelled)
+        .on_finish(|mime, bytes, _, _, _| Message::DropData(bytes, mime))
+        .into()
     }
 
     fn import_view<'a>(&self, id: u64, progress: &'a Progress) -> Element<'a, Message> {

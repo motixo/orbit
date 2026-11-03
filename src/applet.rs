@@ -110,6 +110,7 @@ pub enum Message {
     MenuHeight(window::Id, f32),
     Mode(usize),
     Corner(usize),
+    PinnedHint(bool),
     Reminder(usize),
     CheckUpdates(bool),
     Checked(bool, Result<crate::updates::Outcome, String>),
@@ -379,6 +380,11 @@ impl cosmic::Application for OrbitApplet {
                             Message::Corner,
                         )
                         .width(Length::Fixed(144.0)),
+                    )))
+                    .push(Self::popup_row(widget::settings::item(
+                        fl!("pinned-hint"),
+                        widget::toggler(self.preferences.pinned_hint)
+                            .on_toggle(Message::PinnedHint),
                     )));
                 body = body.push(widget::divider::horizontal::default()).push(
                     widget::container(widget::text::caption(fl!("watch-folders")))
@@ -646,6 +652,13 @@ impl cosmic::Application for OrbitApplet {
                 if let Some(corner) = Corner::ALL.get(index) {
                     self.preferences.corner = *corner;
                     self.save();
+                }
+            }
+            Message::PinnedHint(enabled) => {
+                let previous = self.preferences.pinned_hint;
+                self.preferences.pinned_hint = enabled;
+                if !self.save() {
+                    self.preferences.pinned_hint = previous;
                 }
             }
             Message::Reminder(index) => {
