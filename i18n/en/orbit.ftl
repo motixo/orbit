@@ -42,6 +42,7 @@ floating = Floating
 pinned = Pinned
 open-as = Open as
 default-corner = Corner
+pinned-hint = Pinned outline
 top-left = Top left
 top-right = Top right
 bottom-right = Bottom right

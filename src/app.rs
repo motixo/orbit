@@ -174,6 +174,11 @@ impl cosmic::Application for Orbit {
         core.window.show_maximize = false;
         core.window.border_padding = Some(0);
         let preferences = flags.preferences;
+        let hint_width = if preferences.pinned_hint {
+            cosmic::theme::active().cosmic().active_hint
+        } else {
+            0
+        };
         let mut app = Self {
             core,
             shelf: Shelf::default(),
@@ -203,7 +208,7 @@ impl cosmic::Application for Orbit {
             pin_preview: None,
             pin_motion: None,
             pin_collapsed: flags.restored.as_ref().is_some_and(|entry| entry.collapsed),
-            pin_header_height: 49,
+            pin_header_height: 49 + 2 * hint_width,
             preferences,
             drop_target: widget::Id::unique(),
             watch: flags.watch,
@@ -381,6 +386,11 @@ impl cosmic::Application for Orbit {
                 .height(Length::Fill)
                 .into();
         }
+        let hint_width = if self.preferences.pinned_hint {
+            cosmic::theme::active().cosmic().active_hint as f32
+        } else {
+            0.0
+        };
         let header = widget::header_bar()
             .title(fl!("app-title"))
             .start(self.header_tools(id))
@@ -406,13 +416,13 @@ impl cosmic::Application for Orbit {
         } else {
             mouse::Interaction::Grab
         });
-        let header =
-            iced::widget::sensor(header).on_resize(|size| Message::PinHeaderHeight(size.height));
+        let header = iced::widget::sensor(header)
+            .on_resize(move |size| Message::PinHeaderHeight(size.height + 2.0 * hint_width));
         let mut children = vec![header.into()];
         if !self.pin_collapsed {
             children.push(self.shelf_view(id));
         }
-        self.with_compression_dialog(
+        let content =
             widget::container(widget::column::with_children(children).height(Length::Fill))
                 .padding(1)
                 .class(cosmic::theme::Container::custom(|theme| {
@@ -425,6 +435,30 @@ impl cosmic::Application for Orbit {
                             radius: cosmic
                                 .radius_s()
                                 .map(|radius| if radius < 4.0 { radius } else { radius + 4.0 })
+                                .into(),
+                        },
+                        ..Default::default()
+                    }
+                }))
+                .width(Length::Fill)
+                .height(Length::Fill);
+        self.with_compression_dialog(
+            widget::container(content)
+                .padding(hint_width)
+                .class(cosmic::theme::Container::custom(move |theme| {
+                    let cosmic = theme.cosmic();
+                    widget::container::Style {
+                        border: iced::Border {
+                            color: cosmic
+                                .window_hint
+                                .map(iced::Color::from)
+                                .unwrap_or_else(|| cosmic.accent_color().into()),
+                            width: hint_width,
+                            radius: cosmic
+                                .radius_s()
+                                .map(|radius| {
+                                    (if radius < 4.0 { radius } else { radius + 4.0 }) + hint_width
+                                })
                                 .into(),
                         },
                         ..Default::default()
