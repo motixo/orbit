@@ -424,13 +424,22 @@ impl cosmic::Application for Orbit {
         } else {
             header.title(fl!("app-title")).start(self.header_tools(id))
         };
+        let header: Element<_> = header.into();
+        let header_height = header.as_widget().size().height;
         let header = widget::mouse_area(header).interaction(if self.pin_drag_start.is_some() {
             mouse::Interaction::Grabbing
         } else {
             mouse::Interaction::Grab
         });
         let header = iced::widget::sensor(header)
-            .on_resize(move |size| Message::PinHeaderHeight(size.height + 2.0 * hint_width));
+            .key((header_height, hint_width, self.core.scale_factor()))
+            .on_show(move |size| {
+                let height = match header_height {
+                    Length::Fixed(height) => height,
+                    _ => size.height,
+                };
+                Message::PinHeaderHeight(height + 2.0 * hint_width)
+            });
         let header = if self.pin_collapsed {
             self.drop_destination(header.into())
         } else {
