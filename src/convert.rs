@@ -163,6 +163,7 @@ fn write_converted_image(source: &Path, conversion: Conversion, destination: &Pa
         Conversion::JpegToPng => decode_image(source, ImageFormat::Jpeg)?,
     };
     let target = conversion.target();
+    let grayscale = image.color().channel_count() <= 2;
     if target == ImageFormat::Jpeg && image.color().has_alpha() {
         let mut pixels = image.into_rgba8();
         for pixel in pixels.pixels_mut() {
@@ -180,7 +181,11 @@ fn write_converted_image(source: &Path, conversion: Conversion, destination: &Pa
         if let Some(profile) = profile {
             encoder.set_icc_profile(profile)?;
         }
-        encoder.encode_image(&image)?;
+        if grayscale {
+            encoder.encode_image(&image.into_luma8())?;
+        } else {
+            encoder.encode_image(&image)?;
+        }
     } else {
         let mut encoder = PngEncoder::new(&mut writer);
         if let Some(profile) = profile {

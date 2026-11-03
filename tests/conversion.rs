@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use image::{ImageDecoder, ImageFormat, ImageReader};
+use image::{ImageDecoder, ImageEncoder, ImageFormat, ImageReader};
 use std::{
     fs,
     path::Path,
@@ -76,6 +76,58 @@ fn worker_converts_images_and_keeps_sources_and_existing_outputs() {
         assert!(!run(conversion, &source, &destination).status.success());
         assert_eq!(fs::read(&destination).unwrap(), bytes);
         assert_eq!(fs::read(&source).unwrap(), original);
+    }
+}
+
+#[test]
+fn worker_keeps_grayscale_jpeg_channels_and_profile() {
+    let fixture = tempfile::tempdir().unwrap();
+    let profile = moxcms::ColorProfile::new_gray_with_gamma(2.2)
+        .encode()
+        .unwrap();
+    for (index, image) in [
+        image::DynamicImage::ImageLuma8(image::ImageBuffer::from_pixel(2, 2, image::Luma([180]))),
+        image::DynamicImage::ImageLumaA8(image::ImageBuffer::from_pixel(
+            2,
+            2,
+            image::LumaA([180, 128]),
+        )),
+        image::DynamicImage::ImageLuma16(image::ImageBuffer::from_pixel(
+            2,
+            2,
+            image::Luma([32768_u16]),
+        )),
+        image::DynamicImage::ImageLumaA16(image::ImageBuffer::from_pixel(
+            2,
+            2,
+            image::LumaA([32768_u16, 32768]),
+        )),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let source = fixture.path().join(format!("gray-{index}.png"));
+        let mut encoder =
+            image::codecs::png::PngEncoder::new(fs::File::create_new(&source).unwrap());
+        encoder.set_icc_profile(profile.clone()).unwrap();
+        image.write_with_encoder(encoder).unwrap();
+        let original = fs::read(&source).unwrap();
+        let destination = source.with_extension("jpeg");
+        let result = run("PngToJpeg", &source, &destination);
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let mut decoder = ImageReader::open(destination)
+            .unwrap()
+            .with_guessed_format()
+            .unwrap()
+            .into_decoder()
+            .unwrap();
+        assert_eq!(decoder.color_type(), image::ColorType::L8);
+        assert_eq!(decoder.icc_profile().unwrap().unwrap(), profile);
+        assert_eq!(fs::read(source).unwrap(), original);
     }
 }
 
