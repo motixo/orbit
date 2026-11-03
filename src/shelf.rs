@@ -12,6 +12,7 @@ pub struct Item {
     pub name: String,
     pub directory: bool,
     pub selected: bool,
+    pub busy: bool,
     pub text: Option<String>,
     pub order: u64,
     cache: Option<Arc<crate::cache::Directory>>,
@@ -103,6 +104,7 @@ impl Shelf {
             name,
             directory,
             selected: true,
+            busy: false,
             text: None,
             order,
             cache,
@@ -205,12 +207,15 @@ impl Shelf {
         let has_selection = self.selected_count() > 0;
         self.items
             .iter()
-            .filter(|item| (!has_selection || item.selected) && !item.is_missing())
+            .filter(|item| (!has_selection || item.selected) && !item.busy && !item.is_missing())
             .map(|item| item.path.clone())
             .collect()
     }
 
     pub fn drag_transfer(&self, path: &Path) -> Arc<Transfer> {
+        if self.items.iter().any(|item| item.path == path && item.busy) {
+            return Arc::new(self.transfer(Vec::new(), false));
+        }
         if self
             .items
             .iter()
@@ -234,11 +239,14 @@ impl Shelf {
         let selection = self
             .items
             .iter()
-            .find(|item| item.selected)
+            .find(|item| item.selected && !item.busy)
             .map(|item| self.drag_transfer(&item.path));
         self.items
             .iter()
             .map(|item| {
+                if item.busy {
+                    return Arc::new(self.transfer(Vec::new(), false));
+                }
                 if item.selected
                     && let Some(selection) = &selection
                 {
@@ -252,35 +260,44 @@ impl Shelf {
 
     pub fn toggle(&mut self, path: &Path) {
         self.invalidate_transfers();
-        if let Some(item) = self.items.iter_mut().find(|item| item.path == path) {
+        if let Some(item) = self
+            .items
+            .iter_mut()
+            .find(|item| item.path == path && !item.busy)
+        {
             item.selected = !item.selected;
         }
     }
 
     pub fn select_all(&mut self) {
         self.invalidate_transfers();
-        let selected = self.selected_count() != self.items.len();
-        for item in &mut self.items {
+        let selected = !self
+            .items
+            .iter()
+            .filter(|item| !item.busy)
+            .all(|item| item.selected);
+        for item in self.items.iter_mut().filter(|item| !item.busy) {
             item.selected = selected;
         }
     }
 
     pub fn remove(&mut self, path: &Path) {
         self.invalidate_transfers();
-        self.items.retain(|item| item.path != path);
+        self.items.retain(|item| item.path != path || item.busy);
     }
 
     pub fn clear(&mut self) {
         self.invalidate_transfers();
         let has_selection = self.selected_count() > 0;
-        self.items.retain(|item| has_selection && !item.selected);
+        self.items
+            .retain(|item| item.busy || (has_selection && !item.selected));
     }
 
     pub fn remove_with_undo(&mut self, path: &Path) {
         self.remember(
             self.items
                 .iter()
-                .filter(|item| item.path == path)
+                .filter(|item| item.path == path && !item.busy)
                 .cloned()
                 .collect(),
         );
@@ -292,7 +309,7 @@ impl Shelf {
         self.remember(
             self.items
                 .iter()
-                .filter(|item| !selected || item.selected)
+                .filter(|item| !item.busy && (!selected || item.selected))
                 .cloned()
                 .collect(),
         );
@@ -316,6 +333,13 @@ impl Shelf {
                     self.items.push(item);
                 }
             }
+        }
+    }
+
+    pub fn set_busy(&mut self, path: &Path, busy: bool) {
+        self.invalidate_transfers();
+        if let Some(item) = self.items.iter_mut().find(|item| item.path == path) {
+            item.busy = busy;
         }
     }
 
@@ -589,6 +613,37 @@ mod tests {
         shelf.clear();
         assert!(shelf.items.is_empty());
         assert_eq!(fs::read(path).unwrap(), b"original contents");
+    }
+
+    #[test]
+    fn busy_items_cannot_be_selected_removed_or_exported() {
+        let fixture = Fixture::new();
+        let busy = fixture.file("busy.webp");
+        let ready = fixture.file("ready.txt");
+        let mut shelf = Shelf::default();
+        shelf.add([busy.clone(), ready.clone()]);
+        assert_eq!(shelf.drag_transfer(&ready).files.0.len(), 2);
+        shelf.set_busy(&busy, true);
+        shelf.toggle(&busy);
+        assert!(shelf.items[0].selected);
+        assert_eq!(shelf.export_paths(), std::slice::from_ref(&ready));
+        assert!(shelf.drag_transfer(&busy).files.0.is_empty());
+        assert_eq!(
+            shelf.drag_transfer(&ready).files.0,
+            std::slice::from_ref(&ready)
+        );
+        shelf.select_all();
+        assert!(shelf.items[0].selected);
+        assert!(shelf.export_paths().is_empty());
+        shelf.select_all();
+        shelf.clear_with_undo();
+        shelf.remove_with_undo(&busy);
+        assert_eq!(shelf.items.len(), 1);
+        assert_eq!(shelf.items[0].path, busy);
+        shelf.undo();
+        assert_eq!(shelf.items.len(), 2);
+        shelf.set_busy(&busy, false);
+        assert_eq!(shelf.export_paths(), [busy, ready]);
     }
 
     #[test]

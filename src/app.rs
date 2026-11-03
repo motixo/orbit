@@ -63,6 +63,7 @@ pub struct Orbit {
     focused_item: Option<PathBuf>,
     thumbnails: HashMap<PathBuf, Option<widget::image::Handle>>,
     pending_imports: Vec<(u64, Progress, iced::task::Handle)>,
+    conversions: HashMap<uuid::Uuid, (PathBuf, iced::task::Handle)>,
     dragged_paths: Vec<PathBuf>,
     hovering: bool,
     status: String,
@@ -113,7 +114,7 @@ pub enum Message {
     Copy,
     ToggleCopyMode,
     ConvertWebp,
-    Converted(u64, PathBuf, u64, Result<ImportedFiles, String>),
+    Converted(uuid::Uuid, PathBuf, u64, Result<ImportedFiles, String>),
     Compress,
     ArchiveName(String),
     ArchiveFormat(usize),
@@ -191,6 +192,7 @@ impl cosmic::Application for Orbit {
             focused_item: None,
             thumbnails: HashMap::new(),
             pending_imports: Vec::new(),
+            conversions: HashMap::new(),
             dragged_paths: Vec::new(),
             hovering: false,
             status: String::new(),
@@ -777,10 +779,27 @@ impl cosmic::Application for Orbit {
             }
             Message::Hover(value) => self.hovering = value,
             Message::Toggle(path) => {
+                if self
+                    .shelf
+                    .items
+                    .iter()
+                    .any(|item| item.path == path && item.busy)
+                {
+                    return Task::none();
+                }
                 self.shelf.toggle(&path);
                 self.focused_item = Some(path);
             }
-            Message::FocusItem(path) => self.focused_item = Some(path),
+            Message::FocusItem(path) => {
+                if self
+                    .shelf
+                    .items
+                    .iter()
+                    .any(|item| item.path == path && !item.busy)
+                {
+                    self.focused_item = Some(path);
+                }
+            }
             Message::Preview(path) => {
                 if path.is_none() && self.preview.is_some() {
                     return self.update(Message::ClosePreview);
@@ -793,10 +812,10 @@ impl cosmic::Application for Orbit {
                         self.shelf
                             .items
                             .iter()
-                            .filter(|item| item.selected && !item.is_missing())
+                            .filter(|item| item.selected && !item.busy && !item.is_missing())
                             .max_by_key(|item| item.order)
                     })
-                    .filter(|item| !item.is_missing());
+                    .filter(|item| !item.busy && !item.is_missing());
                 if let Some(item) = item {
                     let path = item.path.clone();
                     let text = item.text.clone();
@@ -914,34 +933,44 @@ impl cosmic::Application for Orbit {
             Message::ConvertWebp => return self.begin_conversion(),
             Message::Converted(id, source, order, result) => {
                 if !self
+                    .conversions
+                    .get(&id)
+                    .is_some_and(|(path, _)| *path == source)
+                {
+                    return Task::none();
+                }
+                self.conversions.remove(&id);
+                if !self
                     .shelf
                     .items
                     .iter()
                     .any(|item| item.path == source && item.order == order)
                 {
-                    self.pending_imports.retain(|(key, ..)| *key != id);
                     return Task::none();
                 }
-                let converted = result
-                    .as_ref()
-                    .ok()
-                    .and_then(|imported| imported.files.0.first())
-                    .cloned();
-                let task = self.update(Message::DropImported(id, result));
-                if converted
-                    .is_some_and(|path| self.shelf.items.iter().any(|item| item.path == path))
-                {
-                    self.shelf.remove(&source);
-                    self.release_imports();
+                self.shelf.set_busy(&source, false);
+                match result {
+                    Ok(imported) => {
+                        if let Some(path) = imported.files.0.into_iter().next()
+                            && self.shelf.add([path.clone()]).added == 1
+                        {
+                            self.shelf
+                                .set_import(&path, imported.text, imported.directory);
+                            self.shelf.remove(&source);
+                            self.release_imports();
+                        }
+                        self.status.clear();
+                    }
+                    Err(error) => self.status = error,
                 }
-                return task;
+                return self.load_thumbnails();
             }
             Message::Compress => {
                 let sources = self
                     .shelf
                     .items
                     .iter()
-                    .filter(|item| item.selected && !item.is_missing())
+                    .filter(|item| item.selected && !item.busy && !item.is_missing())
                     .map(|item| (item.path.clone(), item.order))
                     .collect::<Vec<_>>();
                 if sources.is_empty() || self.compression_dialog.is_some() {
@@ -1365,6 +1394,7 @@ impl Orbit {
         self.pin_collapsed = false;
         self.shelf = Shelf::default();
         self.pending_imports.clear();
+        self.conversions.clear();
         self.compression_dialog = None;
         self.thumbnails.clear();
         self.focused_item = None;
@@ -1389,7 +1419,7 @@ impl Orbit {
                     self.shelf
                         .items
                         .iter()
-                        .any(|item| item.selected && !item.is_missing())
+                        .any(|item| item.selected && !item.busy && !item.is_missing())
                         .then_some(Message::Compress),
                     false,
                 ),
@@ -1451,7 +1481,9 @@ impl Orbit {
                 self.shelf
                     .items
                     .iter()
-                    .any(|item| item.selected && crate::convert::candidate(&item.path))
+                    .any(|item| {
+                        item.selected && !item.busy && crate::convert::candidate(&item.path)
+                    })
                     .then_some(Message::ConvertWebp),
             )
             .into();
@@ -1531,28 +1563,33 @@ impl Orbit {
             .shelf
             .items
             .iter()
-            .filter(|item| item.selected && crate::convert::candidate(&item.path))
+            .filter(|item| item.selected && !item.busy && crate::convert::candidate(&item.path))
             .cloned()
             .collect::<Vec<_>>();
         if sources.is_empty() {
             return Task::none();
         }
-        let first_pending = self.pending_imports.len();
+        if self.compression_dialog.as_ref().is_some_and(|dialog| {
+            dialog
+                .sources
+                .iter()
+                .any(|(path, _)| sources.iter().any(|source| source.path == *path))
+        }) {
+            self.compression_dialog = None;
+        }
+        let started = sources
+            .iter()
+            .map(|source| source.path.clone())
+            .collect::<Vec<_>>();
         let mut jobs = Vec::new();
         let mut tasks = Vec::new();
         for source in sources {
-            let id = self.shelf.reserve_order();
+            let id = uuid::Uuid::new_v4();
             let (output, input) = iced::futures::channel::mpsc::unbounded();
             let (task, handle) = cosmic::task::stream(input).abortable();
-            self.pending_imports.push((
-                id,
-                Progress {
-                    name: Some(source.name.clone()),
-                    status: Some(fl!("converting")),
-                    ..Default::default()
-                },
-                handle.abort_on_drop(),
-            ));
+            self.shelf.set_busy(&source.path, true);
+            self.conversions
+                .insert(id, (source.path.clone(), handle.abort_on_drop()));
             tasks.push(task);
             jobs.push((id, source, output));
         }
@@ -1581,7 +1618,10 @@ impl Orbit {
             });
         if let Err(error) = worker {
             eprintln!("Could not start conversion: {error}");
-            self.pending_imports.truncate(first_pending);
+            for path in started {
+                self.shelf.set_busy(&path, false);
+                self.conversions.retain(|_, (source, _)| *source != path);
+            }
             self.status = fl!("convert-error");
             return Task::none();
         }
@@ -1909,11 +1949,23 @@ impl Orbit {
                 } else {
                     fl!("select-all")
                 })
-                .on_press_maybe((!self.shelf.items.is_empty()).then_some(Message::SelectAll))
+                .on_press_maybe(
+                    self.shelf
+                        .items
+                        .iter()
+                        .any(|item| !item.busy)
+                        .then_some(Message::SelectAll),
+                )
                 .into(),
                 widget::button::text(fl!("clear-shelf"))
                     .class(cosmic::theme::Button::Icon)
-                    .on_press(Message::Clear)
+                    .on_press_maybe(
+                        self.shelf
+                            .items
+                            .iter()
+                            .any(|item| !item.busy && (selected == 0 || item.selected))
+                            .then_some(Message::Clear),
+                    )
                     .into(),
             ])
             .align_y(Alignment::Center);
@@ -2035,7 +2087,7 @@ impl Orbit {
         let spacing = cosmic::theme::spacing();
         let ellipsize = Ellipsize::Middle(EllipsizeHeightLimit::Lines(1));
         let missing = item.is_missing();
-        let text_style = if missing {
+        let text_style = if missing || item.busy {
             cosmic::theme::Text::Custom(|theme| iced::widget::text::Style {
                 color: Some(
                     iced::Color::from(theme.cosmic().background(false).on).scale_alpha(0.45),
@@ -2046,10 +2098,14 @@ impl Orbit {
             cosmic::theme::Text::Default
         };
         let path = item.path.clone();
-        let checkbox = widget::checkbox(item.selected)
-            .name(fl!("select-item", name = item.name.as_str()))
-            .on_toggle(move |_| Message::Toggle(path.clone()));
-        let parent = if let Some(text) = &item.text {
+        let mut checkbox =
+            widget::checkbox(item.selected).name(fl!("select-item", name = item.name.as_str()));
+        if !item.busy {
+            checkbox = checkbox.on_toggle(move |_| Message::Toggle(path.clone()));
+        }
+        let parent = if item.busy {
+            fl!("converting")
+        } else if let Some(text) = &item.text {
             if is_link(text) {
                 fl!("link-item")
             } else {
@@ -2081,7 +2137,12 @@ impl Orbit {
                 .into(),
         ])
         .width(Length::Fill);
-        let preview: Element<'_, Message> = if missing {
+        let preview: Element<'_, Message> = if item.busy {
+            widget::container(widget::indeterminate_circular().size(28.0).bar_height(2.5))
+                .center_x(32)
+                .center_y(32)
+                .into()
+        } else if missing {
             widget::container(widget::text::caption(fl!("missing-item")).class(text_style))
                 .center_x(48)
                 .center_y(32)
@@ -2116,7 +2177,13 @@ impl Orbit {
             .width(Length::Fill)
             .clip(true)
             .into();
-        let draggable = if missing {
+        let draggable = if item.busy {
+            widget::row::with_children(vec![preview, label])
+                .spacing(spacing.space_s)
+                .align_y(Alignment::Center)
+                .width(Length::Fill)
+                .into()
+        } else if missing {
             widget::mouse_area(
                 widget::row::with_children(vec![preview, label])
                     .spacing(spacing.space_s)
@@ -2158,7 +2225,7 @@ impl Orbit {
                 .name(fl!("remove-item", name = item.name.as_str()))
                 .width(32)
                 .height(32)
-                .on_press(Message::Remove(path))
+                .on_press_maybe((!item.busy).then_some(Message::Remove(path)))
                 .into(),
         ])
         .width(Length::Fill)
