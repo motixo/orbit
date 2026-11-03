@@ -32,6 +32,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut paths: Vec<_> = std::env::args_os().skip(1).collect();
     let mut independent = false;
     match paths.first().and_then(|arg| arg.to_str()) {
+        Some("--convert-image") => {
+            convert::run_worker(&paths[1..])?;
+            return Ok(());
+        }
         Some("--help" | "-h") => {
             println!(
                 "Orbit — a file shelf for COSMIC\n\nUsage: orbit [FILE_OR_FOLDER ...]\n       orbit --new\n       orbit --applet\n       orbit --tray\n       orbit --menu\n       orbit --version"

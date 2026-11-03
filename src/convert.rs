@@ -12,6 +12,8 @@ use std::{
     fs::File,
     io::{self, BufWriter, Cursor, Read, Write},
     path::Path,
+    process::{Child, Command, Stdio},
+    time::{Duration, Instant},
 };
 
 const MEMORY_LIMIT: usize = 512 * 1024 * 1024;
@@ -19,7 +21,7 @@ const INPUT_LIMIT: u64 = 128 * 1024 * 1024;
 
 type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Deserialize, serde::Serialize)]
 pub enum Conversion {
     WebpToJpeg,
     HeicToJpeg,
@@ -72,6 +74,97 @@ pub fn convert(
     if cancelled() || !conversion.candidate(source) {
         return Err(io::Error::other("Unsupported image or conversion cancelled").into());
     }
+    let directory = Directory::new("orbit-image-")?;
+    let path = directory
+        .path()
+        .join(source.file_name().unwrap_or_else(|| "image".as_ref()))
+        .with_extension(if conversion.target() == ImageFormat::Jpeg {
+            "jpeg"
+        } else {
+            "png"
+        });
+    // Decode in a bounded process so a codec panic or allocation failure cannot strand the batch.
+    let child = Command::new("/proc/self/exe")
+        .arg("--convert-image")
+        .arg(serde_json::to_string(&conversion)?)
+        .arg(source)
+        .arg(&path)
+        .env("RAYON_NUM_THREADS", "2")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .spawn()?;
+    wait_for_conversion(child, cancelled)?;
+    Ok(ImportedFiles {
+        files: FileList(vec![path]),
+        directory: Some(directory),
+        text: None,
+    })
+}
+
+fn wait_for_conversion(mut child: Child, cancelled: impl Fn() -> bool) -> Result<()> {
+    let started = Instant::now();
+    let result = loop {
+        if cancelled() || started.elapsed() >= Duration::from_secs(120) {
+            break Err(io::Error::other("Conversion cancelled or timed out"));
+        }
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => break Ok(()),
+            Ok(Some(status)) => {
+                break Err(io::Error::other(format!("Image decoder failed: {status}")));
+            }
+            Err(error) => break Err(error),
+            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+        }
+    };
+    if result.is_err() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    Ok(result?)
+}
+
+pub fn run_worker(args: &[std::ffi::OsString]) -> io::Result<()> {
+    use rustix::process::{Resource, Rlimit, Signal, set_parent_process_death_signal, setrlimit};
+    set_parent_process_death_signal(Some(Signal::KILL))?;
+    for (resource, limit) in [
+        (Resource::As, (MEMORY_LIMIT * 2) as u64),
+        (Resource::Cpu, 120),
+        (Resource::Core, 0),
+    ] {
+        setrlimit(
+            resource,
+            Rlimit {
+                current: Some(limit),
+                maximum: Some(limit),
+            },
+        )?;
+    }
+    let [conversion, source, destination] = args else {
+        return Err(io::Error::other("Invalid conversion arguments"));
+    };
+    let conversion = serde_json::from_str(
+        conversion
+            .to_str()
+            .ok_or_else(|| io::Error::other("Invalid conversion"))?,
+    )?;
+    write_converted_image(
+        Path::new(source),
+        conversion,
+        Path::new(destination),
+        || false,
+    )
+    .map_err(io::Error::other)
+}
+
+fn write_converted_image(
+    source: &Path,
+    conversion: Conversion,
+    destination: &Path,
+    cancelled: impl Fn() -> bool,
+) -> Result<()> {
+    if cancelled() || !conversion.candidate(source) {
+        return Err(io::Error::other("Unsupported image or conversion cancelled").into());
+    }
     let (mut image, profile) = match conversion {
         Conversion::WebpToJpeg => decode_webp(source)?,
         Conversion::HeicToJpeg => decode_heic(source)?,
@@ -94,16 +187,7 @@ pub fn convert(
     if cancelled() {
         return Err(io::Error::other("Conversion cancelled").into());
     }
-    let directory = Directory::new("orbit-image-")?;
-    let path = directory
-        .path()
-        .join(source.file_name().unwrap_or_else(|| "image".as_ref()))
-        .with_extension(if target == ImageFormat::Jpeg {
-            "jpeg"
-        } else {
-            "png"
-        });
-    let mut writer = BufWriter::new(File::create_new(&path)?);
+    let mut writer = BufWriter::new(File::create_new(destination)?);
     if target == ImageFormat::Jpeg {
         let mut encoder = JpegEncoder::new_with_quality(&mut writer, 90);
         if let Some(profile) = profile {
@@ -122,11 +206,7 @@ pub fn convert(
     if cancelled() {
         return Err(io::Error::other("Conversion cancelled").into());
     }
-    Ok(ImportedFiles {
-        files: FileList(vec![path]),
-        directory: Some(directory),
-        text: None,
-    })
+    Ok(())
 }
 
 fn decode_webp(source: &Path) -> Result<(DynamicImage, Option<Vec<u8>>)> {
@@ -286,6 +366,41 @@ fn decode_avif(source: &Path) -> Result<(DynamicImage, Option<Vec<u8>>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn convert(
+        source: &Path,
+        conversion: Conversion,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<ImportedFiles> {
+        let directory = Directory::new("orbit-image-")?;
+        let path = directory
+            .path()
+            .join(source.file_name().unwrap())
+            .with_extension(if conversion.target() == ImageFormat::Jpeg {
+                "jpeg"
+            } else {
+                "png"
+            });
+        write_converted_image(source, conversion, &path, cancelled)?;
+        Ok(ImportedFiles {
+            files: FileList(vec![path]),
+            directory: Some(directory),
+            text: None,
+        })
+    }
+
+    #[test]
+    fn failed_or_cancelled_decoder_returns_an_error_and_is_reaped() {
+        let child = Command::new("sh").args(["-c", "exit 7"]).spawn().unwrap();
+        assert!(wait_for_conversion(child, || false).is_err());
+        let child = Command::new("sleep").arg("60").spawn().unwrap();
+        let pid = rustix::process::Pid::from_raw(child.id() as i32).unwrap();
+        assert!(wait_for_conversion(child, || true).is_err());
+        assert_eq!(
+            rustix::process::test_kill_process(pid),
+            Err(rustix::io::Errno::SRCH)
+        );
+    }
 
     #[test]
     fn png_and_jpeg_conversion_keeps_sources_and_validates_formats() {

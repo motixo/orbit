@@ -3786,6 +3786,7 @@ dependencies = [
  "ron",
  "roxmltree",
  "rust-embed",
+ "rustix 1.1.6",
  "semver",
  "serde",
  "serde_json",
