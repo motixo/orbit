@@ -959,7 +959,6 @@ impl cosmic::Application for Orbit {
                             self.shelf.remove(&source);
                             self.release_imports();
                         }
-                        self.status.clear();
                     }
                     Err(error) => self.status = error,
                 }
@@ -1595,6 +1594,9 @@ impl Orbit {
         }) {
             self.compression_dialog = None;
         }
+        if self.conversions.is_empty() {
+            self.status.clear();
+        }
         let started = sources
             .iter()
             .map(|source| source.path.clone())
@@ -1611,7 +1613,6 @@ impl Orbit {
             tasks.push(task);
             jobs.push((id, source, output));
         }
-        self.status.clear();
         let worker = std::thread::Builder::new()
             .name("orbit-convert".into())
             .spawn(move || {
