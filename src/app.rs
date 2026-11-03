@@ -391,6 +391,11 @@ impl cosmic::Application for Orbit {
         } else {
             0.0
         };
+        let border_width = if self.pin_collapsed && self.hovering && self.dragged_paths.is_empty() {
+            hint_width + 2.0
+        } else {
+            hint_width
+        };
         let header = widget::header_bar()
             .end(
                 widget::button::icon(widget::icon::from_name(if self.pin_collapsed {
@@ -455,30 +460,36 @@ impl cosmic::Application for Orbit {
                 }))
                 .width(Length::Fill)
                 .height(Length::Fill);
+        let content = widget::container(content)
+            .padding(hint_width)
+            .width(Length::Fill)
+            .height(Length::Fill);
+        let outline = widget::container(widget::Space::new())
+            .class(cosmic::theme::Container::custom(move |theme| {
+                let cosmic = theme.cosmic();
+                widget::container::Style {
+                    border: iced::Border {
+                        color: cosmic
+                            .window_hint
+                            .map(iced::Color::from)
+                            .unwrap_or_else(|| cosmic.accent_color().into()),
+                        width: border_width,
+                        radius: cosmic
+                            .radius_s()
+                            .map(|radius| {
+                                (if radius < 4.0 { radius } else { radius + 4.0 }) + hint_width
+                            })
+                            .into(),
+                    },
+                    ..Default::default()
+                }
+            }))
+            .width(Length::Fill)
+            .height(Length::Fill);
         self.with_compression_dialog(
-            widget::container(content)
-                .padding(hint_width)
-                .class(cosmic::theme::Container::custom(move |theme| {
-                    let cosmic = theme.cosmic();
-                    widget::container::Style {
-                        border: iced::Border {
-                            color: cosmic
-                                .window_hint
-                                .map(iced::Color::from)
-                                .unwrap_or_else(|| cosmic.accent_color().into()),
-                            width: hint_width,
-                            radius: cosmic
-                                .radius_s()
-                                .map(|radius| {
-                                    (if radius < 4.0 { radius } else { radius + 4.0 }) + hint_width
-                                })
-                                .into(),
-                        },
-                        ..Default::default()
-                    }
-                }))
-                .width(Length::Fill)
-                .height(Length::Fill)
+            iced::widget::Stack::new()
+                .push(content)
+                .push(outline)
                 .into(),
         )
     }
