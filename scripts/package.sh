@@ -10,6 +10,11 @@ orbit_version=$("$orbit_binary" --version)
 orbit_version=${orbit_version#Orbit }
 orbit_declared=$(sed -n 's/^version = "\([^"]*\)"$/\1/p' "$orbit_source/Cargo.toml" | head -n 1)
 [ "$orbit_version" = "$orbit_declared" ]
+orbit_linkage=$(readelf -d "$orbit_binary")
+if printf '%s\n' "$orbit_linkage" | grep -Eq '\(NEEDED\).*\[lib(heif|de265|avif|dav1d|aom|jpeg|png|webp)[^]]*\.so'; then
+    printf 'Image codecs must be bundled in Orbit.\n' >&2
+    exit 1
+fi
 case "$(uname -m)" in
     x86_64) orbit_arch=x86_64; orbit_deb_arch=amd64 ;;
     aarch64) orbit_arch=aarch64; orbit_deb_arch=arm64 ;;
