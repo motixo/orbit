@@ -138,10 +138,12 @@ pub struct DeviceEdit {
     pub input: widget::Id,
 }
 
+#[derive(Clone, Debug)]
 pub struct ReceivedFile {
     pub sender: String,
     pub order: u64,
     pub dragged: bool,
+    pub cache: Arc<crate::cache::Directory>,
     metadata: std::fs::Metadata,
 }
 
@@ -151,27 +153,41 @@ impl ReceivedFile {
         if !metadata.is_file() {
             return Err(std::io::Error::other("Not a received file"));
         }
+        let cache = crate::cache::Directory::new("orbit-drop-")?;
+        let snapshot = cache.path().join(path.file_name().unwrap());
+        if std::fs::hard_link(path, &snapshot).is_err() {
+            std::fs::copy(path, &snapshot)?;
+        }
         Ok(Self {
             sender,
             order,
             dragged: false,
-            metadata,
+            cache,
+            metadata: std::fs::symlink_metadata(path)?,
         })
     }
 
-    pub fn remove_copy(&self, path: &std::path::Path) -> std::io::Result<()> {
+    fn matches(&self, current: &std::fs::Metadata) -> bool {
         use std::os::unix::fs::MetadataExt;
+        current.is_file()
+            && current.dev() == self.metadata.dev()
+            && current.ino() == self.metadata.ino()
+            && current.ctime() == self.metadata.ctime()
+            && current.ctime_nsec() == self.metadata.ctime_nsec()
+    }
+
+    pub fn export_path(&self, path: &std::path::Path) -> Option<PathBuf> {
+        self.matches(&std::fs::symlink_metadata(path).ok()?)
+            .then(|| self.cache.path().join(path.file_name().unwrap()))
+    }
+
+    pub fn remove_copy(&self, path: &std::path::Path) -> std::io::Result<()> {
         let current = match std::fs::symlink_metadata(path) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(error) => return Err(error),
         };
-        if current.is_file()
-            && current.dev() == self.metadata.dev()
-            && current.ino() == self.metadata.ino()
-            && current.ctime() == self.metadata.ctime()
-            && current.ctime_nsec() == self.metadata.ctime_nsec()
-        {
+        if self.matches(&current) {
             std::fs::remove_file(path)?;
         }
         Ok(())
@@ -971,11 +987,13 @@ mod tests {
         std::fs::write(&replacement, "keep").unwrap();
         std::fs::rename(&replacement, &path).unwrap();
         received.remove_copy(&path).unwrap();
+        assert!(received.export_path(&path).is_none());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "keep");
         let received = ReceivedFile::new(&path, "device".into(), 1).unwrap();
         std::fs::rename(&path, &replacement).unwrap();
         std::os::unix::fs::symlink(&replacement, &path).unwrap();
         received.remove_copy(&path).unwrap();
+        assert!(received.export_path(&path).is_none());
         assert!(path.is_symlink());
         assert_eq!(std::fs::read_to_string(&replacement).unwrap(), "keep");
         let copy = directory.path().join("copy.txt");

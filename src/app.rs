@@ -1367,10 +1367,10 @@ impl cosmic::Application for Orbit {
                                 share.pair_requests.push(request);
                             }
                         }
-                        crate::device_share::Event::Received(imported, remote) => {
+                        crate::device_share::Event::Received(imported, received) => {
                             share.status = fl!("share-received");
                             let sender = crate::device_share::sender_name(
-                                &remote,
+                                &received.sender,
                                 &share.pairings,
                                 &share.connected_devices,
                             )
@@ -1380,25 +1380,16 @@ impl cosmic::Application for Orbit {
                             let task = self.accept_import(order, Ok(imported));
                             for item in &mut self.shelf.items[first_added..] {
                                 item.origin = Some(crate::shelf::Sender {
-                                    id: remote.clone(),
+                                    id: received.sender.clone(),
                                     name: sender.clone().unwrap_or_else(|| fl!("sender-device")),
                                 });
-                                match crate::share::ReceivedFile::new(
-                                    &item.path,
-                                    remote.clone(),
-                                    item.order,
-                                ) {
-                                    Ok(received) => {
-                                        self.share
-                                            .as_mut()
-                                            .unwrap()
-                                            .received
-                                            .insert(item.path.clone(), received);
-                                    }
-                                    Err(error) => {
-                                        eprintln!("Could not track received file: {error}")
-                                    }
-                                }
+                                let mut received = received.clone();
+                                received.order = item.order;
+                                self.share
+                                    .as_mut()
+                                    .unwrap()
+                                    .received
+                                    .insert(item.path.clone(), received);
                             }
                             return task;
                         }
@@ -1581,7 +1572,7 @@ impl cosmic::Application for Orbit {
                 let paths = self.shelf.export_paths();
                 if !paths.is_empty() {
                     self.status.clear();
-                    let data = self.shelf.transfer(paths, true);
+                    let data = self.export_transfer(self.shelf.transfer(paths, true));
                     if let Err(error) = crate::cache::protect_clipboard(&data.cached) {
                         eprintln!("Could not protect clipboard cache: {error}");
                     }
@@ -2394,6 +2385,25 @@ impl cosmic::Application for Orbit {
 }
 
 impl Orbit {
+    fn export_transfer(&self, mut data: Transfer) -> Transfer {
+        if let Some(share) = &self.share {
+            for (index, path) in data.files.0.iter_mut().enumerate() {
+                if let Some(received) = share.received.get(path)
+                    && let Some(exported) = received.export_path(path)
+                {
+                    *path = exported.clone();
+                    if let Some(crate::transfer::Text::File(text)) =
+                        data.text.as_mut().and_then(|text| text.get_mut(index))
+                    {
+                        *text = exported;
+                    }
+                    data.cached.push(received.cache.clone());
+                }
+            }
+        }
+        data
+    }
+
     fn can_remove(item: &crate::shelf::Item, share: Option<&crate::share::Share>) -> bool {
         !item.busy
             && item.origin.as_ref().is_none_or(|origin| {
@@ -3651,6 +3661,7 @@ impl Orbit {
         } else {
             data.drag_actions(self.copy_mode)
         };
+        let exported = Arc::new(self.export_transfer((*data).clone()));
         let content = widget::mouse_area(content)
             .on_press(Message::FocusItem(path.to_owned()))
             .on_double_click(Message::Preview(Some(path.to_owned())));
@@ -3665,7 +3676,7 @@ impl Orbit {
         .action(action)
         .on_start(Some(Message::DragStarted(data.clone())))
         .drag_content(move || crate::transfer::Drag {
-            transfer: data.clone(),
+            transfer: exported.clone(),
             content_only,
         })
         .on_finish(Some(Message::DragFinished))
@@ -3841,6 +3852,7 @@ mod tests {
 
     #[tokio::test]
     async fn only_successfully_dragged_received_copies_are_cleaned_when_the_sender_leaves() {
+        use cosmic::iced::clipboard::mime::AsMimeTypes;
         let fixture = tempfile::tempdir().unwrap();
         let download = fixture.path().join("Orbit-Share");
         std::fs::create_dir(&download).unwrap();
@@ -3875,12 +3887,25 @@ mod tests {
                         directory: None,
                         text: None,
                     },
-                    sender.into(),
+                    crate::share::ReceivedFile::new(path, sender.into(), 0).unwrap(),
                 ),
             ));
         }
         let destination = fixture.path().join("saved.txt");
-        std::fs::copy(&dragged, &destination).unwrap();
+        let transfer = app.export_transfer(
+            app.shelf
+                .transfer(vec![dragged.clone(), local.clone()], false),
+        );
+        let offered = FileList::try_from((
+            transfer.as_bytes(URI_LIST).unwrap().into_owned(),
+            URI_LIST.into(),
+        ))
+        .unwrap();
+        let exported = offered.0[0].clone();
+        assert_ne!(exported, dragged);
+        assert_eq!(exported.file_name(), dragged.file_name());
+        assert_eq!(offered.0[1], local);
+        drop(transfer);
         app.dragged_paths = vec![cancelled.clone()];
         let _ = app.update(Message::DragCancelled);
         app.dragged_paths = vec![dragged.clone()];
@@ -3903,6 +3928,9 @@ mod tests {
         ));
         assert!(!dragged.exists());
         assert!(!app.shelf.items.iter().any(|item| item.path == dragged));
+        std::fs::copy(&exported, &destination).unwrap();
+        assert_eq!(std::fs::read_to_string(&destination).unwrap(), "received");
+        std::fs::remove_dir_all(exported.parent().unwrap()).unwrap();
         for path in [&untouched, &cancelled, &other, &local, &destination] {
             assert!(path.is_file());
         }

@@ -308,7 +308,7 @@ type Staging = HashMap<uuid::Uuid, (String, Weak<tempfile::TempDir>)>;
 
 #[derive(Clone, Debug)]
 pub enum Event {
-    Received(ImportedFiles, String),
+    Received(ImportedFiles, crate::share::ReceivedFile),
     Remove(std::path::PathBuf, u64),
     Stopped,
     Devices(Vec<ConnectedDevice>, bool),
@@ -1132,7 +1132,7 @@ async fn croc_import(
     if source.as_ref().is_some_and(|key| received.contains(key)) {
         return Ok(StatusCode::NO_CONTENT);
     }
-    let imported = tokio::task::spawn_blocking(move || {
+    let (imported, tracked) = tokio::task::spawn_blocking(move || {
         let mut entries = std::fs::read_dir(directory.path())
             .map_err(|_| (StatusCode::BAD_REQUEST, "Incomplete transfer"))?;
         let entry = entries
@@ -1166,17 +1166,22 @@ async fn croc_import(
         );
         let path = save_received(pending, &file.name, directory.path().parent().unwrap())
             .map_err(|_| (StatusCode::INSUFFICIENT_STORAGE, "Could not save file"))?;
-        Ok(ImportedFiles {
-            files: crate::transfer::FileList(vec![path]),
-            directory: None,
-            text,
-        })
+        let tracked = crate::share::ReceivedFile::new(&path, sender, 0)
+            .map_err(|_| (StatusCode::INSUFFICIENT_STORAGE, "Could not prepare file"))?;
+        Ok((
+            ImportedFiles {
+                files: crate::transfer::FileList(vec![path]),
+                directory: None,
+                text,
+            },
+            tracked,
+        ))
     })
     .await
     .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not save file"))??;
     state
         .incoming
-        .unbounded_send(Event::Received(imported, sender))
+        .unbounded_send(Event::Received(imported, tracked))
         .map_err(|_| (StatusCode::GONE, "Sharing stopped"))?;
     if let Some(key) = source {
         received.insert(key);
@@ -1230,7 +1235,7 @@ async fn receive_text(
     )
     .await
     .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not save text"))?;
-    let imported = tokio::task::spawn_blocking(move || {
+    let (imported, tracked) = tokio::task::spawn_blocking(move || {
         let source = &imported.files.0[0];
         let mut pending = incoming_file(&destination)?;
         std::io::copy(&mut std::fs::File::open(source)?, pending.as_file_mut())?;
@@ -1239,18 +1244,22 @@ async fn receive_text(
             &source.file_name().unwrap().to_string_lossy(),
             &destination,
         )?;
-        Ok::<_, std::io::Error>(ImportedFiles {
-            files: crate::transfer::FileList(vec![path]),
-            directory: None,
-            text: imported.text,
-        })
+        let tracked = crate::share::ReceivedFile::new(&path, sender, 0)?;
+        Ok::<_, std::io::Error>((
+            ImportedFiles {
+                files: crate::transfer::FileList(vec![path]),
+                directory: None,
+                text: imported.text,
+            },
+            tracked,
+        ))
     })
     .await
     .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not save text"))?
     .map_err(|_| (StatusCode::INSUFFICIENT_STORAGE, "Could not save text"))?;
     state
         .incoming
-        .unbounded_send(Event::Received(imported, sender))
+        .unbounded_send(Event::Received(imported, tracked))
         .map_err(|_| (StatusCode::GONE, "Sharing stopped"))?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1865,7 +1874,7 @@ mod tests {
         else {
             panic!("Expected received file");
         };
-        assert_eq!(remote, "aabbccdd-1234-4567-8901-123456789abc");
+        assert_eq!(remote.sender, "aabbccdd-1234-4567-8901-123456789abc");
         assert_eq!(
             std::fs::read_to_string(&received.files.0[0]).unwrap(),
             "from orbit"
