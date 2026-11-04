@@ -103,6 +103,36 @@ func TestRenamingPairedDevicesPersistsWithoutChangingCredentials(t *testing.T) {
 	}
 }
 
+func TestBrowserNamesReplaceIPLabelsWithoutOverwritingAliases(t *testing.T) {
+	store, _, err := loadIdentity(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _, err := store.pair("192.168.1.2", store.PWA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := store.Devices[id]
+	if changed, err := store.rememberBrowserName(id, "Firefox on Linux"); err != nil || !changed {
+		t.Fatalf("could not replace IP label: %v", err)
+	}
+	restored, _, err := loadIdentity(filepath.Dir(store.path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := original
+	want.Name = "Firefox on Linux"
+	if restored.Devices[id] != want {
+		t.Fatal("name did not persist or pairing credentials changed")
+	}
+	if err := store.rename(id, "My computer"); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := store.rememberBrowserName(id, "Chrome on Linux"); err != nil || changed || store.Devices[id].Name != "My computer" {
+		t.Fatal("browser overwrote a custom device name")
+	}
+}
+
 func TestNativeRegistrationCannotProxyOutsideTheLocalShare(t *testing.T) {
 	token := strings.Repeat("a", 64)
 	valid := config{PWA: "https://share.example/", Share: "12345678-1234-4123-8123-123456789abc", Bind: "192.168.1.2", Token: token, URL: "http://127.0.0.1:12345/" + token + "/"}

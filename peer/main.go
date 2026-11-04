@@ -238,13 +238,18 @@ func (h *hub) accept(mux *udpmux.UDPMux, candidate udpmux.Candidate) error {
 						if !named {
 							named = true
 							client.Name = cleanDeviceName(metadata.Name)
+							if changed, err := h.store.rememberBrowserName(pairID, client.Name); err != nil {
+								log.Printf("Could not save browser device name: %v", err)
+							} else if changed {
+								h.broadcastPairings()
+							}
 							selected.presence(candidate.LocalUfrag, &client, false)
 						}
 					case "pair":
 						if pairID == "" {
 							name := cleanDeviceName(metadata.Name)
 							if name == "" {
-								name = client.IP
+								name = "Browser"
 							}
 							var err error
 							pairID, authToken, err = h.store.pair(name, selected.PWA)
