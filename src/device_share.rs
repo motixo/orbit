@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use crate::{
+    fl,
     import::ImportedFiles,
     share::{Bundle, SharedFile},
 };
@@ -297,12 +298,13 @@ struct ShareState {
     origin: String,
     incoming: UnboundedSender<Event>,
     stop: watch::Receiver<bool>,
-    staging: Arc<tokio::sync::Mutex<HashMap<uuid::Uuid, (String, Weak<tempfile::TempDir>)>>>,
+    staging: Arc<tokio::sync::Mutex<Staging>>,
     directory: watch::Receiver<std::path::PathBuf>,
     received: ReceivedSources,
 }
 
 pub type ReceivedSources = Arc<tokio::sync::Mutex<HashSet<(String, String)>>>;
+type Staging = HashMap<uuid::Uuid, (String, Weak<tempfile::TempDir>)>;
 
 #[derive(Clone, Debug)]
 pub enum Event {
@@ -517,13 +519,17 @@ pub async fn start(
     session_id: uuid::Uuid,
     remote_open: Option<uuid::Uuid>,
     bundle: Arc<Bundle>,
-    pwa_url: url::Url,
-    directory: std::path::PathBuf,
+    preferences: &crate::config::Preferences,
     received: ReceivedSources,
     incoming: UnboundedSender<Event>,
 ) -> Result<Arc<Session>, String> {
     use std::process::Stdio;
 
+    let pwa_url =
+        crate::config::pwa_url(&preferences.share_pwa_url).ok_or_else(|| fl!("share-pwa-error"))?;
+    let directory = preferences
+        .download_directory()
+        .map_err(|_| fl!("share-folder-error"))?;
     let executable = executable().map_err(|error| error.to_string())?;
     if !installed_at(&executable) {
         return Err("Run File sharing setup to install Croc".into());
@@ -548,9 +554,6 @@ pub async fn start(
     let connection = match tokio::net::UnixStream::connect(&socket).await {
         Ok(connection) => connection,
         Err(_) => {
-            let current_pwa =
-                crate::config::pwa_url(&crate::config::Preferences::load().share_pwa_url)
-                    .ok_or("Invalid sharing address")?;
             let mut child = tokio::process::Command::new(executable)
                 .env("ORBIT_PEER_VERSION", &peer_version)
                 .env(
@@ -560,7 +563,7 @@ pub async fn start(
                         .with_file_name("orbit"),
                 )
                 .env("ORBIT_PEER_BIND", address.ip.to_string())
-                .env("ORBIT_SHARE_PWA", current_pwa.as_str())
+                .env("ORBIT_SHARE_PWA", pwa_url.as_str())
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::inherit())

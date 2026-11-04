@@ -2511,17 +2511,7 @@ impl Orbit {
         let Some(bundle) = share.bundle.clone() else {
             return Task::none();
         };
-        let Some(pwa_url) = crate::config::pwa_url(&self.preferences.share_pwa_url) else {
-            share.status = fl!("share-pwa-error");
-            return Task::none();
-        };
-        let directory = match self.preferences.download_directory() {
-            Ok(directory) => directory,
-            Err(_) => {
-                share.status = fl!("share-folder-error");
-                return Task::none();
-            }
-        };
+        let preferences = self.preferences.clone();
         share.generation += 1;
         let generation = share.generation;
         let session_id = share.session_id;
@@ -2546,8 +2536,7 @@ impl Orbit {
                     session_id,
                     remote_open,
                     bundle,
-                    pwa_url,
-                    directory,
+                    &preferences,
                     received_sources,
                     output,
                 )
