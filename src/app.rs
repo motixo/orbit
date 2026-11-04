@@ -846,8 +846,8 @@ impl cosmic::Application for Orbit {
                     session.set_directory(directory);
                 }
                 if pwa_changed && self.share.is_some() {
-                    let _ = self.update(Message::StopQr);
-                    return self.start_qr();
+                    let stop = self.update(Message::StopQr);
+                    return Task::batch([stop, self.start_qr()]);
                 }
             }
             Message::WatchArea(area) => {
@@ -1166,8 +1166,8 @@ impl cosmic::Application for Orbit {
                     && index < share.addresses.len()
                 {
                     share.address = index;
-                    let _ = self.update(Message::StopQr);
-                    return self.update(Message::StartQr);
+                    let stop = self.update(Message::StopQr);
+                    return Task::batch([stop, self.update(Message::StartQr)]);
                 }
             }
             Message::StopQr => {
@@ -1194,6 +1194,9 @@ impl cosmic::Application for Orbit {
                         .duration(crate::orbit_icon::TRANSITION_DURATION)
                         .easing(iced::animation::Easing::EaseInOut);
                     share.status.clear();
+                }
+                if self.cleanup_received(false) {
+                    return self.sync_share();
                 }
             }
             Message::CopyShareLink => {
@@ -1271,8 +1274,8 @@ impl cosmic::Application for Orbit {
                     );
                     match event {
                         crate::device_share::Event::Stopped => {
-                            let _ = self.update(Message::StopQr);
-                            return self.retry_qr();
+                            let stop = self.update(Message::StopQr);
+                            return Task::batch([stop, self.retry_qr()]);
                         }
                         crate::device_share::Event::Devices(mut devices, intentional) => {
                             devices.retain(|remote| !share.forgotten.contains(&remote.pair_id));
@@ -2085,8 +2088,8 @@ impl cosmic::Application for Orbit {
                         .unwrap_or(0);
                     let next = share.addresses.get(share.address).map(|address| address.ip);
                     if selected != next && share.session.is_some() {
-                        let _ = self.update(Message::StopQr);
-                        return self.start_qr();
+                        let stop = self.update(Message::StopQr);
+                        return Task::batch([stop, self.start_qr()]);
                     }
                     if share.session.is_none() && !share.qr_busy {
                         return self.start_qr();
@@ -4068,8 +4071,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn network_loss_clears_the_old_invitation() {
+    async fn network_loss_clears_the_old_invitation_and_only_dragged_received_copies() {
         let mut app = shared_app().await;
+        let fixture = tempfile::tempdir().unwrap();
+        let dragged = fixture.path().join("dragged.txt");
+        let untouched = fixture.path().join("untouched.txt");
+        for path in [&dragged, &untouched] {
+            std::fs::write(path, "received").unwrap();
+            app.shelf.add([path.clone()]);
+            let order = app.shelf.items.last().unwrap().order;
+            let mut received =
+                crate::share::ReceivedFile::new(path, "sender".into(), order).unwrap();
+            received.dragged = path == &dragged;
+            app.share
+                .as_mut()
+                .unwrap()
+                .received
+                .insert(path.clone(), received);
+        }
         let id = app.share.as_ref().unwrap().id;
         // A live session always has a selected address.
         app.share.as_mut().unwrap().addresses = vec![crate::device_share::Address {
@@ -4079,6 +4098,10 @@ mod tests {
         let _ = app.update(Message::ShareNetwork(id, Err("No local network".into())));
         let share = app.share.as_ref().unwrap();
         assert!(share.session.is_none() && share.qr.is_none() && share.addresses.is_empty());
+        assert!(!dragged.exists());
+        assert!(untouched.is_file());
+        assert!(!app.shelf.items.iter().any(|item| item.path == dragged));
+        assert!(app.shelf.items.iter().any(|item| item.path == untouched));
     }
 
     #[tokio::test]
