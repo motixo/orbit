@@ -102,16 +102,16 @@ func (h *hub) desktopChannel(parent context.Context, pc *webrtc.PeerConnection, 
 	go func() {
 		<-ctx.Done()
 		l.deadline.Stop()
-		l.ready.Store(false)
 		l.mu.Lock()
+		l.ready.Store(false)
 		s := l.local
-		l.mu.Unlock()
 		if s != nil {
 			s.emit(map[string]any{"pairRequest": map[string]string{"id": l.id}})
 			if l.wasReady.Load() {
 				s.presence(l.id, nil, l.intentional.Load())
 			}
 		}
+		l.mu.Unlock()
 		h.mu.Lock()
 		delete(h.native, l.id)
 		delete(h.peers, pc)
@@ -382,11 +382,17 @@ func (l *desktopLink) heartbeat(peer device) {
 		case <-l.ctx.Done():
 			return
 		case <-ticker.C:
+			l.mu.Lock()
+			if l.ctx.Err() != nil || !l.ready.Load() {
+				l.mu.Unlock()
+				return
+			}
 			elapsed := time.Since(time.Unix(0, l.lastPong.Load()))
 			if stalled := elapsed >= 4*time.Second; peer.Reconnecting != stalled {
 				peer.Reconnecting = stalled
 				l.local.presence(l.id, &peer, false)
 			}
+			l.mu.Unlock()
 			if elapsed >= 8*time.Second || l.dc.SendText("ping") != nil {
 				l.cancel()
 				return

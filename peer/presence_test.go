@@ -3,12 +3,35 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"io"
 	"net"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 )
+
+func TestInactiveDesktopDoesNotPublishHeartbeatPresence(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		broker, reader := net.Pipe()
+		defer broker.Close()
+		defer reader.Close()
+		go io.Copy(io.Discard, reader)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		s := &server{connection: broker}
+		link := &desktopLink{ctx: ctx, cancel: cancel, local: s, id: "closed"}
+		link.lastPong.Store(time.Now().Add(-10 * time.Second).UnixNano())
+		go link.heartbeat(device{PairID: "remote"})
+		time.Sleep(1100 * time.Millisecond)
+		synctest.Wait()
+		if len(s.clients) != 0 {
+			t.Fatal("heartbeat restored an inactive device")
+		}
+	})
+}
 
 func TestDisconnectPeerOnlyStopsMatchingBrowsersInThisShare(t *testing.T) {
 	stopped := make(chan bool, 4)

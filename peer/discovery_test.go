@@ -95,7 +95,7 @@ func TestDesktopVerificationBindsBothIdentitiesAndFreshNonces(t *testing.T) {
 		t.Fatal("nonce commitment did not bind the reveal")
 	}
 	for _, approval := range []struct{ local, remote bool }{{false, false}, {true, false}, {false, true}} {
-		link := &desktopLink{code: code, approved: approval.local, confirmed: approval.remote}
+		link := &desktopLink{ctx: context.Background(), code: code, approved: approval.local, confirmed: approval.remote}
 		link.activate()
 		if link.ready.Load() {
 			t.Fatal("sharing began before both sides confirmed")
