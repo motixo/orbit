@@ -26,6 +26,8 @@ pub struct OrbitApplet {
     desktop_size: iced::Size,
     page: Page,
     preferences: Preferences,
+    pwa_url: String,
+    saving_pwa: bool,
     modes: Vec<String>,
     corners: Vec<String>,
     reminders: Vec<String>,
@@ -65,6 +67,7 @@ pub enum MenuEntry {
 pub fn menu(recent: &[crate::history::Entry]) -> Vec<MenuEntry> {
     let mut items = vec![
         MenuEntry::Item(fl!("new-orbit"), Message::NewOrbit),
+        MenuEntry::Item(fl!("share"), Message::Share),
         MenuEntry::Item(fl!("settings"), Message::Page(Page::Settings)),
         MenuEntry::Item(fl!("shortcuts"), Message::Page(Page::Shortcuts)),
         MenuEntry::Item(fl!("about"), Message::Page(Page::About)),
@@ -97,8 +100,10 @@ pub enum Message {
     Tray(bool),
     TrayStarted(bool),
     NewOrbit,
+    Share,
     Restore(String),
     ChooseWatch,
+    SharingSetup,
     WatchChosen(Result<Option<std::path::PathBuf>, String>),
     RemoveWatch(std::path::PathBuf),
     Launched(bool),
@@ -110,6 +115,11 @@ pub enum Message {
     Corner(usize),
     PinnedHint(bool),
     Reminder(usize),
+    PwaUrl(String),
+    SavePwaUrl,
+    PwaSaved(String, Result<(), String>),
+    ChooseShareFolder,
+    ShareFolderChosen(Result<Option<std::path::PathBuf>, String>),
     CheckUpdates(bool),
     Checked(bool, Result<crate::updates::Outcome, String>),
     Config(Preferences),
@@ -156,6 +166,8 @@ impl cosmic::Application for OrbitApplet {
             popup: None,
             desktop_size: iced::Size::new(420.0, MENU_MIN_HEIGHT),
             page: Page::Menu,
+            pwa_url: preferences.share_pwa_url.clone(),
+            saving_pwa: false,
             preferences,
             modes: vec![fl!("floating"), fl!("pinned")],
             corners: vec![
@@ -294,7 +306,7 @@ impl cosmic::Application for OrbitApplet {
         let activation = self
             .desktop
             .as_ref()
-            .map(crate::tray::Session::subscription)
+            .map(|session| session.subscription().map(Message::Activation))
             .unwrap_or_else(Subscription::none);
         Subscription::batch([config, keyboard, updates, presence, tray, activation])
     }
@@ -384,6 +396,11 @@ impl cosmic::Application for OrbitApplet {
                         widget::toggler(self.preferences.pinned_hint)
                             .on_toggle(Message::PinnedHint),
                     )));
+                body = body.push(Self::popup_row(widget::settings::item(
+                    fl!("sharing-setup-title"),
+                    widget::button::standard(fl!("sharing-setup-open"))
+                        .on_press(Message::SharingSetup),
+                )));
                 body = body.push(widget::divider::horizontal::default()).push(
                     widget::container(widget::text::caption(fl!("watch-folders")))
                         .padding([0, spacing.space_xxs]),
@@ -430,6 +447,62 @@ impl cosmic::Application for OrbitApplet {
                             .padding([0, spacing.space_xxs]),
                     );
                 body = body
+                    .push(widget::divider::horizontal::default())
+                    .push(
+                        widget::container(
+                            widget::column::with_children(vec![
+                                widget::text::caption(fl!("share")).into(),
+                                widget::settings::item(
+                                    fl!("share-folder"),
+                                    widget::button::standard(fl!("change-folder"))
+                                        .on_press(Message::ChooseShareFolder),
+                                )
+                                .into(),
+                                widget::text::caption(
+                                    self.preferences
+                                        .download_directory()
+                                        .map(|path| path.display().to_string())
+                                        .unwrap_or_else(|_| fl!("share-folder-error")),
+                                )
+                                .width(Length::Fill)
+                                .wrapping(iced::widget::text::Wrapping::None)
+                                .ellipsize(iced::advanced::text::Ellipsize::End(
+                                    iced::advanced::text::EllipsizeHeightLimit::Lines(1),
+                                ))
+                                .into(),
+                                widget::text::caption(fl!("share-pwa-url")).into(),
+                                crate::layer_input::text_input(
+                                    widget::text_input(crate::config::SHARE_PWA_URL, &self.pwa_url)
+                                        .on_input(Message::PwaUrl)
+                                        .on_submit(|_| Message::SavePwaUrl),
+                                    true,
+                                ),
+                            ])
+                            .spacing(spacing.space_xxs),
+                        )
+                        .padding([0, spacing.space_xxs]),
+                    )
+                    .push(Self::popup_row(
+                        widget::row::with_children(vec![
+                            widget::button::standard(fl!("save"))
+                                .on_press_maybe(
+                                    (!self.saving_pwa
+                                        && self.pwa_url != self.preferences.share_pwa_url)
+                                        .then_some(Message::SavePwaUrl),
+                                )
+                                .into(),
+                            widget::button::standard(fl!("share-deploy"))
+                                .on_press(Message::OpenLink(crate::config::SHARE_DEPLOY_URL))
+                                .into(),
+                        ])
+                        .spacing(spacing.space_xxs),
+                    ))
+                    .push(
+                        widget::container(
+                            widget::text::caption(fl!("share-pwa-hint")).width(Length::Fill),
+                        )
+                        .padding([0, spacing.space_xxs]),
+                    )
                     .push(widget::divider::horizontal::default())
                     .push(Self::popup_row(widget::settings::item(
                         fl!("update-reminder"),
@@ -575,6 +648,7 @@ impl cosmic::Application for OrbitApplet {
             Message::NewOrbit => {
                 return self.launch(Vec::new(), None);
             }
+            Message::Share => return self.launch(vec!["--share".into()], None),
             Message::Hover(value) => self.hovering = value,
             Message::DropData(bytes, mime) => {
                 self.hovering = false;
@@ -621,6 +695,9 @@ impl cosmic::Application for OrbitApplet {
                 self.page = page;
                 self.editing = None;
                 self.status.clear();
+                if matches!(page, Page::Settings) {
+                    self.pwa_url = self.preferences.share_pwa_url.clone();
+                }
                 if self.desktop.is_none() && matches!(page, Page::Menu) {
                     self.refresh_recent();
                 }
@@ -645,6 +722,7 @@ impl cosmic::Application for OrbitApplet {
                 self.preferences.pinned = mode == 1;
                 self.save();
             }
+            Message::SharingSetup => crate::sharing_setup::launch(true),
             Message::Corner(index) => {
                 if let Some(corner) = Corner::ALL.get(index) {
                     self.preferences.corner = *corner;
@@ -664,6 +742,85 @@ impl cosmic::Application for OrbitApplet {
                     self.save();
                 }
             }
+            Message::PwaUrl(value) => {
+                self.pwa_url = value;
+                self.status.clear();
+            }
+            Message::SavePwaUrl => {
+                if self.saving_pwa {
+                    return Task::none();
+                }
+                let Some(url) = crate::config::pwa_url(&self.pwa_url) else {
+                    self.status = fl!("share-pwa-error");
+                    return Task::none();
+                };
+                let value = if self.pwa_url.trim().is_empty() {
+                    String::new()
+                } else {
+                    url.to_string()
+                };
+                self.saving_pwa = true;
+                return cosmic::task::future(async move {
+                    let result = crate::device_share::set_pwa(&url)
+                        .await
+                        .map_err(|error| error.to_string());
+                    Message::PwaSaved(value, result)
+                });
+            }
+            Message::PwaSaved(value, result) => {
+                self.saving_pwa = false;
+                if let Err(error) = result {
+                    eprintln!("Could not update sharing address: {error}");
+                    self.status = fl!("settings-error");
+                    return Task::none();
+                }
+                let mut preferences = self.preferences.clone();
+                preferences.share_pwa_url = value.clone();
+                if preferences.save().is_ok() {
+                    self.preferences = preferences;
+                    self.pwa_url = value;
+                    self.status.clear();
+                } else {
+                    self.status = fl!("settings-error");
+                }
+            }
+            Message::ChooseShareFolder => {
+                let directory = self.preferences.download_directory().ok();
+                return cosmic::task::future(async move {
+                    use cosmic::dialog::file_chooser::{self, open::Dialog};
+                    let mut dialog = Dialog::new().title(fl!("share-folder"));
+                    if let Some(directory) = directory {
+                        dialog = dialog.directory(directory);
+                    }
+                    let chosen = match dialog.open_folder().await {
+                        Ok(response) => response
+                            .url()
+                            .to_file_path()
+                            .map_err(|_| fl!("share-folder-error"))
+                            .and_then(|path| {
+                                path.canonicalize().map_err(|_| fl!("share-folder-error"))
+                            })
+                            .map(Some),
+                        Err(file_chooser::Error::Cancelled) => Ok(None),
+                        Err(_) => Err(fl!("share-folder-error")),
+                    };
+                    Message::ShareFolderChosen(chosen)
+                });
+            }
+            Message::ShareFolderChosen(result) => match result {
+                Ok(Some(path)) => {
+                    let mut preferences = self.preferences.clone();
+                    preferences.share_download_directory = Some(path);
+                    if preferences.save().is_ok() {
+                        self.preferences = preferences;
+                        self.status.clear();
+                    } else {
+                        self.status = fl!("settings-error");
+                    }
+                }
+                Err(error) => self.status = error,
+                _ => (),
+            },
             Message::CheckUpdates(manual) => {
                 if self.checking_update
                     || (!manual && self.preferences.update_reminder == UpdateReminder::Off)
@@ -707,6 +864,9 @@ impl cosmic::Application for OrbitApplet {
             }
             Message::Config(mut preferences) => {
                 preferences.shortcuts.complete();
+                if self.pwa_url == self.preferences.share_pwa_url {
+                    self.pwa_url = preferences.share_pwa_url.clone();
+                }
                 let added = preferences
                     .watch_folders
                     .iter()

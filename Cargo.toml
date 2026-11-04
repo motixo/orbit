@@ -1,16 +1,18 @@
 [package]
 name = "orbit"
-version = "0.4.4"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.97"
 license = "GPL-3.0-only"
 description = "A floating file shelf for the COSMIC desktop"
 
 [dependencies]
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "json"] }
 avif-decode = { package = "ferri-pdf-avif-decode", version = "3.0.2" }
 base64 = "0.22.1"
 bytemuck = { version = "1.25", features = ["extern_crate_alloc"] }
 csscolorparser = "0.8.4"
+dirs = "6.0"
 flate2 = "1.1"
 heic-decoder = "0.1.1"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
@@ -21,6 +23,7 @@ jiff = "0.2"
 mime_guess = "2.0"
 moxcms = "0.8.1"
 notify = "8.2.1"
+owly-radio = { git = "https://github.com/t4t5/owly", rev = "0f2ca4087e6d938d823e76c856fcd04d0a0162b6" }
 percent-encoding = "2.3"
 quick-xml = { version = "0.41", features = ["escape-html"] }
 reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls"] }
@@ -31,8 +34,10 @@ rust-embed = "8.8"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 semver = "1.0"
+sha2 = "0.11"
 tempfile = "3.27"
 tar = "0.4"
+tokio = { version = "1.52", features = ["fs", "io-util", "net", "process", "sync", "time"] }
 url = "2.5"
 uuid = { version = "1.29", features = ["v4"] }
 unicode-segmentation = "1.13.3"
@@ -44,7 +49,7 @@ oxideav-avif = { version = "0.0.16", default-features = false }
 [dependencies.libcosmic]
 git = "https://github.com/pop-os/libcosmic"
 rev = "5a8bd9482a35ae94c1e54edf77b331c6b970f170"
-features = ["applet", "process", "single-instance", "surface-message", "wayland", "wgpu", "xdg-portal"]
+features = ["applet", "process", "qr_code", "single-instance", "surface-message", "wayland", "wgpu", "xdg-portal"]
 
 [dependencies.iced_winit]
 git = "https://github.com/pop-os/libcosmic"

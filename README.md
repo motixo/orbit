@@ -22,6 +22,26 @@ In COSMIC Settings → Desktop → Panel or Dock → Applets, add **Orbit**. Dro
 
 Right-click the applet or tray → Settings → Watch folder. New files added directly to the selected folder appear automatically in a separate Orbit.
 
+## Sharing
+
+Open **⋯ → Share** in an Orbit.
+
+Complete **Initial file sharing** once. Reopen it from the applet or tray **Settings** to recheck AirDrop hardware.
+
+**Orbit Share**
+
+- Keep devices on the same network or hotspot. Nearby Orbits appear automatically; confirm the pairing code on both computers.
+- On iPhone, Android or another computer, open the [web app](https://orbit.motixo-dev.workers.dev/) to scan the desktop QR (**Pair via QR**) or enter its link. PWA installation is optional.
+- Share files, text and links both ways; folders become ZIP files. Keep the Share window open during transfers.
+- Manage saved devices and permission to open Orbits from **Paired devices**.
+- Downloads go to `Downloads/Orbit-Share`. Change the folder or PWA URL in **Settings**, or deploy your own [PWA](https://github.com/motixo/orbit-share-pwa). Changing the URL requires re-pairing.
+
+[Croc](https://github.com/schollz/croc) encrypts files, WebRTC connects devices and syncs items, and mDNS discovers nearby computers. Files stay on your network; Cloudflare hosts the web app. Open it online once and wait for **Ready offline** to transfer without internet later.
+
+**AirDrop**
+
+Choose **Find devices** to send selected items, or **Receive** to accept files. Set the receiving Apple device to **Everyone for 10 Minutes**. [Owly](https://github.com/t4t5/owly) uses Apple's AWDL protocol and requires compatible Wi-Fi hardware. Wi-Fi disconnects during AirDrop and reconnects when you leave it.
+
 ## Shortcuts
 
 Defaults inside an Orbit window:

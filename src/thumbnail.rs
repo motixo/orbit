@@ -21,6 +21,10 @@ pub fn kind(path: &Path) -> Option<Kind> {
 }
 
 pub fn generate(path: &Path, size: u32) -> Option<Handle> {
+    bytes(path, size).map(Handle::from_bytes)
+}
+
+pub fn bytes(path: &Path, size: u32) -> Option<Vec<u8>> {
     let kind = kind(path)?;
     let directory = tempfile::tempdir().ok()?;
     let output = directory.path().join("thumbnail.png");
@@ -60,8 +64,7 @@ pub fn generate(path: &Path, size: u32) -> Option<Handle> {
         return None;
     }
     let bytes = std::fs::read(output).ok()?;
-    (image::guess_format(&bytes).ok()? == image::ImageFormat::Png)
-        .then(|| Handle::from_bytes(bytes))
+    (image::guess_format(&bytes).ok()? == image::ImageFormat::Png).then_some(bytes)
 }
 
 #[cfg(test)]

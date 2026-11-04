@@ -1,0 +1,93 @@
+module orbit-peer
+
+go 1.27.3
+
+require (
+	github.com/google/uuid v1.6.0
+	github.com/libp2p/go-libp2p v0.51.0
+	github.com/libp2p/zeroconf/v2 v2.2.0
+	github.com/pion/mdns/v2 v2.2.2
+	github.com/pion/webrtc/v4 v4.2.26
+	github.com/schollz/croc/v11 v11.6.4-0.20261102155241-4fc5ac0c8463
+	golang.org/x/net v0.62.0
+	golang.org/x/sys v0.49.0
+)
+
+require (
+	filippo.io/edwards25519 v1.2.0 // indirect
+	github.com/akutz/memconn v0.1.0 // indirect
+	github.com/anmitsu/go-shlex v0.0.0-20200514113438-38f4b401e2be // indirect
+	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+	github.com/coder/websocket v1.8.15 // indirect
+	github.com/creachadair/msync v0.10.1 // indirect
+	github.com/creack/pty v1.1.24 // indirect
+	github.com/dblohm7/wingoes v0.0.0-20260526185140-fb298caac7ca // indirect
+	github.com/denisbrodbeck/machineid v1.0.1 // indirect
+	github.com/fxamacker/cbor/v2 v2.10.0 // indirect
+	github.com/gaissmai/bart v0.30.0 // indirect
+	github.com/go-json-experiment/json v0.0.0-20260820222146-c27c302e5fc3 // indirect
+	github.com/godbus/dbus/v5 v5.2.4 // indirect
+	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
+	github.com/google/go-cmp v0.7.0 // indirect
+	github.com/hdevalence/ed25519consensus v0.2.0 // indirect
+	github.com/jsimonetti/rtnetlink v1.4.2 // indirect
+	github.com/kalafut/imohash v1.1.1 // indirect
+	github.com/libp2p/go-buffer-pool v0.1.0 // indirect
+	github.com/magisterquis/connectproxy v0.0.0-20200725203833-3582e84f0c9b // indirect
+	github.com/mattn/go-colorable v0.1.16 // indirect
+	github.com/mattn/go-isatty v0.0.24 // indirect
+	github.com/mdlayher/netlink v1.11.2 // indirect
+	github.com/mdlayher/socket v0.8.0 // indirect
+	github.com/miekg/dns v1.1.73 // indirect
+	github.com/minio/highwayhash v1.0.4 // indirect
+	github.com/mitchellh/colorstring v0.0.0-20190213212951-d06e56a500db // indirect
+	github.com/mitchellh/go-ps v1.0.0 // indirect
+	github.com/pion/datachannel v1.6.3 // indirect
+	github.com/pion/dtls/v3 v3.1.15 // indirect
+	github.com/pion/ice/v4 v4.4.8 // indirect
+	github.com/pion/interceptor v0.1.51 // indirect
+	github.com/pion/logging v0.2.4 // indirect
+	github.com/pion/randutil v0.1.0 // indirect
+	github.com/pion/rtcp v1.2.20 // indirect
+	github.com/pion/rtp v1.10.6 // indirect
+	github.com/pion/sctp v1.12.0 // indirect
+	github.com/pion/sdp/v3 v3.0.20 // indirect
+	github.com/pion/srtp/v3 v3.1.3 // indirect
+	github.com/pion/stun/v3 v3.1.1 // indirect
+	github.com/pion/stun/v4 v4.0.1 // indirect
+	github.com/pion/transport/v4 v4.0.1 // indirect
+	github.com/pion/transport/v5 v5.1.4 // indirect
+	github.com/pion/turn/v5 v5.1.3 // indirect
+	github.com/pires/go-proxyproto v0.16.0 // indirect
+	github.com/rivo/uniseg v0.4.7 // indirect
+	github.com/sabhiram/go-gitignore v0.0.0-20210923224102-525f6e181f06 // indirect
+	github.com/safchain/ethtool v0.7.0 // indirect
+	github.com/schollz/pake/v3 v3.2.0 // indirect
+	github.com/schollz/peerdiscovery v1.7.6 // indirect
+	github.com/schollz/progressbar/v3 v3.19.1 // indirect
+	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e // indirect
+	github.com/tailscale/certstore v0.1.1-0.20260409135935-3638fb84b77d // indirect
+	github.com/tailscale/gliderssh v0.3.4-0.20261026144310-31f7cf365d3a // indirect
+	github.com/tailscale/go-winio v0.0.0-20231025203758-c4f33415bf55 // indirect
+	github.com/tailscale/hujson v0.0.0-20260727124030-b80ff77dac4f // indirect
+	github.com/tailscale/peercred v0.0.0-20250107143737-35a0c7bd7edc // indirect
+	github.com/tailscale/web-client-prebuilt v0.0.0-20260917222731-e0ed2d0d0fea // indirect
+	github.com/tailscale/wireguard-go v0.0.0-20260928213032-417aef361226 // indirect
+	github.com/tscholl2/siec v0.0.0-20240310163802-c2c6f6198406 // indirect
+	github.com/twmb/murmur3 v1.2.2 // indirect
+	github.com/wlynxg/anet v0.0.5 // indirect
+	github.com/x448/float16 v0.8.4 // indirect
+	go4.org/mem v0.0.0-20240501181205-ae6ca9944745 // indirect
+	go4.org/netipx v0.0.0-20260823151212-3075585bcbeb // indirect
+	golang.org/x/crypto v0.58.0 // indirect
+	golang.org/x/exp v0.0.0-20261014143641-f0251eb4aa3e // indirect
+	golang.org/x/mod v0.42.0 // indirect
+	golang.org/x/sync v0.24.0 // indirect
+	golang.org/x/term v0.47.0 // indirect
+	golang.org/x/text v0.43.0 // indirect
+	golang.org/x/time v0.16.0 // indirect
+	golang.org/x/tools v0.52.0 // indirect
+	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
+	golang.zx2c4.com/wireguard/windows v1.1.1 // indirect
+	tailscale.com v1.104.4 // indirect
+)

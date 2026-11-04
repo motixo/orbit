@@ -6,6 +6,12 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Sender {
+    pub id: String,
+    pub name: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct Item {
     pub path: PathBuf,
@@ -14,6 +20,7 @@ pub struct Item {
     pub selected: bool,
     pub busy: bool,
     pub text: Option<String>,
+    pub origin: Option<Sender>,
     pub order: u64,
     cache: Option<Arc<crate::cache::Directory>>,
 }
@@ -60,6 +67,7 @@ impl Shelf {
                 );
                 if let Some(item) = self.items.last_mut() {
                     item.selected = saved.selected;
+                    item.origin = saved.origin.clone();
                 }
             }
         }
@@ -106,6 +114,7 @@ impl Shelf {
             selected: true,
             busy: false,
             text: None,
+            origin: None,
             order,
             cache,
         });
@@ -286,11 +295,21 @@ impl Shelf {
         self.items.retain(|item| item.path != path || item.busy);
     }
 
-    pub fn clear(&mut self) {
+    pub fn forget(&mut self, path: &Path, order: u64) {
+        self.invalidate_transfers();
+        self.items
+            .retain(|item| item.path != path || item.order != order);
+        for items in &mut self.undo {
+            items.retain(|item| item.path != path || item.order != order);
+        }
+        self.undo.retain(|items| !items.is_empty());
+    }
+
+    pub fn clear(&mut self, can_remove: impl Fn(&Item) -> bool) {
         self.invalidate_transfers();
         let has_selection = self.selected_count() > 0;
         self.items
-            .retain(|item| item.busy || (has_selection && !item.selected));
+            .retain(|item| item.busy || !can_remove(item) || has_selection && !item.selected);
     }
 
     pub fn remove_with_undo(&mut self, path: &Path) {
@@ -304,16 +323,16 @@ impl Shelf {
         self.remove(path);
     }
 
-    pub fn clear_with_undo(&mut self) {
+    pub fn clear_with_undo(&mut self, can_remove: impl Fn(&Item) -> bool) {
         let selected = self.selected_count() > 0;
         self.remember(
             self.items
                 .iter()
-                .filter(|item| !item.busy && (!selected || item.selected))
+                .filter(|item| !item.busy && (!selected || item.selected) && can_remove(item))
                 .cloned()
                 .collect(),
         );
-        self.clear();
+        self.clear(can_remove);
     }
 
     fn remember(&mut self, items: Vec<Item>) {
@@ -366,6 +385,7 @@ mod tests {
                     uri: url::Url::from_file_path(path).unwrap().into(),
                     text: None,
                     selected: true,
+                    origin: None,
                 })
                 .collect(),
             pinned: false,
@@ -411,7 +431,7 @@ mod tests {
         let mut shelf = Shelf::default();
         shelf.add([a.clone(), b.clone()]);
         shelf.toggle(&b);
-        shelf.clear_with_undo();
+        shelf.clear_with_undo(|_| true);
         shelf.add([a.clone(), c.clone()]);
         shelf.undo();
         assert_eq!(shelf.items.len(), 3);
@@ -426,7 +446,7 @@ mod tests {
                 .any(|item| item.path == c && item.is_missing())
         );
         assert!(!shelf.export_paths().contains(&c));
-        shelf.clear_with_undo();
+        shelf.clear_with_undo(|_| true);
         shelf.undo();
         assert!(shelf.items.iter().any(|item| item.path == a));
     }
@@ -596,9 +616,9 @@ mod tests {
         let mut shelf = Shelf::default();
         shelf.add([a.clone(), b.clone()]);
         shelf.toggle(&b);
-        shelf.clear();
+        shelf.clear(|_| true);
         assert_eq!(shelf.export_paths(), [b]);
-        shelf.clear();
+        shelf.clear(|_| true);
         assert!(shelf.items.is_empty());
     }
 
@@ -610,7 +630,7 @@ mod tests {
         shelf.add([path.clone()]);
         shelf.remove(&path);
         shelf.add([path.clone()]);
-        shelf.clear();
+        shelf.clear(|_| true);
         assert!(shelf.items.is_empty());
         assert_eq!(fs::read(path).unwrap(), b"original contents");
     }
@@ -636,7 +656,7 @@ mod tests {
         assert!(shelf.items[0].selected);
         assert!(shelf.export_paths().is_empty());
         shelf.select_all();
-        shelf.clear_with_undo();
+        shelf.clear_with_undo(|_| true);
         shelf.remove_with_undo(&busy);
         assert_eq!(shelf.items.len(), 1);
         assert_eq!(shelf.items[0].path, busy);

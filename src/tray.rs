@@ -13,7 +13,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Session {
     name: String,
     _connection: zbus::Connection,
@@ -28,7 +28,23 @@ impl Hash for Session {
 
 impl Session {
     pub fn open(show_menu: bool) -> zbus::Result<Option<Self>> {
-        let name = session_name();
+        Self::open_for(
+            "Menu",
+            show_menu.then_some("menu"),
+            std::env::var("XDG_ACTIVATION_TOKEN").ok().as_deref(),
+        )
+    }
+
+    pub fn open_share(token: Option<&str>) -> zbus::Result<Option<Self>> {
+        Self::open_for("Share", Some("share"), token)
+    }
+
+    fn open_for(
+        kind: &str,
+        action: Option<&str>,
+        token: Option<&str>,
+    ) -> zbus::Result<Option<Self>> {
+        let name = session_name(kind);
         let path = format!("/{}", name.replace('.', "/"));
         let mut interface = cosmic::dbus_activation::DbusActivation::new();
         let incoming = interface.rx();
@@ -46,7 +62,7 @@ impl Session {
                 incoming: Arc::new(Mutex::new(Some(incoming))),
             })),
             Err(zbus::Error::NameTaken) => {
-                if show_menu {
+                if let Some(action) = action {
                     let mut proxy =
                         cosmic::dbus_activation::DbusActivationInterfaceProxyBlocking::builder(
                             &connection,
@@ -54,12 +70,11 @@ impl Session {
                         .destination(name.as_str())?
                         .path(path.as_str())?
                         .build()?;
-                    let token = std::env::var("XDG_ACTIVATION_TOKEN").ok();
                     let mut platform = HashMap::new();
-                    if let Some(token) = token.as_deref() {
+                    if let Some(token) = token {
                         platform.insert("activation-token", token.into());
                     }
-                    proxy.activate_action("menu", Vec::new(), platform)?;
+                    proxy.activate_action(action, Vec::new(), platform)?;
                 }
                 Ok(None)
             }
@@ -67,7 +82,7 @@ impl Session {
         }
     }
 
-    pub fn subscription(&self) -> Subscription<Message> {
+    pub fn subscription(&self) -> Subscription<cosmic::dbus_activation::Message> {
         Subscription::run_with(self.clone(), |session| {
             session
                 .incoming
@@ -75,7 +90,6 @@ impl Session {
                 .unwrap()
                 .take()
                 .expect("activation subscription starts once")
-                .map(Message::Activation)
         })
     }
 }
@@ -110,23 +124,23 @@ async fn running() -> zbus::Result<bool> {
     let connection = zbus::Connection::session().await?;
     let proxy = zbus::fdo::DBusProxy::new(&connection).await?;
     Ok(proxy
-        .name_has_owner(session_name().as_str().try_into()?)
+        .name_has_owner(session_name("Menu").as_str().try_into()?)
         .await?)
 }
 
-fn session_name() -> String {
+fn session_name(kind: &str) -> String {
     let runtime = std::env::var_os("XDG_RUNTIME_DIR").unwrap_or_default();
     let display = std::env::var_os("WAYLAND_DISPLAY").unwrap_or_else(|| "wayland-0".into());
-    endpoint(Path::new(&runtime), Path::new(&display))
+    endpoint(Path::new(&runtime), Path::new(&display), kind)
 }
 
-fn endpoint(runtime: &Path, display: &Path) -> String {
+fn endpoint(runtime: &Path, display: &Path, kind: &str) -> String {
     let address = runtime.join(display);
     let address = address.canonicalize().unwrap_or(address);
     let mut session = DefaultHasher::new();
     address.hash(&mut session);
     format!(
-        "io.github.motixo.Orbit.Menu.Session{:016x}",
+        "io.github.motixo.Orbit.{kind}.Session{:016x}",
         session.finish()
     )
 }
@@ -276,12 +290,13 @@ mod tests {
     fn activation_endpoints_normalize_display_paths_and_separate_sessions() {
         let directory = tempfile::tempdir().unwrap();
         let runtime = directory.path();
-        let first = endpoint(runtime, Path::new("wayland-0"));
-        assert_eq!(first, endpoint(runtime, &runtime.join("wayland-0")));
-        assert_ne!(first, endpoint(runtime, Path::new("wayland-1")));
+        let first = endpoint(runtime, Path::new("wayland-0"), "Menu");
+        assert_eq!(first, endpoint(runtime, &runtime.join("wayland-0"), "Menu"));
+        assert_ne!(first, endpoint(runtime, Path::new("wayland-1"), "Menu"));
+        assert_ne!(first, endpoint(runtime, Path::new("wayland-0"), "Share"));
         assert_ne!(
             first,
-            endpoint(&runtime.join("other"), Path::new("wayland-0"))
+            endpoint(&runtime.join("other"), Path::new("wayland-0"), "Menu")
         );
     }
 }

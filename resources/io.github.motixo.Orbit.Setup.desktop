@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Initial file sharing
+Exec=orbit --sharing-setup
+Icon=io.github.motixo.Orbit
+Terminal=false
+NoDisplay=true
+StartupNotify=true

@@ -7,6 +7,7 @@ mod archive;
 mod cache;
 mod config;
 mod convert;
+mod device_share;
 mod drag_preview;
 mod file_icon;
 mod history;
@@ -15,11 +16,14 @@ mod import;
 mod launch;
 mod layer_input;
 mod orbit_icon;
+mod owly;
 mod pin;
 mod pointer;
 mod presence;
 mod preview;
 mod rich_text;
+mod share;
+mod sharing_setup;
 mod shelf;
 mod shortcuts;
 mod thumbnail;
@@ -31,14 +35,22 @@ mod watch;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut paths: Vec<_> = std::env::args_os().skip(1).collect();
     let mut independent = false;
+    if !matches!(
+        paths.first().and_then(|arg| arg.to_str()),
+        Some("--help" | "-h" | "--version" | "-V" | "--sharing-setup" | "--convert-image")
+    ) {
+        sharing_setup::launch(false);
+        device_share::listen();
+    }
     match paths.first().and_then(|arg| arg.to_str()) {
+        Some("--sharing-setup") => return sharing_setup::run(),
         Some("--convert-image") => {
             convert::run_worker(&paths[1..])?;
             return Ok(());
         }
         Some("--help" | "-h") => {
             println!(
-                "Orbit — a file shelf for COSMIC\n\nUsage: orbit [FILE_OR_FOLDER ...]\n       orbit --new\n       orbit --applet\n       orbit --tray\n       orbit --menu\n       orbit --version"
+                "Orbit — a file shelf for COSMIC\n\nUsage: orbit [FILE_OR_FOLDER ...]\n       orbit --new\n       orbit --share\n       orbit --applet\n       orbit --tray\n       orbit --menu\n       orbit --version"
             );
             return Ok(());
         }
@@ -86,6 +98,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         paths.clear();
         independent = true;
         Some(folder)
+    } else {
+        None
+    };
+    let remote_open = if paths.first().is_some_and(|arg| arg == "--remote-share") {
+        if paths.len() != 2 {
+            return Err("Invalid remote Orbit request".into());
+        }
+        let id = uuid::Uuid::parse_str(paths[1].to_str().ok_or("Invalid remote Orbit request")?)?;
+        paths.clear();
+        Some(id)
+    } else {
+        None
+    };
+    let share = remote_open.is_some() || paths.first().is_some_and(|arg| arg == "--share");
+    if share {
+        if remote_open.is_none() && paths.len() != 1 {
+            return Err("Usage: orbit --share".into());
+        }
+        paths.clear();
+        independent = true;
+    }
+    let share_activation = if share {
+        let token = std::env::var("XDG_ACTIVATION_TOKEN").ok();
+        let Some(session) = tray::Session::open_share(token.as_deref())? else {
+            return Ok(());
+        };
+        Some(session)
     } else {
         None
     };
@@ -150,6 +189,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     cache::start_cleanup()?;
     let startup_area = always_on_top::start()?;
     let flags = app::Flags {
+        share_activation,
+        remote_open,
         uris,
         incoming_drop,
         restored,

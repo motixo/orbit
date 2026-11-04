@@ -16,12 +16,11 @@ orbit_staged=$(mktemp "$orbit_prefix/bin/.orbit.XXXXXX")
 trap 'rm -f "$orbit_staged"' EXIT HUP INT TERM
 install -m0755 "${CARGO_TARGET_DIR:-target}/$orbit_profile/orbit" "$orbit_staged"
 mv -f "$orbit_staged" "$orbit_prefix/bin/orbit"
-install -Dm0644 "resources/$orbit_appid.desktop" "$orbit_prefix/share/applications/$orbit_appid.desktop"
+for orbit_desktop in "$orbit_appid" "$orbit_appid.Applet" "$orbit_appid.Preview" "$orbit_appid.Menu" "$orbit_appid.Share" "$orbit_appid.AirDrop" "$orbit_appid.Setup"; do
+    install -Dm0644 "resources/$orbit_desktop.desktop" "$orbit_prefix/share/applications/$orbit_desktop.desktop"
+done
 install -Dm0644 "resources/$orbit_appid.metainfo.xml" "$orbit_prefix/share/metainfo/$orbit_appid.metainfo.xml"
 install -Dm0644 "resources/icons/hicolor/scalable/apps/$orbit_appid.svg" "$orbit_prefix/share/icons/hicolor/scalable/apps/$orbit_appid.svg"
-install -Dm0644 "resources/$orbit_appid.Applet.desktop" "$orbit_prefix/share/applications/$orbit_appid.Applet.desktop"
-install -Dm0644 "resources/$orbit_appid.Preview.desktop" "$orbit_prefix/share/applications/$orbit_appid.Preview.desktop"
-install -Dm0644 "resources/$orbit_appid.Menu.desktop" "$orbit_prefix/share/applications/$orbit_appid.Menu.desktop"
 install -Dm0644 "resources/icons/hicolor/symbolic/apps/$orbit_appid-symbolic.svg" "$orbit_prefix/share/icons/hicolor/symbolic/apps/$orbit_appid-symbolic.svg"
 install -Dm0644 "resources/icons/hicolor/symbolic/apps/$orbit_appid-tray-symbolic.svg" "$orbit_prefix/share/icons/hicolor/symbolic/apps/$orbit_appid-tray-symbolic.svg"
 if command -v gtk-update-icon-cache >/dev/null 2>&1; then
