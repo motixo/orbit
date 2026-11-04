@@ -897,7 +897,13 @@ impl cosmic::Application for Orbit {
                 self.hovering = false;
                 self.status = match result {
                     Ok(files) => {
+                        let first_added = self.shelf.items.len();
                         let report = self.shelf.add(files.0);
+                        if self.share.is_some() {
+                            for item in &mut self.shelf.items[first_added..] {
+                                item.selected = false;
+                            }
+                        }
                         if report.rejected > 0 {
                             fl!(
                                 "added-with-skips",
@@ -1379,6 +1385,7 @@ impl cosmic::Application for Orbit {
                             let first_added = self.shelf.items.len();
                             let task = self.accept_import(order, Ok(imported));
                             for item in &mut self.shelf.items[first_added..] {
+                                item.selected = true;
                                 item.origin = Some(crate::shelf::Sender {
                                     id: received.sender.clone(),
                                     name: sender.clone().unwrap_or_else(|| fl!("sender-device")),
@@ -1390,6 +1397,11 @@ impl cosmic::Application for Orbit {
                                     .unwrap()
                                     .received
                                     .insert(item.path.clone(), received);
+                            }
+                            for item in &mut self.shelf.items {
+                                if item.origin.is_none() {
+                                    item.selected = false;
+                                }
                             }
                             return task;
                         }
@@ -2462,6 +2474,9 @@ impl Orbit {
         let (mut share, open) = crate::share::Share::open();
         let id = share.id;
         share.activation = Some(activation);
+        for item in &mut self.shelf.items {
+            item.selected = item.origin.is_some();
+        }
         self.share = Some(share);
         let sync = self.sync_share();
         Task::batch([open, self.set_window_title(fl!("share"), id), sync])
@@ -3733,6 +3748,43 @@ mod tests {
         share.bundle = Some(bundle);
         app.share = Some(share);
         app
+    }
+
+    #[tokio::test]
+    async fn shared_shelves_only_autoselect_received_items() {
+        let fixture = tempfile::tempdir().unwrap();
+        let local = fixture.path().join("local.txt");
+        let remote = fixture.path().join("remote.txt");
+        for path in [&local, &remote] {
+            std::fs::write(path, "file").unwrap();
+        }
+        let mut app = shared_app().await;
+        let _ = app.update(Message::Incoming(Ok(FileList(vec![local.clone()]))));
+        assert!(!app.shelf.items[0].selected);
+        app.shelf.toggle(&local);
+        assert!(app.shelf.items[0].selected);
+        let share = app.share.as_ref().unwrap();
+        let _ = app.update(Message::DeviceEvent(
+            share.id,
+            share.generation,
+            crate::device_share::Event::Received(
+                ImportedFiles {
+                    files: FileList(vec![remote.clone()]),
+                    directory: None,
+                    text: None,
+                },
+                crate::share::ReceivedFile::new(&remote, "device".into(), 0).unwrap(),
+            ),
+        ));
+        assert_eq!(app.shelf.export_paths(), [remote]);
+        assert!(
+            !app.shelf
+                .items
+                .iter()
+                .find(|item| item.path == local)
+                .unwrap()
+                .selected
+        );
     }
 
     #[tokio::test]
