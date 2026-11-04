@@ -655,12 +655,10 @@ impl Share {
                         )),
                     );
                     row = row.push(
-                        widget::button::icon(widget::icon::from_name("list-add-symbolic"))
-                            .name(fl!("share-new-orbit"))
-                            .on_press_maybe(
-                                (online && !connecting)
-                                    .then(|| Message::OpenRemoteOrbit(device.id.clone())),
-                            ),
+                        widget::button::standard(fl!("share-open-orbit")).on_press_maybe(
+                            (online && !connecting)
+                                .then(|| Message::OpenRemoteOrbit(device.id.clone())),
+                        ),
                     );
                 } else if connected {
                     row = row.push(
@@ -725,7 +723,7 @@ impl Share {
         .spacing(spacing.space_xxs);
         if self.connected.value() {
             actions = actions.push(
-                widget::button::standard(fl!("share-devices"))
+                widget::button::standard(fl!("share-hide"))
                     .width(Length::Fill)
                     .on_press(Message::SharePage(Page::Connected)),
             );
