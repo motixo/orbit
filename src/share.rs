@@ -662,6 +662,11 @@ impl Share {
                                     .then(|| Message::OpenRemoteOrbit(device.id.clone())),
                             ),
                     );
+                } else if connected {
+                    row = row.push(
+                        widget::button::standard(fl!("share-disconnect"))
+                            .on_press(Message::DisconnectDevice(device.id.clone())),
+                    );
                 }
                 content = content.push(row);
             }

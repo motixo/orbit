@@ -207,7 +207,7 @@ func (h *hub) register(connection net.Conn) {
 		case command.Reject != "":
 			h.decideDesktop(s, command.Reject, false)
 		case command.DisconnectPeer != "":
-			h.disconnectDesktop(s, command.DisconnectPeer)
+			h.disconnectPeer(s, command.DisconnectPeer)
 		case command.Disconnect:
 			s.intentional = true
 			return

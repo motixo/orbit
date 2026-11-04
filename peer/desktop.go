@@ -403,7 +403,18 @@ func (h *hub) decideDesktop(s *server, id string, approve bool) {
 	l.activate()
 }
 
-func (h *hub) disconnectDesktop(s *server, id string) {
+func (h *hub) disconnectPeer(s *server, id string) {
+	s.mu.Lock()
+	var browsers []func()
+	for _, client := range s.clients {
+		if client.PairID == id && client.disconnect != nil {
+			browsers = append(browsers, client.disconnect)
+		}
+	}
+	s.mu.Unlock()
+	for _, stop := range browsers {
+		go stop()
+	}
 	h.mu.Lock()
 	var stops []context.CancelFunc
 	prefix := s.Share + ":" + id

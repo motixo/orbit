@@ -10,6 +10,35 @@ import (
 	"time"
 )
 
+func TestDisconnectPeerOnlyStopsMatchingBrowsersInThisShare(t *testing.T) {
+	stopped := make(chan bool, 4)
+	s := &server{clients: map[string]device{
+		"first-tab":  {PairID: "browser", disconnect: func() { stopped <- true }},
+		"second-tab": {PairID: "browser", disconnect: func() { stopped <- true }},
+		"other":      {PairID: "other", disconnect: func() { stopped <- false }},
+	}}
+	other := &server{clients: map[string]device{
+		"same-device": {PairID: "browser", disconnect: func() { stopped <- false }},
+	}}
+	h := &hub{sessions: []*server{s, other}}
+	h.disconnectPeer(s, "browser")
+	for range 2 {
+		select {
+		case matching := <-stopped:
+			if !matching {
+				t.Fatal("disconnected another device or share")
+			}
+		case <-time.After(time.Second):
+			t.Fatal("did not disconnect every tab of the selected device")
+		}
+	}
+	select {
+	case <-stopped:
+		t.Fatal("disconnected another device or share")
+	default:
+	}
+}
+
 func TestRegistrationDistinguishesIntentionalCloseFromLostConnection(t *testing.T) {
 	for _, intentional := range []bool{false, true} {
 		t.Run(map[bool]string{false: "interrupted", true: "intentional"}[intentional], func(t *testing.T) {

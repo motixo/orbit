@@ -59,6 +59,7 @@ func (s *server) emit(value any) {
 type device struct {
 	connection   string
 	native       bool
+	disconnect   func()
 	IP           string `json:"ip"`
 	Name         string `json:"name,omitempty"`
 	PairID       string `json:"pair_id,omitempty"`
@@ -185,6 +186,24 @@ func (h *hub) accept(mux *udpmux.UDPMux, candidate udpmux.Candidate) error {
 				cancel()
 				return
 			}
+			stop := func(reply string) {
+				closed = true
+				authenticated.Store(false)
+				stopTransfers()
+				selected.presence(candidate.LocalUfrag, nil, true)
+				announced = false
+				deadline.Reset(time.Second)
+				if dc.SendText(reply) != nil {
+					cancel()
+				}
+			}
+			client.disconnect = func() {
+				life.Lock()
+				defer life.Unlock()
+				if !closed && ctx.Err() == nil && authenticated.Load() {
+					stop("disconnect")
+				}
+			}
 			dc.OnMessage(func(message webrtc.DataChannelMessage) {
 				life.Lock()
 				defer life.Unlock()
@@ -198,15 +217,7 @@ func (h *hub) accept(mux *udpmux.UDPMux, candidate udpmux.Candidate) error {
 				}
 				if authenticated.Load() {
 					if message.IsString && string(message.Data) == "disconnect" {
-						closed = true
-						authenticated.Store(false)
-						stopTransfers()
-						selected.presence(candidate.LocalUfrag, nil, true)
-						announced = false
-						deadline.Reset(time.Second)
-						if dc.SendText("disconnect-ack") != nil {
-							cancel()
-						}
+						stop("disconnect-ack")
 						return
 					}
 					if message.IsString && string(message.Data) == "disconnect-ack" {
