@@ -313,7 +313,9 @@ func (l *desktopLink) message(message webrtc.DataChannelMessage) {
 }
 
 func (l *desktopLink) forgetPairing(id, fingerprint string) {
+	l.h.pairingsMu.Lock()
 	changed, err := l.h.store.forgetDesktop(id, fingerprint)
+	l.h.pairingsMu.Unlock()
 	if err != nil {
 		l.intentional.Store(true)
 		if l.local != nil {
@@ -341,10 +343,18 @@ func (l *desktopLink) showPairRequest() {
 }
 
 func (l *desktopLink) activate() {
-	if l.code == "" || l.ready.Load() || !l.approved || !l.confirmed {
+	if l.ctx.Err() != nil || l.rejected || l.code == "" || l.ready.Load() || !l.approved || !l.confirmed {
 		return
 	}
-	if err := l.h.store.rememberDesktop(l.remote.ID, l.remote.Name, l.remoteFingerprint); err != nil {
+	l.h.pairingsMu.Lock()
+	if (l.hello.Trusted || l.remote.Trusted) && !l.h.store.trustsDesktop(l.remote.ID, l.remoteFingerprint) {
+		l.h.pairingsMu.Unlock()
+		l.cancel()
+		return
+	}
+	err := l.h.store.rememberDesktop(l.remote.ID, l.remote.Name, l.remoteFingerprint)
+	l.h.pairingsMu.Unlock()
+	if err != nil {
 		l.local.emit(map[string]string{"pairingError": "Could not remember device"})
 		l.cancel()
 		return
@@ -428,6 +438,7 @@ func (h *hub) decideDesktop(s *server, id string, approve bool) {
 		return
 	}
 	if !approve {
+		l.rejected = true
 		go l.stop("disconnect")
 		return
 	}

@@ -249,11 +249,6 @@ func (h *hub) accept(mux *udpmux.UDPMux, candidate udpmux.Candidate) error {
 						if !named {
 							named = true
 							client.Name = cleanDeviceName(metadata.Name)
-							if changed, err := h.store.rememberBrowserName(pairID, client.Name); err != nil {
-								log.Printf("Could not save browser device name: %v", err)
-							} else if changed {
-								h.broadcastPairings()
-							}
 							selected.presence(candidate.LocalUfrag, &client, false)
 						}
 					case "pair":
@@ -287,6 +282,7 @@ func (h *hub) accept(mux *udpmux.UDPMux, candidate udpmux.Candidate) error {
 								sendJSON(ctx, dc, map[string]string{"type": "forget-error"})
 								return
 							}
+							closed = true
 							authenticated.Store(false)
 							stopTransfers()
 							deadline.Reset(2 * time.Second)

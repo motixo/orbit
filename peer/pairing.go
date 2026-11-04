@@ -14,7 +14,6 @@ import (
 	"encoding/json"
 	"errors"
 	"math/big"
-	"net"
 	"os"
 	"path/filepath"
 	"sort"
@@ -236,24 +235,6 @@ func (s *pairStore) rename(id, name string) error {
 		return err
 	}
 	return nil
-}
-
-func (s *pairStore) rememberBrowserName(id, name string) (bool, error) {
-	s.Lock()
-	defer s.Unlock()
-	name = cleanDeviceName(name)
-	device, ok := s.Devices[id]
-	if !ok || device.Desktop || name == "" || device.Name != "" && net.ParseIP(device.Name) == nil {
-		return false, nil
-	}
-	updated := device
-	updated.Name = name
-	s.Devices[id] = updated
-	if err := s.save(); err != nil {
-		s.Devices[id] = device
-		return false, err
-	}
-	return true, nil
 }
 
 func (s *pairStore) forget(id string) error {

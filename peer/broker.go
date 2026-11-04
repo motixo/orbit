@@ -269,7 +269,10 @@ func (h *hub) broadcastPairings() {
 }
 
 func (h *hub) forget(id string, keep *webrtc.PeerConnection) error {
-	if err := h.store.forget(id); err != nil {
+	h.pairingsMu.Lock()
+	err := h.store.forget(id)
+	h.pairingsMu.Unlock()
+	if err != nil {
 		return err
 	}
 	h.forgetDesktop(id)

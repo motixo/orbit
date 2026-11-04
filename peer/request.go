@@ -142,6 +142,10 @@ func (s *server) request(parent context.Context, dc *webrtc.DataChannel, peer de
 				defer deadline.Stop()
 				defer closeRequest()
 				defer dc.Close()
+				if peer.PairID == "" {
+					sendJSON(ctx, dc, map[string]string{"type": "error", "message": "Pair this device first"})
+					return
+				}
 				var err error
 				if strings.HasPrefix(command.Action, "croc-") {
 					err = s.respondCroc(parent, ctx, dc, command, peer, func() { deadline.Reset(60 * time.Second) })

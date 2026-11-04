@@ -821,24 +821,12 @@ fn device_key(headers: &HeaderMap) -> Option<String> {
         .and_then(|value| value.to_str().ok())
         .and_then(|value| uuid::Uuid::parse_str(value).ok())
         .map(|id| id.to_string())
-        .or_else(|| {
-            headers
-                .get("x-orbit-ip")
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.parse::<Ipv4Addr>().ok())
-                .map(|ip| format!("ip:{ip}"))
-        })
 }
 
 fn own_file(file: &SharedFile, headers: &HeaderMap) -> bool {
-    file.origin.as_ref().is_some_and(|origin| {
-        device_key(headers).as_deref() == Some(&origin.id)
-            || headers
-                .get("x-orbit-ip")
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.parse::<Ipv4Addr>().ok())
-                .is_some_and(|ip| origin.id == format!("ip:{ip}"))
-    })
+    file.origin
+        .as_ref()
+        .is_some_and(|origin| device_key(headers).as_deref() == Some(&origin.id))
 }
 
 async fn items(
@@ -1238,6 +1226,7 @@ async fn receive_text(
     headers: HeaderMap,
     text: String,
 ) -> Result<StatusCode, (StatusCode, &'static str)> {
+    let sender = device_key(&headers).ok_or((StatusCode::BAD_REQUEST, "Invalid sender"))?;
     if text.trim().is_empty() || text.len() > 1024 * 1024 {
         return Err((StatusCode::BAD_REQUEST, "Invalid text"));
     }
@@ -1270,7 +1259,7 @@ async fn receive_text(
     .map_err(|_| (StatusCode::INSUFFICIENT_STORAGE, "Could not save text"))?;
     state
         .incoming
-        .unbounded_send(Event::Received(imported, device_key(&headers)))
+        .unbounded_send(Event::Received(imported, Some(sender)))
         .map_err(|_| (StatusCode::GONE, "Sharing stopped"))?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1472,6 +1461,16 @@ mod tests {
         }
         assert!(valid_filename("photo 1.jpg"));
         let mut headers = axum::http::HeaderMap::new();
+        headers.insert("x-orbit-ip", HeaderValue::from_static("192.168.1.2"));
+        assert_eq!(device_key(&headers), None);
+        headers.insert(
+            "x-orbit-device",
+            HeaderValue::from_static("aabbccdd-1234-4567-8901-123456789abc"),
+        );
+        assert_eq!(
+            device_key(&headers).as_deref(),
+            Some("aabbccdd-1234-4567-8901-123456789abc")
+        );
         headers.insert(header::HOST, HeaderValue::from_static("192.168.1.2:1234"));
         assert!(valid_origin("http://192.168.1.2:1234", &headers));
         headers.insert(
@@ -1891,6 +1890,7 @@ mod tests {
             client
                 .post(format!("{}text", session.url))
                 .header(header::CONTENT_TYPE, "text/plain")
+                .header("x-orbit-device", sender)
                 .body("https://example.com")
                 .send()
                 .await
@@ -1914,6 +1914,7 @@ mod tests {
             client
                 .post(format!("{}text", session.url))
                 .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+                .header("x-orbit-device", sender)
                 .body(text.clone())
                 .send()
                 .await

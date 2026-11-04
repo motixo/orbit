@@ -151,6 +151,28 @@ func TestUnknownDesktopCannotForgetAPairedIdentity(t *testing.T) {
 	}
 }
 
+func TestRevokedPairingCannotBeRestoredByAPendingConfirmation(t *testing.T) {
+	store, _, err := loadIdentity(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, fp := uuid.NewString(), strings.Repeat("AB", 32)
+	if err := store.rememberDesktop(id, "Workstation", fp); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.forget(id); err != nil {
+		t.Fatal(err)
+	}
+	cancelled := false
+	link := &desktopLink{h: &hub{store: store}, ctx: context.Background(), cancel: func() { cancelled = true },
+		hello: desktopHello{Trusted: true}, remote: desktopHello{ID: id}, remoteFingerprint: fp,
+		code: "123456", approved: true, confirmed: true}
+	link.activate()
+	if store.contains(id) || link.ready.Load() || !cancelled {
+		t.Fatal("a delayed confirmation restored a revoked pairing")
+	}
+}
+
 func TestUnpairedDesktopRemovalRequiresTheSavedCertificate(t *testing.T) {
 	store, _, err := loadIdentity(t.TempDir())
 	if err != nil {
