@@ -200,6 +200,8 @@ func (s *server) respondCroc(parent, ctx context.Context, dc *webrtc.DataChannel
 	if err = sendJSON(ctx, dc, map[string]string{"type": "end"}); err != nil {
 		return err
 	}
+	// The peer can close the request as soon as it reads the complete ticket.
+	delivered = true
 	for dc.BufferedAmount() > 0 {
 		select {
 		case <-ctx.Done():
@@ -207,7 +209,6 @@ func (s *server) respondCroc(parent, ctx context.Context, dc *webrtc.DataChannel
 		case <-time.After(5 * time.Millisecond):
 		}
 	}
-	delivered = true
 	return nil
 }
 
