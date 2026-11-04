@@ -333,9 +333,17 @@ func (h *hub) accept(mux *udpmux.UDPMux, candidate udpmux.Candidate) error {
 						Resume          bool
 						Open            bool
 					}
-					if json.Unmarshal(message.Data, &auth) != nil || auth.Type != "auth" || !h.store.contains(auth.ID) {
+					if json.Unmarshal(message.Data, &auth) != nil || auth.Type != "auth" {
 						dc.SendText("rejected")
 						cancel()
+						return
+					}
+					if !h.store.contains(auth.ID) {
+						closed = true
+						deadline.Reset(2 * time.Second)
+						if dc.SendText("not-paired") != nil {
+							cancel()
+						}
 						return
 					}
 					var nonce [32]byte

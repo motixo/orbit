@@ -127,6 +127,17 @@ func (l *desktopLink) message(message webrtc.DataChannelMessage) {
 		return
 	}
 	switch string(message.Data) {
+	case "not-paired":
+		if l.target.ID != "" && l.pc != nil && l.pc.SCTP() != nil {
+			cert := l.pc.SCTP().Transport().GetRemoteCertificate()
+			if len(cert) != 0 {
+				sum := sha256.Sum256(cert)
+				l.forgetPairing(l.target.ID, hex.EncodeToString(sum[:]))
+			}
+		}
+		l.dc.SendText("disconnect-ack")
+		l.cancel()
+		return
 	case "disconnect", "forgotten":
 		l.intentional.Store(true)
 		if string(message.Data) == "forgotten" {
@@ -135,11 +146,10 @@ func (l *desktopLink) message(message webrtc.DataChannelMessage) {
 				return
 			}
 			l.mu.Lock()
-			id := l.remote.ID
+			id, fingerprint := l.remote.ID, l.remoteFingerprint
 			l.mu.Unlock()
 			if id != "" {
-				l.h.store.forget(id)
-				l.h.broadcastPairings()
+				l.forgetPairing(id, fingerprint)
 			}
 		}
 		l.dc.SendText("disconnect-ack")
@@ -195,9 +205,15 @@ func (l *desktopLink) message(message webrtc.DataChannelMessage) {
 		}
 		sum := sha256.Sum256(cert)
 		l.remoteFingerprint = strings.ToUpper(hex.EncodeToString(sum[:]))
+		trusted := l.h.store.trustsDesktop(command.ID, l.remoteFingerprint)
+		if command.Trusted && !trusted {
+			l.intentional.Store(true)
+			l.reject("not-paired")
+			return
+		}
 		incomingOpen := l.local == nil && command.Open
 		if incomingOpen && (command.Resume || !l.h.store.trustsDesktop(command.ID, l.remoteFingerprint) || !l.h.store.canOpen(command.ID)) {
-			l.rejectOpen("open-denied")
+			l.reject("open-denied")
 			return
 		}
 		if l.local == nil {
@@ -210,7 +226,7 @@ func (l *desktopLink) message(message webrtc.DataChannelMessage) {
 					if !l.h.store.canOpen(command.ID) {
 						reason = "open-denied"
 					}
-					l.rejectOpen(reason)
+					l.reject(reason)
 					return
 				}
 			} else {
@@ -231,6 +247,11 @@ func (l *desktopLink) message(message webrtc.DataChannelMessage) {
 		}
 		l.remote = command
 		l.remote.Name = cleanDeviceName(command.Name)
+		if trusted && !command.Trusted {
+			l.forgetPairing(command.ID, l.remoteFingerprint)
+			l.reject("not-paired")
+			return
+		}
 		if command.Resume && !l.h.store.trustsDesktop(command.ID, l.remoteFingerprint) {
 			go l.stop("disconnect")
 			return
@@ -291,7 +312,23 @@ func (l *desktopLink) message(message webrtc.DataChannelMessage) {
 	}
 }
 
-func (l *desktopLink) rejectOpen(reason string) {
+func (l *desktopLink) forgetPairing(id, fingerprint string) {
+	changed, err := l.h.store.forgetDesktop(id, fingerprint)
+	if err != nil {
+		l.intentional.Store(true)
+		if l.local != nil {
+			l.local.emit(map[string]string{"pairingError": "Could not forget device"})
+		}
+	} else if changed {
+		l.intentional.Store(true)
+		l.h.broadcastPairings()
+		if l.local != nil {
+			l.local.emit(map[string]string{"pairingError": "Device unpaired. Pair again."})
+		}
+	}
+}
+
+func (l *desktopLink) reject(reason string) {
 	l.rejected = true
 	l.deadline.Reset(2 * time.Second)
 	if l.dc.SendText(reason) != nil {

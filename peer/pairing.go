@@ -271,6 +271,21 @@ func (s *pairStore) forget(id string) error {
 	return nil
 }
 
+func (s *pairStore) forgetDesktop(id, fingerprint string) (bool, error) {
+	s.Lock()
+	defer s.Unlock()
+	device, ok := s.Devices[id]
+	if !ok || device.Fingerprint == "" || device.Fingerprint != fingerprintHex(fingerprint) {
+		return false, nil
+	}
+	delete(s.Devices, id)
+	if err := s.save(); err != nil {
+		s.Devices[id] = device
+		return false, err
+	}
+	return true, nil
+}
+
 func (s *pairStore) setAllowOpen(id string, allowed bool) (bool, error) {
 	s.Lock()
 	defer s.Unlock()

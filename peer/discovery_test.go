@@ -151,6 +151,37 @@ func TestUnknownDesktopCannotForgetAPairedIdentity(t *testing.T) {
 	}
 }
 
+func TestUnpairedDesktopRemovalRequiresTheSavedCertificate(t *testing.T) {
+	store, _, err := loadIdentity(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, fp := uuid.NewString(), strings.Repeat("AB", 32)
+	if err := store.rememberDesktop(id, "Workstation", fp); err != nil {
+		t.Fatal(err)
+	}
+	link := &desktopLink{h: &hub{store: store}}
+	link.forgetPairing(id, strings.Repeat("CD", 32))
+	if !store.trustsDesktop(id, fp) || link.intentional.Load() {
+		t.Fatal("an unrelated certificate revoked the pairing")
+	}
+	link.forgetPairing(id, fp)
+	if store.contains(id) || !link.intentional.Load() {
+		t.Fatal("the known device did not revoke its pairing or stop retries")
+	}
+	restored, _, err := loadIdentity(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restored.rememberDesktop(id, "Workstation", fp); err != nil {
+		t.Fatal(err)
+	}
+	restored.path += "/missing"
+	if changed, err := restored.forgetDesktop(id, fp); err == nil || changed || !restored.trustsDesktop(id, fp) {
+		t.Fatal("failed persistence removed the pairing")
+	}
+}
+
 func TestReconnectFindsTheRequestedOrbitAmongOtherOpenShelves(t *testing.T) {
 	now := time.Now()
 	h := &hub{discovered: map[string]nearbyDevice{
