@@ -26,8 +26,21 @@ Right-click the applet or tray → Settings → Watch folder. New files added di
 
 Open **⋯ → Share** in an Orbit.
 
-- **Orbit Share:** Files, text and links over your local network. [Croc](https://github.com/schollz/croc) handles encrypted file transfers, WebRTC connects devices and syncs items, and mDNS finds nearby computers. Browsers pair via QR or a link; the [PWA](https://github.com/motixo/orbit-share-pwa) works offline once cached.
-- **AirDrop:** Send and receive with Apple devices through [Owly](https://github.com/t4t5/owly), using Apple's AWDL Wi-Fi protocol. Requires compatible Wi-Fi hardware; Wi-Fi may disconnect while AirDrop is active.
+Complete **Initial file sharing** once. Reopen it from the applet or tray **Settings** to recheck AirDrop hardware.
+
+**Orbit Share**
+
+- Keep devices on the same network or hotspot. Nearby Orbits appear automatically; confirm the pairing code on both computers.
+- On iPhone, Android or another computer, open the [web app](https://orbit.motixo-dev.workers.dev/) to scan the desktop QR (**Pair via QR**) or enter its link. PWA installation is optional.
+- Share files, text and links both ways; folders become ZIP files. Keep the Share window open during transfers.
+- Manage saved devices and permission to open Orbits from **Paired devices**.
+- Downloads go to `Downloads/Orbit-Share`. Change the folder or PWA URL in **Settings**, or deploy your own [PWA](https://github.com/motixo/orbit-share-pwa). Changing the URL requires re-pairing.
+
+[Croc](https://github.com/schollz/croc) encrypts files, WebRTC connects devices and syncs items, and mDNS discovers nearby computers. Files stay on your network; Cloudflare hosts the web app. Open it online once and wait for **Ready offline** to transfer without internet later.
+
+**AirDrop**
+
+Choose **Find devices** to send selected items, or **Receive** to accept files. Set the receiving Apple device to **Everyone for 10 Minutes**. [Owly](https://github.com/t4t5/owly) uses Apple's AWDL protocol and requires compatible Wi-Fi hardware. Wi-Fi disconnects during AirDrop and reconnects when you leave it.
 
 ## Shortcuts
 
