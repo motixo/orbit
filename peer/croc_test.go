@@ -11,7 +11,31 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/pion/webrtc/v4"
 )
+
+func TestFailedCrocBridgeDoesNotUseUpAConnectionSlot(t *testing.T) {
+	const port = "1"
+	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
+	dc, err := pc.CreateDataChannel("croc:transfer:"+port, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	transfer := &crocTransfer{crocTicket: crocTicket{Host: "127.0.0.1"}, ctx: ctx, owner: "device", ports: map[string]bool{port: true}}
+	transfer.ready.Store(true)
+	s := &server{croc: map[string]*crocTransfer{"transfer": transfer}}
+	s.crocChannel(context.Background(), dc, "device")
+	if transfer.bridges != 0 {
+		t.Fatal("a cancelled bridge occupied a connection slot")
+	}
+}
 
 func TestCrocVerifiesUploadsBeforeImport(t *testing.T) {
 	for _, test := range []struct {

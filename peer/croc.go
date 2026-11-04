@@ -42,7 +42,6 @@ type crocTicket struct {
 	Size     int64  `json:"size"`
 	Host     string `json:"host"`
 	DataPort string `json:"data_port"`
-	Verify   bool   `json:"verify"`
 }
 
 func (ticket crocTicket) valid() bool {
@@ -133,12 +132,20 @@ func randomSecret() (string, error) {
 
 func (s *server) respondCroc(parent, ctx context.Context, dc *webrtc.DataChannel, command request, peer device, touch func()) error {
 	var value any = struct{}{}
+	var pending *crocTransfer
+	delivered := false
+	defer func() {
+		if pending != nil && !delivered {
+			pending.cancel()
+		}
+	}()
 	if command.Action == "croc-file" || command.Action == "croc-upload" || command.Action == "croc-receive" {
 		transfer, err := s.prepareCroc(parent, command, peer)
 		if err != nil {
 			return err
 		}
 		value = transfer
+		pending = transfer
 	} else {
 		s.crocMu.Lock()
 		transfer := s.croc[command.ID]
@@ -200,6 +207,7 @@ func (s *server) respondCroc(parent, ctx context.Context, dc *webrtc.DataChannel
 		case <-time.After(5 * time.Millisecond):
 		}
 	}
+	delivered = true
 	return nil
 }
 
@@ -218,7 +226,6 @@ func (s *server) prepareCroc(parent context.Context, command request, peer devic
 	transfer := &crocTransfer{crocTicket: crocTicket{ID: uuid.NewString(), Name: command.Name, Size: command.Size, Host: address},
 		owner: peer.connection, ctx: ctx, cancel: cancel, done: make(chan struct{}), ports: make(map[string]bool)}
 	if command.Action == "croc-upload" && !peer.native {
-		transfer.Verify = true
 		transfer.checksum = make(chan []byte, 1)
 	}
 	s.crocMu.Lock()
@@ -547,6 +554,9 @@ func (s *server) crocChannel(parent context.Context, dc *webrtc.DataChannel, own
 	if err != nil {
 		cancel()
 		dc.Close()
+		transfer.mu.Lock()
+		transfer.bridges--
+		transfer.mu.Unlock()
 		return
 	}
 	dc.OnClose(cancel)
