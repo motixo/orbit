@@ -1366,27 +1366,23 @@ impl cosmic::Application for Orbit {
                         }
                         crate::device_share::Event::Received(imported, remote) => {
                             share.status = fl!("share-received");
-                            let sender = remote
-                                .as_deref()
-                                .and_then(|key| {
-                                    crate::device_share::sender_name(
-                                        key,
-                                        &share.pairings,
-                                        &share.connected_devices,
-                                    )
-                                })
-                                .map(str::to_owned);
+                            let sender = crate::device_share::sender_name(
+                                &remote,
+                                &share.pairings,
+                                &share.connected_devices,
+                            )
+                            .map(str::to_owned);
                             let order = self.shelf.reserve_order();
                             let first_added = self.shelf.items.len();
                             let task = self.accept_import(order, Ok(imported));
                             for item in &mut self.shelf.items[first_added..] {
                                 item.origin = Some(crate::shelf::Sender {
-                                    id: remote.clone().unwrap_or_default(),
+                                    id: remote.clone(),
                                     name: sender.clone().unwrap_or_else(|| fl!("sender-device")),
                                 });
                                 match crate::share::ReceivedFile::new(
                                     &item.path,
-                                    remote.clone().unwrap_or_default(),
+                                    remote.clone(),
                                     item.order,
                                 ) {
                                     Ok(received) => {
@@ -3876,7 +3872,7 @@ mod tests {
                         directory: None,
                         text: None,
                     },
-                    Some(sender.into()),
+                    sender.into(),
                 ),
             ));
         }

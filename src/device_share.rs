@@ -308,7 +308,7 @@ type Staging = HashMap<uuid::Uuid, (String, Weak<tempfile::TempDir>)>;
 
 #[derive(Clone, Debug)]
 pub enum Event {
-    Received(ImportedFiles, Option<String>),
+    Received(ImportedFiles, String),
     Remove(std::path::PathBuf, u64),
     Stopped,
     Devices(Vec<ConnectedDevice>, bool),
@@ -344,12 +344,7 @@ impl ConnectedDevice {
     }
 
     pub fn is_sender(&self, key: &str) -> bool {
-        key.is_empty()
-            || self.pair_id == key
-            || key
-                .strip_prefix("ip:")
-                .and_then(|ip| ip.parse::<Ipv4Addr>().ok())
-                == Some(self.ip)
+        !key.is_empty() && self.pair_id == key
     }
 
     pub fn mark_reconnecting(&mut self, now: Instant) {
@@ -430,19 +425,15 @@ pub fn sender_name<'a>(
     pairings: &'a [PairedDevice],
     connected_devices: &'a [ConnectedDevice],
 ) -> Option<&'a str> {
-    let ip = key
-        .strip_prefix("ip:")
-        .and_then(|ip| ip.parse::<Ipv4Addr>().ok());
-    let remote = connected_devices
-        .iter()
-        .find(|remote| remote.pair_id == key || ip == Some(remote.ip));
     pairings
         .iter()
-        .find(|device| device.id == key || remote.is_some_and(|remote| remote.pair_id == device.id))
+        .find(|device| device.id == key)
         .map(|device| device.name.as_str())
         .filter(|name| !name.trim().is_empty())
         .or_else(|| {
-            remote
+            connected_devices
+                .iter()
+                .find(|remote| !key.is_empty() && remote.pair_id == key)
                 .map(|remote| remote.name.as_str())
                 .filter(|name| !name.trim().is_empty())
         })
@@ -1185,7 +1176,7 @@ async fn croc_import(
     .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not save file"))??;
     state
         .incoming
-        .unbounded_send(Event::Received(imported, Some(sender)))
+        .unbounded_send(Event::Received(imported, sender))
         .map_err(|_| (StatusCode::GONE, "Sharing stopped"))?;
     if let Some(key) = source {
         received.insert(key);
@@ -1259,7 +1250,7 @@ async fn receive_text(
     .map_err(|_| (StatusCode::INSUFFICIENT_STORAGE, "Could not save text"))?;
     state
         .incoming
-        .unbounded_send(Event::Received(imported, Some(sender)))
+        .unbounded_send(Event::Received(imported, sender))
         .map_err(|_| (StatusCode::GONE, "Sharing stopped"))?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1597,11 +1588,11 @@ mod tests {
     }
 
     #[test]
-    fn sender_names_use_device_aliases_and_keep_unpaired_device_names() {
+    fn sender_names_and_ownership_use_pairing_identities() {
         let connected_devices: Vec<ConnectedDevice> = serde_json::from_str(
             r#"[
             {"ip":"192.168.1.2", "name":"iPhone", "pair_id":"first"},
-            {"ip":"192.168.1.3", "name":"Pixel"}
+            {"ip":"192.168.1.2", "name":"Pixel", "pair_id":"second"}
         ]"#,
         )
         .unwrap();
@@ -1616,13 +1607,16 @@ mod tests {
             Some("My device")
         );
         assert_eq!(
-            sender_name("ip:192.168.1.2", &pairings, &connected_devices),
-            Some("My device")
-        );
-        assert_eq!(
-            sender_name("ip:192.168.1.3", &pairings, &connected_devices),
+            sender_name("second", &pairings, &connected_devices),
             Some("Pixel")
         );
+        assert_eq!(
+            sender_name("ip:192.168.1.2", &pairings, &connected_devices),
+            None
+        );
+        assert!(!connected_devices[0].is_sender("second"));
+        assert!(!connected_devices[0].is_sender(""));
+        assert!(!connected_devices[0].is_sender("ip:192.168.1.2"));
         assert_eq!(sender_name("first", &pairings, &[]), Some("My device"));
         assert_eq!(sender_name("unknown", &pairings, &connected_devices), None);
     }
@@ -1871,10 +1865,7 @@ mod tests {
         else {
             panic!("Expected received file");
         };
-        assert_eq!(
-            remote.as_deref(),
-            Some("aabbccdd-1234-4567-8901-123456789abc")
-        );
+        assert_eq!(remote, "aabbccdd-1234-4567-8901-123456789abc");
         assert_eq!(
             std::fs::read_to_string(&received.files.0[0]).unwrap(),
             "from orbit"
