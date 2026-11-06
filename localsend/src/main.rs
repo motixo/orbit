@@ -440,7 +440,10 @@ async fn send(
 }
 
 async fn run(directory: PathBuf, name: String) -> Result<()> {
-    ensure!(directory.is_absolute(), "Invalid download folder");
+    ensure!(
+        directory.is_absolute() && directory.to_str().is_some(),
+        "Invalid download folder"
+    );
     std::fs::create_dir_all(&directory)?;
     let runtime = std::env::var_os("XDG_RUNTIME_DIR").context("Missing runtime directory")?;
     let lease = std::fs::OpenOptions::new()

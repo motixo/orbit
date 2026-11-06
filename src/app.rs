@@ -1783,10 +1783,19 @@ impl cosmic::Application for Orbit {
                             let text = (bundle.files.len() == 1)
                                 .then(|| bundle.files[0].text.clone())
                                 .flatten();
-                            let files: Vec<_> =
-                                bundle.files.iter().map(|file| &file.path).collect();
-                            if dialog.command(serde_json::json!({"action":"send","device":device,"files":files,"text":text})) { dialog.bundle = Some(bundle); }
-                            else { dialog.busy = false; dialog.status = fl!("localsend-error"); }
+                            let files: Vec<_> = bundle
+                                .files
+                                .iter()
+                                .map(|file| file.path.as_path())
+                                .collect();
+                            let request =
+                                crate::localsend::send_request(&device, &files, text.as_deref());
+                            if request.is_ok_and(|request| dialog.command(request)) {
+                                dialog.bundle = Some(bundle);
+                            } else {
+                                dialog.busy = false;
+                                dialog.status = fl!("localsend-send-error");
+                            }
                         }
                         Err(error) => {
                             dialog.busy = false;

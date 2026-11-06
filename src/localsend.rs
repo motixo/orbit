@@ -12,7 +12,7 @@ use std::{
     collections::HashMap,
     io::Write,
     os::unix::fs::PermissionsExt,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc, LazyLock,
         atomic::{AtomicBool, Ordering},
@@ -70,6 +70,15 @@ impl Controller {
     pub fn command(&self, command: serde_json::Value) -> bool {
         self.0.send(command).is_ok()
     }
+}
+
+pub fn send_request(
+    device: &str,
+    files: &[&Path],
+    text: Option<&str>,
+) -> serde_json::Result<serde_json::Value> {
+    let files = serde_json::to_value(files)?;
+    Ok(serde_json::json!({"action":"send", "device":device, "files":files, "text":text}))
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -404,5 +413,20 @@ impl Dialog {
             }
         }))
         .into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+
+    #[test]
+    fn send_request_reports_unsupported_paths_without_panicking() {
+        let path = Path::new("/tmp/photo.png");
+        let request = send_request("device", &[path], None).unwrap();
+        assert_eq!(request["files"], serde_json::json!(["/tmp/photo.png"]));
+        let invalid = PathBuf::from(OsString::from_vec(b"/tmp/invalid-\xff.png".to_vec()));
+        assert!(send_request("device", &[&invalid], None).is_err());
     }
 }

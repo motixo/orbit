@@ -189,6 +189,7 @@ localsend-hint = Open LocalSend on the other device. Keep this window open to re
 localsend-no-devices = No devices found.
 localsend-refresh = Refresh
 localsend-error = Could not start LocalSend.
+localsend-send-error = Could not send these items.
 localsend-done = Transfer complete.
 sharing-setup-open = Open
 sharing-setup-croc-installing = Installing Croc…
