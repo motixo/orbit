@@ -197,6 +197,41 @@ fn message(files: &HashMap<String, FileDto>) -> Option<&str> {
     .flatten()
 }
 
+fn numbered_name(name: &str, index: usize) -> String {
+    if index == 0 {
+        return name.to_owned();
+    }
+    let path = Path::new(name);
+    let extension = path
+        .extension()
+        .map(|part| format!(".{}", part.to_string_lossy()))
+        .filter(|extension| extension.len() < 240)
+        .unwrap_or_default();
+    let stem = if extension.is_empty() {
+        name
+    } else {
+        path.file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or(name)
+    };
+    let suffix = format!(" ({index}){extension}");
+    let mut length = stem.len().min(255usize.saturating_sub(suffix.len()));
+    while !stem.is_char_boundary(length) {
+        length -= 1;
+    }
+    format!("{}{suffix}", &stem[..length])
+}
+
+fn unique_name(name: &str, used: &mut HashSet<String>) -> String {
+    for index in 0.. {
+        let candidate = numbered_name(name, index);
+        if used.insert(candidate.clone()) {
+            return candidate;
+        }
+    }
+    unreachable!()
+}
+
 fn publish(
     stage: &Path,
     directory: &Path,
@@ -209,29 +244,9 @@ fn publish(
         if !roots.contains(&name) {
             continue;
         }
-        let original = Path::new(&name);
-        let extension = original
-            .extension()
-            .map(|part| format!(".{}", part.to_string_lossy()))
-            .filter(|extension| extension.len() < 240)
-            .unwrap_or_default();
-        let stem = if extension.is_empty() {
-            name.to_string_lossy()
-        } else {
-            original.file_stem().unwrap_or(&name).to_string_lossy()
-        };
         let mut index = 0;
         loop {
-            let suffix = format!(" ({index}){extension}");
-            let mut length = stem.len().min(255usize.saturating_sub(suffix.len()));
-            while !stem.is_char_boundary(length) {
-                length -= 1;
-            }
-            let target = directory.join(if index == 0 {
-                name.clone()
-            } else {
-                format!("{}{suffix}", &stem[..length]).into()
-            });
+            let target = directory.join(numbered_name(&name.to_string_lossy(), index));
             match rustix::fs::renameat_with(
                 rustix::fs::CWD,
                 entry.path(),
@@ -352,6 +367,7 @@ async fn send(
             },
         );
     } else {
+        let mut names = HashSet::new();
         for path in paths {
             let metadata = tokio::fs::metadata(&path).await?;
             ensure!(path.is_absolute() && metadata.is_file(), "Not a file");
@@ -360,11 +376,13 @@ async fn send(
                 id.clone(),
                 FileDto {
                     id: id.clone(),
-                    file_name: path
-                        .file_name()
-                        .context("Invalid file name")?
-                        .to_string_lossy()
-                        .into_owned(),
+                    file_name: unique_name(
+                        &path
+                            .file_name()
+                            .context("Invalid file name")?
+                            .to_string_lossy(),
+                        &mut names,
+                    ),
                     size: metadata.len(),
                     file_type: mime_guess::from_path(&path)
                         .first_or_octet_stream()
@@ -691,6 +709,19 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn outgoing_names_are_unique_and_keep_their_extension() {
+        let mut used = HashSet::new();
+        assert_eq!(unique_name("photo.png", &mut used), "photo.png");
+        assert_eq!(unique_name("photo.png", &mut used), "photo (1).png");
+        assert_eq!(unique_name("photo (1).png", &mut used), "photo (1) (1).png");
+        assert_eq!(unique_name("photo.png", &mut used), "photo (2).png");
+        let long = format!("{}.png", "é".repeat(125));
+        unique_name(&long, &mut used);
+        let renamed = unique_name(&long, &mut used);
+        assert!(renamed.len() <= 255 && renamed.ends_with(" (1).png"));
+    }
+
     #[test]
     fn remote_paths_stay_inside_staging() {
         for name in ["../secret", "/etc/passwd", "a/../../b", "a\\b", "", "a\0b"] {
