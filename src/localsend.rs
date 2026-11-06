@@ -107,6 +107,7 @@ pub struct Progress {
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum Update {
     Ready,
+    Receiving,
     Devices {
         devices: Vec<Device>,
     },
@@ -127,6 +128,7 @@ pub enum Update {
         text: String,
     },
     Done {
+        receiving: bool,
         error: Option<String>,
     },
     Error {
@@ -193,6 +195,7 @@ pub struct Dialog {
     pub request: Option<Request>,
     pub progress: HashMap<String, Progress>,
     pub busy: bool,
+    pub receiving: bool,
     pub generation: u64,
     pub ready: bool,
     pub status: String,
@@ -237,6 +240,7 @@ impl Dialog {
             request: None,
             progress: HashMap::new(),
             busy: false,
+            receiving: false,
             generation: 0,
             ready: false,
             status: String::new(),
@@ -325,6 +329,7 @@ impl Dialog {
                     .on_press_maybe(
                         (self.ready
                             && !self.busy
+                            && !self.receiving
                             && self.request.is_none()
                             && self.progress.is_empty()
                             && count > 0)
@@ -356,7 +361,10 @@ impl Dialog {
                 .spacing(spacing.space_s),
             );
         }
-        if (!self.ready || self.busy) && self.progress.is_empty() && self.status.is_empty() {
+        if (!self.ready || self.busy || self.receiving)
+            && self.progress.is_empty()
+            && self.status.is_empty()
+        {
             content = content.push(
                 widget::container(widget::indeterminate_circular().size(24.0))
                     .center_x(Length::Fill),
@@ -381,7 +389,7 @@ impl Dialog {
                 (self.ready && !self.busy).then_some(Message::LocalSendAction(Action::Refresh)),
             ),
         );
-        if self.busy {
+        if self.busy || self.receiving {
             actions = actions.push(
                 widget::button::standard(fl!("cancel"))
                     .on_press(Message::LocalSendAction(Action::Cancel)),

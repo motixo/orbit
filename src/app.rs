@@ -1726,6 +1726,7 @@ impl cosmic::Application for Orbit {
                     let Some(dialog) = self.localsend_dialog.as_mut().filter(|dialog| {
                         dialog.ready
                             && !dialog.busy
+                            && !dialog.receiving
                             && dialog.request.is_none()
                             && dialog.progress.is_empty()
                     }) else {
@@ -1756,7 +1757,7 @@ impl cosmic::Application for Orbit {
                             dialog.command(serde_json::json!({"action":"refresh"}));
                         }
                         Action::Cancel => {
-                            if dialog.busy && dialog.bundle.is_none() {
+                            if dialog.busy && !dialog.receiving && dialog.bundle.is_none() {
                                 dialog
                                     .cancelled
                                     .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -1820,6 +1821,15 @@ impl cosmic::Application for Orbit {
                             dialog.ready = true;
                             dialog.status.clear();
                         }
+                        Update::Receiving => {
+                            dialog.receiving = true;
+                            dialog
+                                .cancelled
+                                .store(true, std::sync::atomic::Ordering::Relaxed);
+                            dialog.busy = false;
+                            dialog.bundle = None;
+                            dialog.status.clear();
+                        }
                         Update::Devices { devices } => dialog.devices = devices,
                         Update::Request(request) => {
                             dialog.request = Some(request);
@@ -1844,14 +1854,21 @@ impl cosmic::Application for Orbit {
                                 Source::Clipboard,
                             );
                         }
-                        Update::Done { error } => {
-                            dialog.busy = false;
-                            dialog.bundle = None;
-                            dialog.progress.clear();
+                        Update::Done { receiving, error } => {
+                            if receiving {
+                                dialog.receiving = false;
+                            } else {
+                                dialog.busy = false;
+                                dialog.bundle = None;
+                            }
+                            dialog
+                                .progress
+                                .retain(|_, progress| progress.receiving != receiving);
                             dialog.status = error.unwrap_or_else(|| fl!("localsend-done"));
                         }
                         Update::Error { error } => {
                             dialog.busy = false;
+                            dialog.receiving = false;
                             dialog.ready = false;
                             dialog.bundle = None;
                             dialog.progress.clear();

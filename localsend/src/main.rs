@@ -10,7 +10,7 @@ use localsend::{
         client::LsHttpClientV2,
         dto_v2::{PrepareUploadRequestDtoV2, RegisterDtoV2},
         server::{
-            ServerConfigV2, TlsConfig,
+            ServerConfigV2, ServerHandle, TlsConfig,
             common::save::FileUploadTarget,
             start_with_port,
             v2::{PrepareUploadDecisionV2, ServerEventV2},
@@ -39,6 +39,7 @@ use std::{
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
     sync::{mpsc, oneshot},
+    time::Instant,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -130,9 +131,17 @@ struct Receiving {
     ended: bool,
     failed: bool,
     roots: HashSet<std::ffi::OsString>,
+    last_activity: Instant,
+}
+
+impl Receiving {
+    fn expired(&self, now: Instant) -> bool {
+        !self.ended && now.duration_since(self.last_activity) >= Duration::from_secs(60)
+    }
 }
 
 enum Finished {
+    Activity(String),
     File {
         session: String,
         id: String,
@@ -282,7 +291,9 @@ fn finish_receive(receiving: &mut Option<Receiving>, directory: &Path) -> Result
         }
         Err(error) => {
             emit(json!({"event":"received","paths":[stage]}));
-            emit(json!({"event":"done","error":format!("Could not finish saving files: {error}")}));
+            emit(
+                json!({"event":"done","receiving":true,"error":format!("Could not finish saving files: {error}")}),
+            );
             return Ok(());
         }
     };
@@ -290,7 +301,7 @@ fn finish_receive(receiving: &mut Option<Receiving>, directory: &Path) -> Result
         emit(json!({"event":"received", "paths":paths}));
     }
     emit(
-        json!({"event":"done", "error":state.failed.then_some("Some files could not be received")}),
+        json!({"event":"done", "receiving":true,"error":state.failed.then_some("Some files could not be received")}),
     );
     Ok(())
 }
@@ -306,12 +317,19 @@ async fn file_result(
 ) {
     let mut result = result;
     let mut bytes = 0;
+    let mut reported = 0;
     let mut tick = tokio::time::interval(Duration::from_millis(100));
     let outcome = loop {
         tokio::select! {
             value = &mut result => break value.unwrap_or_else(|_| Err("Transfer ended early".into())),
             Some(value) = progress.recv() => bytes = value,
-            _ = tick.tick() => emit(json!({"event":"progress", "id":id,"name":file.file_name,"done":bytes,"total":file.size,"receiving":true})),
+            _ = tick.tick() => {
+                if bytes != reported {
+                    let _ = finished.try_send(Finished::Activity(session.clone()));
+                    reported = bytes;
+                }
+                emit(json!({"event":"progress", "id":id,"name":file.file_name,"done":bytes,"total":file.size,"receiving":true}));
+            },
         }
     };
     if outcome.is_err() {
@@ -459,6 +477,48 @@ async fn send(
     Ok(())
 }
 
+type Server = (ServerHandle, oneshot::Sender<()>);
+
+async fn start_server(
+    port: u16,
+    identity: &Identity,
+    info: ClientInfo,
+    events: mpsc::Sender<ServerEventV2>,
+) -> Result<Server> {
+    let (stop_tx, stop_rx) = oneshot::channel();
+    let handle = start_with_port(
+        port,
+        Some(TlsConfig {
+            cert: identity.cert.clone(),
+            private_key: identity.key.clone(),
+        }),
+        info,
+        None,
+        Some(ServerConfigV2 {
+            pin: None,
+            verify_checksums: true,
+            event_tx: events,
+        }),
+        None,
+        stop_rx,
+    )
+    .await?;
+    Ok((handle, stop_tx))
+}
+
+async fn restart_server(
+    server: Server,
+    identity: &Identity,
+    info: ClientInfo,
+    events: mpsc::Sender<ServerEventV2>,
+) -> Result<Server> {
+    let port = server.0.port();
+    let _ = server.1.send(());
+    // Clearing a core session alone leaves active uploads running.
+    server.0.wait_stopped().await;
+    start_server(port, identity, info, events).await
+}
+
 async fn run(directory: PathBuf, name: String) -> Result<()> {
     ensure!(
         directory.is_absolute() && directory.to_str().is_some(),
@@ -483,7 +543,6 @@ async fn run(directory: PathBuf, name: String) -> Result<()> {
     std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o700))?;
     let identity = Arc::new(Identity::load(&data)?);
     let (server_tx, mut server_rx) = mpsc::channel(32);
-    let (stop_tx, stop_rx) = oneshot::channel();
     let info = ClientInfo {
         alias: name.clone(),
         version: PROTOCOL_VERSION_V2.into(),
@@ -491,44 +550,18 @@ async fn run(directory: PathBuf, name: String) -> Result<()> {
         device_type: Some(DeviceType::Desktop),
         token: identity.fingerprint.clone(),
     };
-    let tls = || {
-        Some(TlsConfig {
-            cert: identity.cert.clone(),
-            private_key: identity.key.clone(),
-        })
-    };
-    let config = || {
-        Some(ServerConfigV2 {
-            pin: None,
-            verify_checksums: true,
-            event_tx: server_tx.clone(),
-        })
-    };
-    let server = match start_with_port(
-        DEFAULT_PORT,
-        tls(),
-        info.clone(),
-        None,
-        config(),
-        None,
-        stop_rx,
-    )
-    .await
-    {
-        Ok(server) => (server, stop_tx),
-        Err(error)
-            if error
-                .downcast_ref::<std::io::Error>()
-                .is_some_and(|e| e.kind() == std::io::ErrorKind::AddrInUse) =>
-        {
-            let (stop_tx, stop_rx) = oneshot::channel();
-            (
-                start_with_port(0, tls(), info, None, config(), None, stop_rx).await?,
-                stop_tx,
-            )
-        }
-        Err(error) => return Err(error),
-    };
+    let mut server =
+        match start_server(DEFAULT_PORT, &identity, info.clone(), server_tx.clone()).await {
+            Ok(server) => server,
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|e| e.kind() == std::io::ErrorKind::AddrInUse) =>
+            {
+                start_server(0, &identity, info.clone(), server_tx.clone()).await?
+            }
+            Err(error) => return Err(error),
+        };
     let port = server.0.port();
     let (discovery_tx, mut discovery_rx) = mpsc::channel(32);
     let (discovery_stop_tx, discovery_stop_rx) = oneshot::channel();
@@ -568,6 +601,7 @@ async fn run(directory: PathBuf, name: String) -> Result<()> {
     let mut receiving: Option<Receiving> = None;
     let mut sending: Option<CancellationToken> = None;
     let mut sending_target: Option<(String, String)> = None;
+    let mut idle = tokio::time::interval(Duration::from_secs(1));
     loop {
         tokio::select! {
             line = input.next_line() => {
@@ -576,7 +610,15 @@ async fn run(directory: PathBuf, name: String) -> Result<()> {
                 match command {
                     Command::Stop => break,
                     Command::Refresh => refresh(discovery.clone()),
-                    Command::Cancel => { if let Some(cancel) = &sending { cancel.cancel(); } },
+                    Command::Cancel => {
+                        if let Some(cancel) = &sending { cancel.cancel(); }
+                        if let Some(state) = receiving.as_mut().filter(|state| !state.ended) {
+                            state.ended = true;
+                            state.failed = true;
+                            server = restart_server(server, &identity, info.clone(), server_tx.clone()).await?;
+                            finish_receive(&mut receiving, &directory)?;
+                        }
+                    },
                     Command::Answer { id, accept } => {
                         if !offer.as_ref().is_some_and(|offer| offer.id == id) { continue; }
                         let request = offer.take().unwrap();
@@ -586,12 +628,13 @@ async fn run(directory: PathBuf, name: String) -> Result<()> {
                             let _ = request.reply.send(PrepareUploadDecisionV2::Accept(HashSet::new()));
                         } else {
                             let stage = tempfile::Builder::new().prefix(".orbit-localsend-").tempdir_in(&directory)?;
-                            receiving = Some(Receiving { id:request.id, stage, pending:0, ended:false, failed:false, roots:HashSet::new() });
+                            receiving = Some(Receiving { id:request.id, stage, pending:0, ended:false, failed:false, roots:HashSet::new(), last_activity:Instant::now() });
+                            emit(json!({"event":"receiving"}));
                             let _ = request.reply.send(PrepareUploadDecisionV2::Accept(request.files.keys().cloned().collect()));
                         }
                     }
                     Command::Send(request) => {
-                        if sending.is_some() || receiving.is_some() || offer.is_some() { emit(json!({"event":"done","error":"A transfer is already in progress"})); continue; }
+                        if sending.is_some() || receiving.is_some() || offer.is_some() { emit(json!({"event":"done","receiving":false,"error":"A transfer is already in progress"})); continue; }
                         let cancel = CancellationToken::new();
                         sending = Some(cancel.clone());
                         let info = identity.info(&name, port);
@@ -617,7 +660,8 @@ async fn run(directory: PathBuf, name: String) -> Result<()> {
                     if offer.as_ref().is_some_and(|offer| offer.id == session_id) { offer = None; emit(json!({"event":"request_closed"})); }
                 }
                 ServerEventV2::FileUpload { session_id, file_id, file, target_tx } => {
-                    let Some(state) = receiving.as_mut().filter(|state| state.id == session_id) else { continue; };
+                    let Some(state) = receiving.as_mut().filter(|state| state.id == session_id && !state.ended) else { continue; };
+                    state.last_activity = Instant::now();
                     let path = state.stage.path().join(relative_path(&file.file_name)?);
                     std::fs::create_dir_all(path.parent().unwrap())?;
                     state.pending += 1;
@@ -628,8 +672,11 @@ async fn run(directory: PathBuf, name: String) -> Result<()> {
                 }
                 ServerEventV2::SessionEnd { session_id, reason } => {
                     if let Some(state) = receiving.as_mut().filter(|state| state.id == session_id) {
+                        let cancelled = reason == localsend::http::server::v2::SessionEndReasonV2::Cancelled;
+                        let restart = cancelled && !state.ended && state.pending > 0;
                         state.ended = true;
-                        state.failed |= reason == localsend::http::server::v2::SessionEndReasonV2::Cancelled;
+                        state.failed |= cancelled;
+                        if restart { server = restart_server(server, &identity, info.clone(), server_tx.clone()).await?; }
                     }
                     finish_receive(&mut receiving, &directory)?;
                 }
@@ -640,21 +687,36 @@ async fn run(directory: PathBuf, name: String) -> Result<()> {
                 ServerEventV2::ListenerFailed { error } => bail!(error),
             },
             Some(event) = finished_rx.recv() => match event {
+                Finished::Activity(session) => {
+                    if let Some(state) = receiving.as_mut().filter(|state| state.id == session) {
+                        state.last_activity = Instant::now();
+                    }
+                }
                 Finished::File { session, id, path, result } => {
                     emit(json!({"event":"progress_end","id":id}));
                     if let Some(state) = receiving.as_mut().filter(|state| state.id == session) {
+                        let restart = result.is_err() && !state.ended;
+                        state.last_activity = Instant::now();
                         state.pending -= 1;
                         state.failed |= result.is_err();
                         if result.is_err() { state.ended = true; }
                         if result.is_ok() && let Ok(relative) = path.strip_prefix(state.stage.path())
                             && let Some(Component::Normal(root)) = relative.components().next() { state.roots.insert(root.to_owned()); }
+                        if restart { server = restart_server(server, &identity, info.clone(), server_tx.clone()).await?; }
                     }
-                    if result.is_err() { server.0.cancel_v2_session(&session).await; }
                     finish_receive(&mut receiving, &directory)?;
                 }
                 Finished::SendStarted { id, host } => sending_target = Some((id, host)),
-                Finished::Send(result) => { sending = None; sending_target = None; emit(json!({"event":"done","error":result.err().map(|e| e.to_string())})); },
+                Finished::Send(result) => { sending = None; sending_target = None; emit(json!({"event":"done","receiving":false,"error":result.err().map(|e| e.to_string())})); },
             },
+            _ = idle.tick() => {
+                if let Some(state) = receiving.as_mut().filter(|state| state.expired(Instant::now())) {
+                    state.ended = true;
+                    state.failed = true;
+                    server = restart_server(server, &identity, info.clone(), server_tx.clone()).await?;
+                    finish_receive(&mut receiving, &directory)?;
+                }
+            }
             Some(_) = discovery_rx.recv() => devices(&discovery),
         }
     }
@@ -711,6 +773,57 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stalled_receives_expire_after_a_minute_without_progress() {
+        let now = Instant::now();
+        let mut state = Receiving {
+            id: "session".into(),
+            stage: tempfile::tempdir().unwrap(),
+            pending: 0,
+            ended: false,
+            failed: false,
+            roots: HashSet::new(),
+            last_activity: now,
+        };
+        assert!(!state.expired(now + Duration::from_secs(59)));
+        assert!(state.expired(now + Duration::from_secs(60)));
+        state.last_activity = now + Duration::from_secs(50);
+        assert!(!state.expired(now + Duration::from_secs(60)));
+        state.ended = true;
+        assert!(!state.expired(now + Duration::from_secs(120)));
+    }
+
+    #[test]
+    fn aborted_receives_keep_completed_files_and_discard_incomplete_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let stage = tempfile::tempdir_in(directory.path()).unwrap();
+        let staging_path = stage.path().to_owned();
+        std::fs::write(stage.path().join("complete.txt"), "complete").unwrap();
+        std::fs::write(stage.path().join("partial.txt"), "partial").unwrap();
+        let mut receiving = Some(Receiving {
+            id: "session".into(),
+            stage,
+            pending: 1,
+            ended: true,
+            failed: true,
+            roots: HashSet::from(["complete.txt".into()]),
+            last_activity: Instant::now(),
+        });
+        finish_receive(&mut receiving, directory.path()).unwrap();
+        assert!(receiving.is_some());
+        assert!(staging_path.exists());
+        receiving.as_mut().unwrap().pending = 0;
+        finish_receive(&mut receiving, directory.path()).unwrap();
+        assert!(receiving.is_none());
+        assert_eq!(
+            std::fs::read(directory.path().join("complete.txt")).unwrap(),
+            b"complete"
+        );
+        assert!(!directory.path().join("partial.txt").exists());
+        assert!(!staging_path.exists());
+    }
+
     #[test]
     fn outgoing_names_are_unique_and_keep_their_extension() {
         let mut used = HashSet::new();
