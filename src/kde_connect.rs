@@ -249,7 +249,11 @@ async fn connected(
                         else { proxy.reject_pairing(&device).await }?;
                         snapshot(&proxy).await.map(Some)
                     }.await,
-                    Command::Send(device, bundle) => {
+                    Command::Send(device, bundle) => async {
+                        let devices = proxy.list_devices().await?;
+                        if !devices.iter().any(|target| target.id == device && target.is_paired && target.is_reachable) {
+                            return Err(zbus::Error::Failure(fl!("kde-connect-device-error")));
+                        }
                         let files: Result<Vec<_>, _> = bundle.files.iter().map(|file| {
                             if !file.path.is_file() { return Err(zbus::Error::Failure(fl!("kde-connect-export-error"))); }
                             let path = file.path.to_str().ok_or_else(|| zbus::Error::Failure(fl!("kde-connect-export-error")))?;
@@ -261,7 +265,7 @@ async fn connected(
                             Ok(files) => proxy.send_files(&device, files).await.map(|()| Some(Event::Sent)),
                             Err(error) => Err(error),
                         }
-                    }
+                    }.await,
                 };
                 let event = match result {
                     Ok(event) => event,

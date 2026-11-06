@@ -95,6 +95,7 @@ kde-connect-no-devices = Open KDE Connect on your device.
 kde-connect-already-open = KDE Connect is open in another Orbit.
 kde-connect-service-error = Could not connect to the COSMIC KDE Connect service.
 kde-connect-api-error = Update the COSMIC KDE Connect service.
+kde-connect-device-error = Device is offline or unpaired.
 kde-connect-export-error = Could not prepare files for KDE Connect.
 share = Orbit Share
 share-menu = Share
