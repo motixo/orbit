@@ -47,9 +47,7 @@ pub struct TransferInfo {
 
 impl TransferInfo {
     fn percent(&self) -> Option<u8> {
-        if self.state == "completed" {
-            Some(100)
-        } else if self.total_bytes > 0 {
+        if self.total_bytes > 0 {
             Some(
                 (u128::from(self.bytes_transferred) * 100 / u128::from(self.total_bytes)).min(99)
                     as u8,
@@ -544,7 +542,6 @@ impl Dialog {
                 widget::indeterminate_circular().size(24.0).into()
             };
             let state = match progress.state.as_str() {
-                "completed" => fl!("kde-connect-completed"),
                 "failed" => fl!("kde-connect-failed"),
                 _ if progress.direction == "download" => fl!("share-downloading"),
                 _ => fl!("share-uploading"),
@@ -730,7 +727,6 @@ mod tests {
         record_progress(&mut transfers, second.clone());
         assert_eq!(transfers.len(), 2);
         first.state = "completed".into();
-        assert_eq!(first.percent(), Some(100));
         record_progress(&mut transfers, first.clone());
         assert_eq!(transfers.len(), 1);
         assert_eq!(transfers[0].transfer_id, "second");

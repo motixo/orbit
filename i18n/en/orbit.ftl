@@ -89,7 +89,6 @@ kde-connect-unpair = Unpair
 kde-connect-refresh = Refresh
 kde-connect-online = Online
 kde-connect-offline = Offline
-kde-connect-completed = Completed
 kde-connect-failed = Failed
 kde-connect-no-devices = Open KDE Connect on your device.
 kde-connect-already-open = KDE Connect is open in another Orbit.
