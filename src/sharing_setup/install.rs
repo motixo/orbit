@@ -17,6 +17,7 @@ const SOURCE: &str = "0f2ca4087e6d938d823e76c856fcd04d0a0162b6";
 
 #[derive(Clone, Copy, Debug)]
 pub enum Step {
+    LocalSendInstalling,
     CrocInstalling,
     CrocVerifying,
     Downloading(f32),
@@ -30,6 +31,7 @@ pub enum Step {
 impl Step {
     pub fn label(self) -> String {
         match self {
+            Self::LocalSendInstalling => fl!("localsend-installing"),
             Self::CrocInstalling => fl!("sharing-setup-croc-installing"),
             Self::CrocVerifying => fl!("sharing-setup-croc-verifying"),
             Self::Downloading(_) => fl!("sharing-setup-download"),

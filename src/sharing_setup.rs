@@ -138,6 +138,7 @@ struct Setup {
     _lease: File,
     report: Option<Report>,
     croc_ready: bool,
+    localsend_installed: bool,
     busy: bool,
     step: Option<install::Step>,
     error: Option<String>,
@@ -153,6 +154,9 @@ pub enum Message {
     Progress(install::Step),
     Installed(Result<(), String>),
     Finish,
+    LocalSendChecked(bool),
+    InstallLocalSend,
+    LocalSendInstalled(Result<(), String>),
 }
 
 impl cosmic::Application for Setup {
@@ -178,12 +182,20 @@ impl cosmic::Application for Setup {
             _lease: lease,
             report: None,
             croc_ready: false,
+            localsend_installed: false,
             busy: true,
             step: None,
             error: None,
         };
         let prepare = app.update(Message::Check);
-        (app, Task::batch([title, prepare]))
+        let localsend = cosmic::task::future(async {
+            Message::LocalSendChecked(
+                tokio::task::spawn_blocking(crate::localsend::installed)
+                    .await
+                    .unwrap_or(false),
+            )
+        });
+        (app, Task::batch([title, prepare, localsend]))
     }
 
     fn view(&self) -> Element<'_, Message> {
@@ -192,7 +204,20 @@ impl cosmic::Application for Setup {
         if self.croc_ready {
             body = body.push(widget::text::body(fl!("sharing-setup-croc-installed")));
         }
+        body = body.push(widget::text::heading(fl!("localsend")));
+        if self.localsend_installed {
+            body = body.push(widget::text::body(fl!("localsend-installed")));
+        } else {
+            body = body
+                .push(widget::text::caption(fl!("localsend-setup-description")))
+                .push(
+                    widget::button::standard(fl!("localsend-install")).on_press_maybe(
+                        (!self.busy && self.croc_ready).then_some(Message::InstallLocalSend),
+                    ),
+                );
+        }
         if let Some(report) = &self.report {
+            body = body.push(widget::text::heading(fl!("owly")));
             body = body.push(widget::text::body(if report.supported {
                 fl!("sharing-setup-supported")
             } else {
@@ -253,7 +278,7 @@ impl cosmic::Application for Setup {
                     .on_press_maybe((!self.busy).then_some(Message::CheckHardware)),
             );
         }
-        if needs_install || !self.croc_ready {
+        if needs_install || !self.croc_ready || !self.localsend_installed {
             buttons = buttons.push(
                 widget::button::standard(fl!("sharing-setup-later"))
                     .on_press_maybe((!self.busy).then_some(Message::Finish)),
@@ -280,6 +305,27 @@ impl cosmic::Application for Setup {
 
     fn update(&mut self, message: Message) -> Task<cosmic::Action<Message>> {
         match message {
+            Message::LocalSendChecked(installed) => self.localsend_installed = installed,
+            Message::InstallLocalSend if !self.busy && !self.localsend_installed => {
+                self.busy = true;
+                self.error = None;
+                self.step = Some(install::Step::LocalSendInstalling);
+                return cosmic::task::future(async {
+                    let result = tokio::task::spawn_blocking(crate::localsend::install)
+                        .await
+                        .map_err(|error| error.to_string())
+                        .and_then(|result| result.map_err(|error| error.to_string()));
+                    Message::LocalSendInstalled(result)
+                });
+            }
+            Message::LocalSendInstalled(result) => {
+                self.busy = false;
+                self.step = None;
+                match result {
+                    Ok(()) => self.localsend_installed = true,
+                    Err(error) => self.error = Some(error),
+                }
+            }
             Message::Check => {
                 self.error = None;
                 self.report = None;
@@ -392,6 +438,7 @@ mod tests {
                 details: String::new(),
             }),
             croc_ready: true,
+            localsend_installed: false,
             busy: false,
             step: None,
             error: Some("previous error".into()),

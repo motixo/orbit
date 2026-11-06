@@ -1,0 +1,23 @@
+[package]
+name = "orbit-localsend"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+
+[dependencies]
+anyhow = "1"
+dirs = "6"
+futures-util = "0.3"
+localsend = { git = "https://github.com/localsend/localsend", rev = "af0416be50770a97760f7070684bc667b759a15c", default-features = false, features = ["discovery"] }
+mime_guess = "2.0"
+rustix = { version = "1", features = ["fs"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+tokio-util = { version = "0.7", features = ["rt"] }
+uuid = { version = "1", features = ["v4"] }
+
+[profile.release]
+strip = true

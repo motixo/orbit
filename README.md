@@ -42,6 +42,10 @@ Complete **Initial file sharing** once. Reopen it from the applet or tray **Sett
 
 Choose **Find devices** to send selected items, or **Receive** to accept files. Set the receiving Apple device to **Everyone for 10 Minutes**. [Owly](https://github.com/t4t5/owly) uses Apple's AWDL protocol and requires compatible Wi-Fi hardware. Wi-Fi disconnects during AirDrop and reconnects when you leave it.
 
+**LocalSend**
+
+Install optional LocalSend support from **Initial file sharing**, then choose **Share → LocalSend**. Open LocalSend on the other device to send or receive. Keep the sharing window open; incoming transfers require approval. Uses the [official Rust core](https://github.com/localsend/localsend/tree/v1.18.2/packages/core) over encrypted local connections.
+
 ## Shortcuts
 
 Defaults inside an Orbit window:

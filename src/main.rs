@@ -15,6 +15,7 @@ mod i18n;
 mod import;
 mod launch;
 mod layer_input;
+mod localsend;
 mod orbit_icon;
 mod owly;
 mod pin;

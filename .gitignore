@@ -1,4 +1,5 @@
 /target/
 /.wrangler/
 /peer/orbit-peer
+/localsend/target/
 *.swp
