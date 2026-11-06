@@ -58,7 +58,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     crate::i18n::init(&i18n_embed::DesktopLanguageRequester::requested_languages());
     cosmic::app::run::<Setup>(
         cosmic::app::Settings::default()
-            .size(iced::Size::new(420.0, 340.0))
+            .size(iced::Size::new(420.0, 420.0))
             .size_limits(iced::Limits::NONE.min_width(360.0).min_height(300.0)),
         lease,
     )?;
@@ -200,7 +200,9 @@ impl cosmic::Application for Setup {
 
     fn view(&self) -> Element<'_, Message> {
         let spacing = cosmic::theme::active().cosmic().spacing;
-        let mut body = widget::column::with_capacity(8).spacing(spacing.space_s);
+        let mut body = widget::column::with_capacity(8)
+            .width(Length::Fill)
+            .spacing(spacing.space_s);
         if self.croc_ready {
             body = body.push(widget::text::body(fl!("sharing-setup-croc-installed")));
         }
@@ -286,11 +288,18 @@ impl cosmic::Application for Setup {
         }
         widget::container(
             widget::column::with_children(vec![
-                widget::scrollable(body).height(Length::Fill).into(),
+                widget::scrollable(body)
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .into(),
                 buttons.into(),
             ])
+            .width(Length::Fill)
+            .height(Length::Fill)
             .spacing(spacing.space_s),
         )
+        .width(Length::Fill)
+        .height(Length::Fill)
         .padding(spacing.space_s)
         .into()
     }
