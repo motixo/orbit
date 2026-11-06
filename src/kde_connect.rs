@@ -11,12 +11,16 @@ use serde::{Deserialize, Serialize};
 use std::{
     path::PathBuf,
     sync::{
-        Arc,
+        Arc, LazyLock,
         atomic::{AtomicBool, Ordering},
     },
 };
 
 const SERVICE: &str = "io.github.hepp3n.kdeconnect";
+
+static LOGO: LazyLock<widget::icon::Handle> = LazyLock::new(|| {
+    widget::icon::from_svg_bytes(include_bytes!("../resources/icons/kde-connect.svg").as_slice())
+});
 
 #[derive(Clone, Debug, Deserialize, Serialize, zbus::zvariant::Type)]
 pub struct Device {
@@ -404,9 +408,14 @@ impl Dialog {
             .title(fl!("kde-connect"))
             .on_drag(action(Action::Drag))
             .on_close(action(Action::Close));
-        let mut content = widget::column::with_capacity(8)
-            .width(Length::Fill)
-            .spacing(spacing.space_s);
+        let mut content = widget::column::with_children(vec![
+            widget::container(LOGO.clone().icon().size(128))
+                .padding([spacing.space_s, 0])
+                .center_x(Length::Fill)
+                .into(),
+        ])
+        .width(Length::Fill)
+        .spacing(spacing.space_s);
         if let Some((id, name)) = &self.pairing {
             content = content.push(widget::text::heading(name)).push(
                 widget::row::with_children(vec![
