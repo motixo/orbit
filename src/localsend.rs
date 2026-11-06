@@ -373,7 +373,7 @@ impl Dialog {
         .clip(true)
         .class(cosmic::theme::Container::custom(|theme| {
             widget::container::Style {
-                background: Some(theme.cosmic().background(false).base.into()),
+                background: Some(theme.cosmic().background(theme.transparent).base.into()),
                 border: iced::Border {
                     color: theme.cosmic().bg_divider().into(),
                     width: 1.0,
