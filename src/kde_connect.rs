@@ -584,6 +584,10 @@ impl Dialog {
 }
 
 fn record_progress(transfers: &mut Vec<TransferInfo>, progress: TransferInfo) {
+    if progress.state == "completed" {
+        transfers.retain(|old| old.transfer_id != progress.transfer_id);
+        return;
+    }
     if let Some(previous) = transfers
         .iter_mut()
         .find(|old| old.transfer_id == progress.transfer_id)
@@ -633,7 +637,7 @@ mod tests {
     }
 
     #[test]
-    fn same_named_transfers_stay_separate_and_only_completion_reaches_100() {
+    fn tracks_concurrent_files_and_removes_only_completed_transfers() {
         let mut first = TransferInfo {
             transfer_id: "first".into(),
             device_id: "phone".into(),
@@ -651,15 +655,25 @@ mod tests {
         let mut second = first.clone();
         second.transfer_id = "second".into();
         second.device_id = "other".into();
+        second.direction = "upload".into();
         second.total_bytes = 0;
         assert_eq!(second.percent(), None);
-        record_progress(&mut transfers, second);
+        record_progress(&mut transfers, second.clone());
+        assert_eq!(transfers.len(), 2);
         first.state = "completed".into();
         assert_eq!(first.percent(), Some(100));
+        record_progress(&mut transfers, first.clone());
+        assert_eq!(transfers.len(), 1);
+        assert_eq!(transfers[0].transfer_id, "second");
+        assert_eq!(transfers[0].state, "transferring");
+        record_progress(&mut transfers, first.clone());
+        assert_eq!(transfers.len(), 1);
+        second.state = "completed".into();
+        record_progress(&mut transfers, second);
+        assert!(transfers.is_empty());
+        first.state = "failed".into();
         record_progress(&mut transfers, first);
-        assert_eq!(transfers.len(), 2);
-        assert_eq!(transfers[0].state, "completed");
-        assert_eq!(transfers[1].state, "transferring");
-        assert_eq!(transfers[1].device_id, "other");
+        assert_eq!(transfers.len(), 1);
+        assert_eq!(transfers[0].state, "failed");
     }
 }
