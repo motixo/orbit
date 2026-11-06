@@ -215,8 +215,8 @@ impl Dialog {
         let (id, surface) = cosmic::surface::action::app_window::<crate::app::Orbit>(
             |_| cosmic::surface::action::LiveSettings::default(),
             |_| window::Settings {
-                size: iced::Size::new(380.0, 460.0),
-                min_size: Some(iced::Size::new(340.0, 300.0)),
+                size: iced::Size::new(380.0, 520.0),
+                min_size: Some(iced::Size::new(340.0, 360.0)),
                 decorations: false,
                 transparent: true,
                 platform_specific: window::settings::PlatformSpecific {
@@ -267,7 +267,7 @@ impl Dialog {
         let logo = LOGO
             .clone()
             .icon()
-            .size(128)
+            .size(112)
             .class(cosmic::theme::Svg::Custom(std::rc::Rc::new(|theme| {
                 widget::svg::Style {
                     color: Some(theme.cosmic().accent_text_color().into()),
