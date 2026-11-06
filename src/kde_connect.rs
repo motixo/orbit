@@ -67,6 +67,7 @@ impl TransferInfo {
 )]
 trait Daemon {
     async fn list_devices(&self) -> zbus::Result<Vec<Device>>;
+    async fn pending_pairing_requests(&self) -> zbus::Result<Vec<(String, String)>>;
     async fn pair_device(&self, device_id: &str) -> zbus::Result<()>;
     async fn unpair_device(&self, device_id: &str) -> zbus::Result<()>;
     async fn accept_pairing(&self, device_id: &str) -> zbus::Result<()>;
@@ -78,6 +79,7 @@ fn transfer_api(xml: &str) -> bool {
     ["FileTransferProgress", "FileReceived"]
         .iter()
         .all(|name| xml.contains(&format!("<signal name=\"{name}\"")))
+        && xml.contains("<method name=\"PendingPairingRequests\"")
 }
 
 pub async fn installed() -> bool {
@@ -115,10 +117,7 @@ pub enum Action {
 
 #[derive(Clone, Debug)]
 pub enum Event {
-    Ready(Vec<Device>),
-    Device(Device),
-    Disconnected(String),
-    Pairing(String, String),
+    Ready(Vec<Device>, Vec<(String, String)>),
     Progress(TransferInfo),
     Received(PathBuf),
     Sent,
@@ -151,10 +150,49 @@ async fn listen(
             zbus::Error::NameTaken => fl!("kde-connect-already-open"),
             error => error.to_string(),
         })?;
-    let proxy = DaemonProxy::new(&connection)
+    loop {
+        match connected(&connection, output, &mut commands).await {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                if output.send(Event::Stopped(error)).await.is_err() {
+                    return Ok(());
+                }
+            }
+        }
+        let retry = tokio::time::sleep(std::time::Duration::from_secs(2));
+        tokio::pin!(retry);
+        loop {
+            tokio::select! {
+                _ = &mut retry => break,
+                command = commands.next() => match command {
+                    Some(Command::Refresh) => break,
+                    Some(_) => {
+                        if output.send(Event::Error(fl!("kde-connect-service-error"))).await.is_err() {
+                            return Ok(());
+                        }
+                    }
+                    None => return Ok(()),
+                }
+            }
+        }
+    }
+}
+
+async fn snapshot(proxy: &DaemonProxy<'_>) -> zbus::Result<Event> {
+    let devices = proxy.list_devices().await?;
+    let requests = proxy.pending_pairing_requests().await?;
+    Ok(Event::Ready(devices, requests))
+}
+
+async fn connected(
+    connection: &zbus::Connection,
+    output: &mut mpsc::Sender<Event>,
+    commands: &mut mpsc::UnboundedReceiver<Command>,
+) -> Result<(), String> {
+    let proxy = DaemonProxy::new(connection)
         .await
         .map_err(|error| error.to_string())?;
-    let dbus = zbus::fdo::DBusProxy::new(&connection)
+    let dbus = zbus::fdo::DBusProxy::new(connection)
         .await
         .map_err(|error| error.to_string())?;
     let mut owners = dbus
@@ -166,10 +204,6 @@ async fn listen(
         .receive_all_signals()
         .await
         .map_err(|error| error.to_string())?;
-    let devices = proxy
-        .list_devices()
-        .await
-        .map_err(|_| fl!("kde-connect-service-error"))?;
     let api = proxy
         .inner()
         .introspect()
@@ -179,14 +213,19 @@ async fn listen(
         return Err(fl!("kde-connect-api-error"));
     }
     output
-        .send(Event::Ready(devices))
+        .send(snapshot(&proxy).await.map_err(|error| error.to_string())?)
         .await
         .map_err(|error| error.to_string())?;
     loop {
         tokio::select! {
             signal = signals.next() => {
                 let signal = signal.ok_or_else(|| fl!("kde-connect-service-error"))?;
-                let event = decode(&signal).map_err(|error| error.to_string())?;
+                let event = match signal.header().member().map(|name| name.as_str()) {
+                    Some("DeviceConnected" | "DevicePaired" | "DeviceDisconnected" | "PairingRequested") => {
+                        Some(snapshot(&proxy).await.map_err(|error| error.to_string())?)
+                    }
+                    _ => decode(&signal).map_err(|error| error.to_string())?,
+                };
                 if let Some(event) = event
                     && output.send(event).await.is_err()
                 {
@@ -202,16 +241,14 @@ async fn listen(
             command = commands.next() => {
                 let Some(command) = command else { return Ok(()) };
                 let result = match command {
-                    Command::Refresh => async {
-                        let devices = proxy.list_devices().await?;
-                        Ok(Some(Event::Ready(devices)))
-                    }.await,
+                    Command::Refresh => snapshot(&proxy).await.map(Some),
                     Command::Pair(device) => proxy.pair_device(&device).await.map(|()| None),
                     Command::Unpair(device) => proxy.unpair_device(&device).await.map(|()| None),
-                    Command::Answer(device, accept) => {
+                    Command::Answer(device, accept) => async {
                         if accept { proxy.accept_pairing(&device).await }
-                        else { proxy.reject_pairing(&device).await }.map(|()| None)
-                    }
+                        else { proxy.reject_pairing(&device).await }?;
+                        snapshot(&proxy).await.map(Some)
+                    }.await,
                     Command::Send(device, bundle) => {
                         let files: Result<Vec<_>, _> = bundle.files.iter().map(|file| {
                             if !file.path.is_file() { return Err(zbus::Error::Failure(fl!("kde-connect-export-error"))); }
@@ -243,15 +280,6 @@ async fn listen(
 fn decode(signal: &zbus::Message) -> zbus::Result<Option<Event>> {
     let body = signal.body();
     Ok(match signal.header().member().map(|name| name.as_str()) {
-        Some("DeviceConnected" | "DevicePaired") => {
-            let (_, device): (String, Device) = body.deserialize()?;
-            Some(Event::Device(device))
-        }
-        Some("DeviceDisconnected") => Some(Event::Disconnected(body.deserialize::<String>()?)),
-        Some("PairingRequested") => {
-            let (id, name): (String, String) = body.deserialize()?;
-            Some(Event::Pairing(id, name))
-        }
         Some("FileTransferProgress") => {
             let (progress,): (TransferInfo,) = body.deserialize()?;
             Some(Event::Progress(progress))
@@ -372,38 +400,17 @@ impl Dialog {
 
     pub fn event(&mut self, event: Event) -> Option<PathBuf> {
         match event {
-            Event::Ready(mut devices) => {
+            Event::Ready(mut devices, requests) => {
                 devices.sort_by(|a, b| a.name.cmp(&b.name));
+                self.pairing = requests.into_iter().find(|(id, _)| {
+                    devices
+                        .iter()
+                        .any(|device| &device.id == id && !device.is_paired && device.is_reachable)
+                });
                 self.devices = devices;
                 self.ready = true;
-            }
-            Event::Device(device) => {
-                if device.is_paired
-                    && self
-                        .pairing
-                        .as_ref()
-                        .is_some_and(|(id, _)| id == &device.id)
-                {
-                    self.pairing = None;
-                }
-                self.devices.retain(|old| old.id != device.id);
-                self.devices.push(device);
-                self.devices.sort_by(|a, b| a.name.cmp(&b.name));
                 self.status.clear();
             }
-            Event::Disconnected(id) => {
-                if let Some(device) = self.devices.iter_mut().find(|device| device.id == id) {
-                    device.is_reachable = false;
-                }
-                if self
-                    .pairing
-                    .as_ref()
-                    .is_some_and(|(device, _)| device == &id)
-                {
-                    self.pairing = None;
-                }
-            }
-            Event::Pairing(id, name) => self.pairing = Some((id, name)),
             Event::Progress(progress) => record_progress(&mut self.progress, progress),
             Event::Received(path) => return Some(path),
             Event::Sent => self.busy = false,
@@ -586,7 +593,7 @@ impl Dialog {
             widget::text::caption(fl!("shelf-count", count = (selected as i64))).into(),
             widget::space::horizontal().into(),
             widget::button::standard(fl!("kde-connect-refresh"))
-                .on_press_maybe(self.ready.then(|| action(Action::Refresh)))
+                .on_press_maybe((!self.commands.is_closed()).then(|| action(Action::Refresh)))
                 .into(),
         ])
         .align_y(Alignment::Center);
@@ -647,7 +654,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn incoming_pair_request_survives_unpaired_device_updates() {
+    fn restores_pending_requests_and_clears_answered_or_offline_devices() {
         let (commands, _) = mpsc::unbounded();
         let (_, task) = Task::<Message>::none().abortable();
         let mut dialog = Dialog {
@@ -669,15 +676,29 @@ mod tests {
             is_paired: false,
             is_reachable: true,
         };
-        dialog.event(Event::Pairing(device.id.clone(), device.name.clone()));
-        dialog.event(Event::Device(device.clone()));
+        let requests = vec![(device.id.clone(), device.name.clone())];
+        dialog.event(Event::Ready(vec![device.clone()], requests.clone()));
         assert_eq!(
             dialog.pairing.as_ref().map(|(id, _)| id.as_str()),
             Some("phone")
         );
-        device.is_paired = true;
-        dialog.event(Event::Device(device));
+        device.is_reachable = false;
+        dialog.event(Event::Ready(vec![device.clone()], requests.clone()));
         assert!(dialog.pairing.is_none());
+        device.is_reachable = true;
+        dialog.event(Event::Ready(vec![device.clone()], requests.clone()));
+        assert!(dialog.pairing.is_some());
+        dialog.event(Event::Ready(vec![device.clone()], Vec::new()));
+        assert!(dialog.pairing.is_none());
+        device.is_paired = true;
+        dialog.event(Event::Ready(vec![device.clone()], requests));
+        assert!(dialog.pairing.is_none());
+        dialog.event(Event::Stopped("Service stopped".into()));
+        assert!(!dialog.ready);
+        assert_eq!(dialog.status, "Service stopped");
+        dialog.event(Event::Ready(vec![device], Vec::new()));
+        assert!(dialog.ready);
+        assert!(dialog.status.is_empty());
     }
 
     #[test]
