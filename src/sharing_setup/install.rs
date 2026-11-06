@@ -15,8 +15,8 @@ use tokio::{io::AsyncWriteExt, process::Command};
 const VERSION: &str = "0.4.2";
 const SOURCE: &str = "0f2ca4087e6d938d823e76c856fcd04d0a0162b6";
 const RUST_TOOLCHAIN: &str = "1.93.0";
-// shortcut: use the pinned fork until upstream merges the file transfer APIs.
-const KDE_SOURCE: &str = "f9fa26b29e8f67e2c8fc9691faed69d4f8288276";
+// shortcut: pin the fork for the D-Bus APIs, switch to upstream once merged.
+const KDE_SOURCE: &str = "42b15cf5b822382470270c97299025f88e9917cd";
 
 #[derive(Clone, Copy, Debug)]
 pub enum Step {
@@ -376,7 +376,7 @@ pub async fn kde_connect(output: &mut Sender<Message>) -> Result<(), String> {
         progress(output, Step::KdeDownloading(0.0)).await;
         download(
             &format!("https://codeload.github.com/motixo/kdeconnect/tar.gz/{KDE_SOURCE}"),
-            "f51ce279d30d6d352a3e54241712867d64eeb53f7bc5c682e31897db05be2499",
+            "9f2ce100b51ff10b88ce534eba08ccc1790538246674744e6605b981aab8d61b",
             &archive,
             output,
             Step::KdeDownloading,
