@@ -74,7 +74,7 @@ trait Daemon {
 }
 
 fn transfer_api(xml: &str) -> bool {
-    ["FileTransferProgress", "FileReceived"]
+    ["FileTransferProgress", "FileReceived", "PairingCancelled"]
         .iter()
         .all(|name| xml.contains(&format!("<signal name=\"{name}\"")))
         && xml.contains("<method name=\"PendingPairingRequests\"")
@@ -116,6 +116,7 @@ pub enum Action {
 #[derive(Clone, Debug)]
 pub enum Event {
     Ready(Vec<Device>, Vec<(String, String)>),
+    PairingFailed(String, String),
     Progress(TransferInfo),
     Received(PathBuf),
     Sent,
@@ -240,7 +241,8 @@ async fn connected(
                 let Some(command) = command else { return Ok(()) };
                 let result = match command {
                     Command::Refresh => snapshot(&proxy).await.map(Some),
-                    Command::Pair(device) => proxy.pair_device(&device).await.map(|()| None),
+                    Command::Pair(device) => Ok(proxy.pair_device(&device).await.err()
+                        .map(|error| Event::PairingFailed(device, error.to_string()))),
                     Command::Unpair(device) => proxy.unpair_device(&device).await.map(|()| None),
                     Command::Answer(device, accept) => async {
                         if accept { proxy.accept_pairing(&device).await }
@@ -282,6 +284,10 @@ async fn connected(
 fn decode(signal: &zbus::Message) -> zbus::Result<Option<Event>> {
     let body = signal.body();
     Ok(match signal.header().member().map(|name| name.as_str()) {
+        Some("PairingCancelled") => Some(Event::PairingFailed(
+            body.deserialize::<String>()?,
+            fl!("kde-connect-pairing-declined"),
+        )),
         Some("FileTransferProgress") => {
             let (progress,): (TransferInfo,) = body.deserialize()?;
             Some(Event::Progress(progress))
@@ -303,6 +309,7 @@ pub struct Dialog {
     pub status: String,
     devices: Vec<Device>,
     pairing: Option<(String, String)>,
+    confirming: Option<String>,
     progress: Vec<TransferInfo>,
     commands: mpsc::UnboundedSender<Command>,
     _task: iced::task::Handle,
@@ -350,6 +357,7 @@ impl Dialog {
                 status: String::new(),
                 devices: Vec::new(),
                 pairing: None,
+                confirming: None,
                 progress: Vec::new(),
                 commands,
                 _task: handle.abort_on_drop(),
@@ -362,7 +370,8 @@ impl Dialog {
         let command = match action {
             Action::Refresh => Command::Refresh,
             Action::Pair(device) => {
-                self.status = fl!("share-confirming");
+                self.confirming = Some(device.clone());
+                self.status.clear();
                 Command::Pair(device)
             }
             Action::Unpair(device) => {
@@ -377,6 +386,7 @@ impl Dialog {
         };
         if self.commands.unbounded_send(command).is_err() {
             self.ready = false;
+            self.confirming = None;
             self.status = fl!("kde-connect-service-error");
         }
     }
@@ -410,8 +420,26 @@ impl Dialog {
                         .any(|device| &device.id == id && !device.is_paired && device.is_reachable)
                 });
                 self.devices = devices;
+                if !self.ready {
+                    self.status.clear();
+                }
                 self.ready = true;
-                self.status.clear();
+                if let Some(id) = &self.confirming {
+                    let device = self.devices.iter().find(|device| &device.id == id);
+                    if device.is_some_and(|device| device.is_paired) {
+                        self.confirming = None;
+                        self.status.clear();
+                    } else if !device.is_some_and(|device| device.is_reachable) {
+                        self.confirming = None;
+                        self.status = fl!("kde-connect-device-error");
+                    }
+                }
+            }
+            Event::PairingFailed(id, error) => {
+                if self.confirming.as_ref() == Some(&id) {
+                    self.confirming = None;
+                    self.status = error;
+                }
             }
             Event::Progress(progress) => record_progress(&mut self.progress, progress),
             Event::Received(path) => return Some(path),
@@ -424,6 +452,7 @@ impl Dialog {
                 self.ready = false;
                 self.busy = false;
                 self.pairing = None;
+                self.confirming = None;
                 for progress in &mut self.progress {
                     if progress.state == "transferring" {
                         progress.state = "failed".into();
@@ -480,8 +509,10 @@ impl Dialog {
                     (enabled && selected > 0).then(|| action(Action::Send(device.id.clone()))),
                 )
             } else {
-                widget::button::standard(fl!("share-pair"))
-                    .on_press_maybe(enabled.then(|| action(Action::Pair(device.id.clone()))))
+                widget::button::standard(fl!("share-pair")).on_press_maybe(
+                    (enabled && self.confirming.is_none())
+                        .then(|| action(Action::Pair(device.id.clone()))),
+                )
             };
             let mut actions = widget::row::with_capacity(2)
                 .spacing(spacing.space_xxs)
@@ -583,11 +614,15 @@ impl Dialog {
                     .center_x(Length::Fill),
             );
         }
-        if !self.status.is_empty() {
+        if self.confirming.is_some() || !self.status.is_empty() {
             content = content.push(
-                widget::text::caption(&self.status)
-                    .width(Length::Fill)
-                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+                widget::text::caption(if self.confirming.is_some() {
+                    fl!("share-confirming")
+                } else {
+                    self.status.clone()
+                })
+                .width(Length::Fill)
+                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
             );
         }
         let footer = widget::row::with_children(vec![
@@ -666,6 +701,7 @@ mod tests {
             status: String::new(),
             devices: Vec::new(),
             pairing: None,
+            confirming: None,
             progress: Vec::new(),
             commands,
             _task: task,
@@ -700,6 +736,53 @@ mod tests {
         dialog.event(Event::Ready(vec![device], Vec::new()));
         assert!(dialog.ready);
         assert!(dialog.status.is_empty());
+    }
+
+    #[test]
+    fn outgoing_pair_waits_for_its_own_result_across_refreshes() {
+        let (commands, _incoming) = mpsc::unbounded();
+        let (_, task) = Task::<Message>::none().abortable();
+        let mut dialog = Dialog {
+            id: window::Id::unique(),
+            ready: true,
+            busy: false,
+            cancelled: Arc::new(AtomicBool::new(false)),
+            status: String::new(),
+            devices: Vec::new(),
+            pairing: None,
+            confirming: None,
+            progress: Vec::new(),
+            commands,
+            _task: task,
+        };
+        let device = Device {
+            id: "phone".into(),
+            name: "Phone".into(),
+            device_type: "phone".into(),
+            is_paired: false,
+            is_reachable: true,
+        };
+        let mut paired = device.clone();
+        paired.is_paired = true;
+        let mut offline = device.clone();
+        offline.is_reachable = false;
+        for result in [
+            Event::PairingFailed(device.id.clone(), "Declined".into()),
+            Event::Ready(vec![paired], Vec::new()),
+            Event::Ready(vec![offline], Vec::new()),
+            Event::Stopped("Service stopped".into()),
+        ] {
+            dialog.event(Event::Ready(vec![device.clone()], Vec::new()));
+            dialog.action(Action::Pair(device.id.clone()));
+            for _ in 0..3 {
+                dialog.event(Event::Ready(vec![device.clone()], Vec::new()));
+                assert_eq!(dialog.confirming.as_deref(), Some("phone"));
+            }
+            dialog.event(Event::PairingFailed("other".into(), "Declined".into()));
+            assert_eq!(dialog.confirming.as_deref(), Some("phone"));
+            dialog.event(result);
+            assert!(dialog.confirming.is_none());
+        }
     }
 
     #[test]
