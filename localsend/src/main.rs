@@ -448,9 +448,11 @@ async fn send(
             .await;
         emit(json!({"event":"progress_end","id":file.id}));
         if let Err(error) = result {
-            let _ = client
-                .cancel(http.protocol, &http.host, http.port, &prepared.session_id)
-                .await;
+            let _ = tokio::time::timeout(
+                Duration::from_secs(2),
+                client.cancel(http.protocol, &http.host, http.port, &prepared.session_id),
+            )
+            .await;
             return Err(error.into());
         }
     }
