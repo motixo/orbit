@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=KDE Connect
+Exec=orbit %F
+Icon=io.github.motixo.Orbit
+Terminal=false
+NoDisplay=true
+StartupNotify=true
