@@ -85,6 +85,7 @@ owly-receive-error = Could not receive items.
 owly-downloading-file = Downloading · File { $index }
 kde-connect = KDE Connect
 kde-connect-send = Send
+kde-connect-unpair = Unpair
 kde-connect-refresh = Refresh
 kde-connect-online = Online
 kde-connect-offline = Offline

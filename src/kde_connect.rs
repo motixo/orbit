@@ -63,6 +63,7 @@ impl TransferInfo {
 trait Daemon {
     async fn list_devices(&self) -> zbus::Result<Vec<Device>>;
     async fn pair_device(&self, device_id: &str) -> zbus::Result<()>;
+    async fn unpair_device(&self, device_id: &str) -> zbus::Result<()>;
     async fn accept_pairing(&self, device_id: &str) -> zbus::Result<()>;
     async fn reject_pairing(&self, device_id: &str) -> zbus::Result<()>;
     async fn send_files(&self, device_id: &str, files: Vec<String>) -> zbus::Result<()>;
@@ -74,6 +75,7 @@ pub enum Action {
     Drag,
     Refresh,
     Pair(String),
+    Unpair(String),
     Answer(String, bool),
     Send(String),
 }
@@ -94,6 +96,7 @@ pub enum Event {
 enum Command {
     Refresh,
     Pair(String),
+    Unpair(String),
     Answer(String, bool),
     Send(String, Arc<Bundle>),
 }
@@ -174,6 +177,7 @@ async fn listen(
                         Ok(Some(Event::Ready(devices)))
                     }.await,
                     Command::Pair(device) => proxy.pair_device(&device).await.map(|()| None),
+                    Command::Unpair(device) => proxy.unpair_device(&device).await.map(|()| None),
                     Command::Answer(device, accept) => {
                         if accept { proxy.accept_pairing(&device).await }
                         else { proxy.reject_pairing(&device).await }.map(|()| None)
@@ -301,6 +305,10 @@ impl Dialog {
                 self.status = fl!("share-confirming");
                 Command::Pair(device)
             }
+            Action::Unpair(device) => {
+                self.status.clear();
+                Command::Unpair(device)
+            }
             Action::Answer(device, accept) => {
                 self.pairing = None;
                 Command::Answer(device, accept)
@@ -422,6 +430,17 @@ impl Dialog {
                 widget::button::standard(fl!("share-pair"))
                     .on_press_maybe(enabled.then(|| action(Action::Pair(device.id.clone()))))
             };
+            let mut actions = widget::row::with_capacity(2)
+                .spacing(spacing.space_xxs)
+                .push(button);
+            if device.is_paired {
+                actions = actions.push(
+                    widget::button::standard(fl!("kde-connect-unpair")).on_press_maybe(
+                        (self.ready && !self.busy)
+                            .then(|| action(Action::Unpair(device.id.clone()))),
+                    ),
+                );
+            }
             content = content.push(
                 widget::row::with_children(vec![
                     widget::icon::from_name(if device.device_type == "phone" {
@@ -446,7 +465,7 @@ impl Dialog {
                     ])
                     .width(Length::Fill)
                     .into(),
-                    button.into(),
+                    actions.into(),
                 ])
                 .spacing(spacing.space_s)
                 .align_y(Alignment::Center),
