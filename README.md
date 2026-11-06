@@ -42,6 +42,10 @@ Complete **Initial file sharing** once. Reopen it from the applet or tray **Sett
 
 Choose **Find devices** to send selected items, or **Receive** to accept files. Set the receiving Apple device to **Everyone for 10 Minutes**. [Owly](https://github.com/t4t5/owly) uses Apple's AWDL protocol and requires compatible Wi-Fi hardware. Wi-Fi disconnects during AirDrop and reconnects when you leave it.
 
+**KDE Connect**
+
+Install the optional [COSMIC service](https://github.com/cosmic-utils/kdeconnect) from **Initial file sharing** and pair with KDE Connect on your other device. Send selected items or receive files directly into the shelf, with per-file progress.
+
 ## Shortcuts
 
 Defaults inside an Orbit window:
