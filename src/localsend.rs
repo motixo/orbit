@@ -14,13 +14,20 @@ use std::{
     os::unix::fs::PermissionsExt,
     path::PathBuf,
     sync::{
-        Arc,
+        Arc, LazyLock,
         atomic::{AtomicBool, Ordering},
     },
 };
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 const CORE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/orbit-localsend"));
+
+static LOGO: LazyLock<widget::icon::Handle> = LazyLock::new(|| {
+    widget::icon::from_svg_bytes(
+        include_bytes!("../resources/icons/localsend-symbolic.svg").as_slice(),
+    )
+    .symbolic(true)
+});
 
 fn executable() -> std::io::Result<PathBuf> {
     dirs::data_dir()
@@ -244,9 +251,23 @@ impl Dialog {
 
     pub fn view(&self, count: usize) -> Element<'_, Message> {
         let spacing = cosmic::theme::spacing();
+        let logo = LOGO
+            .clone()
+            .icon()
+            .size(128)
+            .class(cosmic::theme::Svg::Custom(std::rc::Rc::new(|theme| {
+                widget::svg::Style {
+                    color: Some(theme.cosmic().accent_text_color().into()),
+                }
+            })));
         let mut content = widget::column::with_capacity(10)
             .spacing(spacing.space_s)
-            .width(Length::Fill);
+            .width(Length::Fill)
+            .push(
+                widget::container(logo)
+                    .padding([spacing.space_s, 0])
+                    .center_x(Length::Fill),
+            );
         content = content.push(widget::text::caption(fl!(
             "shelf-count",
             count = (count as i64)
