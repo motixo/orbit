@@ -20,6 +20,7 @@ const SERVICE: &str = "io.github.hepp3n.kdeconnect";
 
 static LOGO: LazyLock<widget::icon::Handle> = LazyLock::new(|| {
     widget::icon::from_svg_bytes(include_bytes!("../resources/icons/kde-connect.svg").as_slice())
+        .symbolic(true)
 });
 
 #[derive(Clone, Debug, Deserialize, Serialize, zbus::zvariant::Type)]
@@ -408,8 +409,17 @@ impl Dialog {
             .title(fl!("kde-connect"))
             .on_drag(action(Action::Drag))
             .on_close(action(Action::Close));
+        let logo = LOGO
+            .clone()
+            .icon()
+            .size(128)
+            .class(cosmic::theme::Svg::Custom(std::rc::Rc::new(|theme| {
+                widget::svg::Style {
+                    color: Some(theme.cosmic().accent_text_color().into()),
+                }
+            })));
         let mut content = widget::column::with_children(vec![
-            widget::container(LOGO.clone().icon().size(128))
+            widget::container(logo)
                 .padding([spacing.space_s, 0])
                 .center_x(Length::Fill)
                 .into(),
