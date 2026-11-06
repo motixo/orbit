@@ -340,10 +340,11 @@ impl Dialog {
                 self.ready = true;
             }
             Event::Device(device) => {
-                if self
-                    .pairing
-                    .as_ref()
-                    .is_some_and(|(id, _)| id == &device.id)
+                if device.is_paired
+                    && self
+                        .pairing
+                        .as_ref()
+                        .is_some_and(|(id, _)| id == &device.id)
                 {
                     self.pairing = None;
                 }
@@ -577,6 +578,40 @@ fn record_progress(transfers: &mut Vec<TransferInfo>, progress: TransferInfo) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn incoming_pair_request_survives_unpaired_device_updates() {
+        let (commands, _) = mpsc::unbounded();
+        let (_, task) = Task::<Message>::none().abortable();
+        let mut dialog = Dialog {
+            id: window::Id::unique(),
+            ready: true,
+            busy: false,
+            cancelled: Arc::new(AtomicBool::new(false)),
+            status: String::new(),
+            devices: Vec::new(),
+            pairing: None,
+            progress: Vec::new(),
+            commands,
+            _task: task,
+        };
+        let mut device = Device {
+            id: "phone".into(),
+            name: "trinity".into(),
+            device_type: "phone".into(),
+            is_paired: false,
+            is_reachable: true,
+        };
+        dialog.event(Event::Pairing(device.id.clone(), device.name.clone()));
+        dialog.event(Event::Device(device.clone()));
+        assert_eq!(
+            dialog.pairing.as_ref().map(|(id, _)| id.as_str()),
+            Some("phone")
+        );
+        device.is_paired = true;
+        dialog.event(Event::Device(device));
+        assert!(dialog.pairing.is_none());
+    }
 
     #[test]
     fn same_named_transfers_stay_separate_and_only_completion_reaches_100() {
