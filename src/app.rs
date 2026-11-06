@@ -75,6 +75,7 @@ pub struct Orbit {
     owly_capabilities: Option<crate::owly::Capabilities>,
     owly_dialog: Option<crate::owly::Dialog>,
     localsend_dialog: Option<crate::localsend::Dialog>,
+    kde_dialog: Option<crate::kde_connect::Dialog>,
     preview: Option<crate::preview::Preview>,
     share: Option<crate::share::Share>,
     remote_open: Option<uuid::Uuid>,
@@ -201,6 +202,14 @@ pub enum Message {
     OwlyAnswer(uuid::Uuid, bool),
     CloseOwly,
     DragOwly,
+    KdeConnect,
+    KdeConnectAction(crate::kde_connect::Action),
+    KdeConnectPrepared(
+        window::Id,
+        String,
+        Result<Arc<crate::share::Bundle>, String>,
+    ),
+    KdeConnectEvent(window::Id, crate::kde_connect::Event),
     Convert(crate::convert::Conversion),
     Converted(uuid::Uuid, PathBuf, u64, Result<ImportedFiles, String>),
     Compress,
@@ -279,6 +288,7 @@ impl cosmic::Application for Orbit {
             owly_capabilities: None,
             owly_dialog: None,
             localsend_dialog: None,
+            kde_dialog: None,
             preview: None,
             share: None,
             remote_open: flags.remote_open,
@@ -396,6 +406,13 @@ impl cosmic::Application for Orbit {
 
     fn on_close_requested(&self, id: window::Id) -> Option<Message> {
         if self
+            .kde_dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.id == id)
+        {
+            return Some(Message::KdeConnectAction(crate::kde_connect::Action::Close));
+        }
+        if self
             .localsend_dialog
             .as_ref()
             .is_some_and(|dialog| dialog.id == id)
@@ -453,6 +470,11 @@ impl cosmic::Application for Orbit {
     }
 
     fn view_window(&self, id: window::Id) -> Element<'_, Message> {
+        if let Some(dialog) = &self.kde_dialog
+            && dialog.id == id
+        {
+            return dialog.view(self.shelf.export_paths().len());
+        }
         if let Some(dialog) = &self.localsend_dialog
             && dialog.id == id
         {
@@ -739,6 +761,23 @@ impl cosmic::Application for Orbit {
     fn update(&mut self, message: Message) -> Task<cosmic::Action<Message>> {
         match message {
             Message::Key(event, window) => {
+                if self
+                    .kde_dialog
+                    .as_ref()
+                    .is_some_and(|dialog| dialog.id == window)
+                {
+                    return if matches!(
+                        &event,
+                        iced::keyboard::Event::KeyPressed {
+                            key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+                            ..
+                        }
+                    ) {
+                        self.update(Message::KdeConnectAction(crate::kde_connect::Action::Close))
+                    } else {
+                        Task::none()
+                    };
+                }
                 if self
                     .localsend_dialog
                     .as_ref()
@@ -1813,6 +1852,92 @@ impl cosmic::Application for Orbit {
                     },
                 }
             }
+            Message::KdeConnect => {
+                if let Some(dialog) = &self.kde_dialog {
+                    return window::gain_focus(dialog.id);
+                }
+                if self.compression_dialog.is_some() {
+                    return Task::none();
+                }
+                let (dialog, open) = crate::kde_connect::Dialog::open();
+                let id = dialog.id;
+                self.kde_dialog = Some(dialog);
+                return Task::batch([open, self.set_window_title(fl!("kde-connect"), id)]);
+            }
+            Message::KdeConnectAction(action) => {
+                use crate::kde_connect::Action;
+                match action {
+                    Action::Close => {
+                        if let Some(dialog) = self.kde_dialog.take() {
+                            return window::close(dialog.id);
+                        }
+                    }
+                    Action::Drag => {
+                        if let Some(dialog) = &self.kde_dialog {
+                            return window::drag(dialog.id);
+                        }
+                    }
+                    Action::Send(device) => {
+                        let paths = self.shelf.export_paths();
+                        if paths.is_empty()
+                            || !self
+                                .kde_dialog
+                                .as_ref()
+                                .is_some_and(|dialog| dialog.ready && !dialog.busy)
+                        {
+                            return Task::none();
+                        }
+                        let mut items: Vec<_> = self
+                            .shelf
+                            .items
+                            .iter()
+                            .filter(|item| paths.contains(&item.path))
+                            .cloned()
+                            .collect();
+                        let transfer =
+                            Arc::new(self.export_transfer(self.shelf.transfer(paths, false)));
+                        for (item, path) in items.iter_mut().zip(&transfer.files.0) {
+                            item.path = path.clone();
+                        }
+                        let dialog = self.kde_dialog.as_mut().unwrap();
+                        dialog.busy = true;
+                        dialog.status.clear();
+                        let (id, cancelled) = (dialog.id, dialog.cancelled.clone());
+                        return cosmic::task::future(async move {
+                            let result = tokio::task::spawn_blocking(move || {
+                                crate::share::Bundle::prepare(items, transfer, None, || {
+                                    cancelled.load(std::sync::atomic::Ordering::Relaxed)
+                                })
+                            })
+                            .await
+                            .map_err(|error| error.to_string())
+                            .and_then(|result| result);
+                            Message::KdeConnectPrepared(id, device, result)
+                        });
+                    }
+                    action => {
+                        if let Some(dialog) = &mut self.kde_dialog {
+                            dialog.action(action);
+                        }
+                    }
+                }
+            }
+            Message::KdeConnectPrepared(id, device, result) => {
+                if let Some(dialog) = self
+                    .kde_dialog
+                    .as_mut()
+                    .filter(|dialog| dialog.id == id && dialog.busy)
+                {
+                    dialog.send(device, result);
+                }
+            }
+            Message::KdeConnectEvent(id, event) => {
+                if let Some(dialog) = self.kde_dialog.as_mut().filter(|dialog| dialog.id == id)
+                    && let Some(path) = dialog.event(event)
+                {
+                    return self.update(Message::Incoming(Ok(FileList(vec![path]))));
+                }
+            }
             Message::OwlyProbe(capabilities) => self.owly_capabilities = capabilities,
             Message::Owly => {
                 if let Some(dialog) = &self.owly_dialog {
@@ -2861,6 +2986,7 @@ impl Orbit {
 
     fn close_shelf(&mut self) -> Task<cosmic::Action<Message>> {
         let localsend_window = self.localsend_dialog.take().map(|dialog| dialog.id);
+        let kde_window = self.kde_dialog.take().map(|dialog| dialog.id);
         let owly_window = self.owly_dialog.as_ref().map(|dialog| dialog.id);
         let owly = self.owly_dialog.take().and_then(|mut dialog| {
             dialog.task = None;
@@ -2910,6 +3036,7 @@ impl Orbit {
                 .unwrap_or_else(Task::none),
             preview,
             share,
+            kde_window.map(window::close).unwrap_or_else(Task::none),
             owly_window.map(window::close).unwrap_or_else(Task::none),
             ghost,
             floating,
@@ -3040,6 +3167,12 @@ impl Orbit {
         if self.owly_capabilities.is_some() {
             sharing.push(item(fl!("owly"), None, Some(Message::Owly), false));
         }
+        sharing.push(item(
+            fl!("kde-connect"),
+            None,
+            Some(Message::KdeConnect),
+            false,
+        ));
         let share: Element<'static, Message> = widget::menu::menu_button(vec![
             widget::icon::from_name("send-to-symbolic")
                 .size(14)

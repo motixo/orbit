@@ -139,6 +139,7 @@ struct Setup {
     report: Option<Report>,
     croc_ready: bool,
     localsend_installed: bool,
+    kde_ready: Option<bool>,
     busy: bool,
     step: Option<install::Step>,
     error: Option<String>,
@@ -150,6 +151,9 @@ pub enum Message {
     CheckHardware,
     Checked(Result<Report, String>),
     CrocInstalled(Result<(), String>),
+    KdeChecked(bool),
+    InstallKde,
+    KdeInstalled(Result<(), String>),
     Install,
     Progress(install::Step),
     Installed(Result<(), String>),
@@ -183,6 +187,7 @@ impl cosmic::Application for Setup {
             report: None,
             croc_ready: false,
             localsend_installed: false,
+            kde_ready: None,
             busy: true,
             step: None,
             error: None,
@@ -218,6 +223,19 @@ impl cosmic::Application for Setup {
                     ),
                 );
         }
+        body = body.push(widget::text::heading(fl!("kde-connect")));
+        match self.kde_ready {
+            Some(true) => body = body.push(widget::text::body(fl!("sharing-setup-kde-installed"))),
+            Some(false) => {
+                body = body
+                    .push(widget::text::caption(fl!("sharing-setup-kde-hint")))
+                    .push(
+                        widget::button::standard(fl!("sharing-setup-kde-install"))
+                            .on_press_maybe((!self.busy).then_some(Message::InstallKde)),
+                    );
+            }
+            None => body = body.push(widget::text::caption(fl!("sharing-setup-kde-checking"))),
+        }
         if let Some(report) = &self.report {
             body = body.push(widget::text::heading(fl!("owly")));
             body = body.push(widget::text::body(if report.supported {
@@ -249,7 +267,10 @@ impl cosmic::Application for Setup {
                 .step
                 .map_or_else(|| fl!("sharing-setup-checking"), install::Step::label);
             body = body.push(widget::text::body(label));
-            if let Some(install::Step::Downloading(progress)) = self.step {
+            if let Some(
+                install::Step::Downloading(progress) | install::Step::KdeDownloading(progress),
+            ) = self.step
+            {
                 body = body.push(widget::progress_bar::determinate_linear(progress / 100.0));
             } else {
                 body = body.push(widget::progress_bar::indeterminate_linear());
@@ -280,7 +301,11 @@ impl cosmic::Application for Setup {
                     .on_press_maybe((!self.busy).then_some(Message::CheckHardware)),
             );
         }
-        if needs_install || !self.croc_ready || !self.localsend_installed {
+        if needs_install
+            || !self.croc_ready
+            || !self.localsend_installed
+            || self.kde_ready != Some(true)
+        {
             buttons = buttons.push(
                 widget::button::standard(fl!("sharing-setup-later"))
                     .on_press_maybe((!self.busy).then_some(Message::Finish)),
@@ -340,12 +365,37 @@ impl cosmic::Application for Setup {
                 self.report = None;
                 self.busy = true;
                 self.croc_ready = false;
+                self.kde_ready = None;
                 self.step = Some(install::Step::CrocInstalling);
+                return Task::batch([
+                    cosmic::task::stream(iced::stream::channel(16, |mut output| async move {
+                        use iced::futures::SinkExt;
+                        let result = install::croc(&mut output).await;
+                        let _ = output.send(Message::CrocInstalled(result)).await;
+                    })),
+                    cosmic::task::future(async {
+                        Message::KdeChecked(crate::kde_connect::installed().await)
+                    }),
+                ]);
+            }
+            Message::KdeChecked(ready) => self.kde_ready = Some(ready),
+            Message::InstallKde if !self.busy && self.kde_ready == Some(false) => {
+                self.busy = true;
+                self.error = None;
+                self.step = Some(install::Step::KdeDownloading(0.0));
                 return cosmic::task::stream(iced::stream::channel(16, |mut output| async move {
                     use iced::futures::SinkExt;
-                    let result = install::croc(&mut output).await;
-                    let _ = output.send(Message::CrocInstalled(result)).await;
+                    let result = install::kde_connect(&mut output).await;
+                    let _ = output.send(Message::KdeInstalled(result)).await;
                 }));
+            }
+            Message::KdeInstalled(result) => {
+                self.busy = false;
+                self.step = None;
+                match result {
+                    Ok(()) => self.kde_ready = Some(true),
+                    Err(error) => self.error = Some(error),
+                }
             }
             Message::CheckHardware if !self.busy && self.croc_ready => {
                 self.error = None;
@@ -448,6 +498,7 @@ mod tests {
             }),
             croc_ready: true,
             localsend_installed: false,
+            kde_ready: Some(true),
             busy: false,
             step: None,
             error: Some("previous error".into()),

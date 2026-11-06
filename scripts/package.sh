@@ -26,7 +26,7 @@ trap 'rm -rf "$orbit_work"' EXIT HUP INT TERM
 orbit_root=$orbit_work/root
 orbit_appid=io.github.motixo.Orbit
 install -Dm0755 "$orbit_binary" "$orbit_root/usr/bin/orbit"
-for orbit_desktop in "$orbit_appid" "$orbit_appid.Applet" "$orbit_appid.Preview" "$orbit_appid.Menu" "$orbit_appid.Share" "$orbit_appid.AirDrop" "$orbit_appid.LocalSend" "$orbit_appid.Setup"; do
+for orbit_desktop in "$orbit_appid" "$orbit_appid.Applet" "$orbit_appid.Preview" "$orbit_appid.Menu" "$orbit_appid.Share" "$orbit_appid.AirDrop" "$orbit_appid.LocalSend" "$orbit_appid.KdeConnect" "$orbit_appid.Setup"; do
     install -Dm0644 "$orbit_source/resources/$orbit_desktop.desktop" "$orbit_root/usr/share/applications/$orbit_desktop.desktop"
 done
 install -Dm0644 "$orbit_source/resources/$orbit_appid.metainfo.xml" "$orbit_root/usr/share/metainfo/$orbit_appid.metainfo.xml"
@@ -95,6 +95,7 @@ cp -a "$orbit_root/." "%{buildroot}/"
 /usr/share/applications/$orbit_appid.Share.desktop
 /usr/share/applications/$orbit_appid.AirDrop.desktop
 /usr/share/applications/$orbit_appid.LocalSend.desktop
+/usr/share/applications/$orbit_appid.KdeConnect.desktop
 /usr/share/applications/$orbit_appid.Setup.desktop
 /usr/share/metainfo/$orbit_appid.metainfo.xml
 /usr/share/icons/hicolor/scalable/apps/$orbit_appid.svg

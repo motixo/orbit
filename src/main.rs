@@ -13,6 +13,7 @@ mod file_icon;
 mod history;
 mod i18n;
 mod import;
+mod kde_connect;
 mod launch;
 mod layer_input;
 mod localsend;
