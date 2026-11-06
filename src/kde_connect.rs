@@ -16,7 +16,7 @@ use std::{
     },
 };
 
-const SERVICE: &str = "io.github.hepp3n.kdeconnect";
+pub const SERVICE: &str = "io.github.hepp3n.kdeconnect";
 
 static LOGO: LazyLock<widget::icon::Handle> = LazyLock::new(|| {
     widget::icon::from_svg_bytes(include_bytes!("../resources/icons/kde-connect.svg").as_slice())
@@ -72,6 +72,34 @@ trait Daemon {
     async fn accept_pairing(&self, device_id: &str) -> zbus::Result<()>;
     async fn reject_pairing(&self, device_id: &str) -> zbus::Result<()>;
     async fn send_files(&self, device_id: &str, files: Vec<String>) -> zbus::Result<()>;
+}
+
+fn transfer_api(xml: &str) -> bool {
+    ["FileTransferProgress", "FileReceived"]
+        .iter()
+        .all(|name| xml.contains(&format!("<signal name=\"{name}\"")))
+}
+
+pub async fn installed() -> bool {
+    let check = async {
+        let connection = zbus::Connection::session().await?;
+        let dbus = zbus::fdo::DBusProxy::new(&connection).await?;
+        if !dbus.name_has_owner(SERVICE.try_into()?).await?
+            && !dbus
+                .list_activatable_names()
+                .await?
+                .iter()
+                .any(|name| name.as_str() == SERVICE)
+        {
+            return Ok::<_, zbus::Error>(false);
+        }
+        let proxy = DaemonProxy::new(&connection).await?;
+        Ok(transfer_api(&proxy.inner().introspect().await?))
+    };
+    matches!(
+        tokio::time::timeout(std::time::Duration::from_secs(5), check).await,
+        Ok(Ok(true))
+    )
 }
 
 #[derive(Clone, Debug)]
@@ -147,10 +175,7 @@ async fn listen(
         .introspect()
         .await
         .map_err(|error| error.to_string())?;
-    if !["FileTransferProgress", "FileReceived"]
-        .iter()
-        .all(|name| api.contains(&format!("<signal name=\"{name}\"")))
-    {
+    if !transfer_api(&api) {
         return Err(fl!("kde-connect-api-error"));
     }
     output
