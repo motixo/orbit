@@ -44,7 +44,7 @@ Choose **Find devices** to send selected items, or **Receive** to accept files. 
 
 **KDE Connect**
 
-Install the optional [COSMIC service](https://github.com/cosmic-utils/kdeconnect) from **Initial file sharing** and pair with KDE Connect on your other device. Send selected items or receive files directly into the shelf, with per-file progress.
+Install the optional service from **Initial file sharing**. It currently uses [Orbit's COSMIC KDE Connect fork](https://github.com/motixo/kdeconnect). Pair with KDE Connect on another device to send selected items or receive files into the shelf, with per-file progress.
 
 ## Shortcuts
 
