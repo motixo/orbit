@@ -201,9 +201,13 @@ impl DesktopAction {
     pub const ALL: [Self; 2] = [Self::New, Self::Menu];
 
     fn command(self) -> &'static str {
+        self.commands()[usize::from(crate::sandbox::active())]
+    }
+
+    fn commands(self) -> [&'static str; 2] {
         match self {
-            Self::New => "orbit --new",
-            Self::Menu => "orbit --menu",
+            Self::New => ["orbit --new", "flatpak run io.github.motixo.Orbit --new"],
+            Self::Menu => ["orbit --menu", "flatpak run io.github.motixo.Orbit --menu"],
         }
     }
 
@@ -243,7 +247,7 @@ enum GlobalAction {
 }
 
 fn owned(action: &RawValue, target: DesktopAction) -> bool {
-    matches!(action.into_rust::<GlobalAction>(), Ok(GlobalAction::Spawn(command)) if command == target.command())
+    matches!(action.into_rust::<GlobalAction>(), Ok(GlobalAction::Spawn(command)) if target.commands().contains(&command.as_str()))
 }
 
 fn read(config: &Config, key: &str) -> Result<GlobalMap, String> {
@@ -374,6 +378,24 @@ fn assign_global(
 mod tests {
     use super::*;
     use iced_winit::{conversion, platform_specific::wayland::keymap};
+
+    #[test]
+    fn desktop_shortcuts_recognize_native_and_flatpak_launchers() {
+        for target in DesktopAction::ALL {
+            for command in target.commands() {
+                let action = RawValue::from_rust(&GlobalAction::Spawn(command.into())).unwrap();
+                assert!(owned(&action, target));
+                assert!(!owned(
+                    &action,
+                    if target == DesktopAction::New {
+                        DesktopAction::Menu
+                    } else {
+                        DesktopAction::New
+                    }
+                ));
+            }
+        }
+    }
 
     #[test]
     fn desktop_shortcuts_preserve_each_other_and_reject_conflicts() {

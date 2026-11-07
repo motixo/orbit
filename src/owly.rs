@@ -184,6 +184,12 @@ fn probe_state() -> Vec<(PathBuf, u64, std::time::SystemTime)> {
     if let Some(path) = std::env::var_os("PATH") {
         paths.extend(std::env::split_paths(&path).map(|directory| directory.join("owly")));
     }
+    if crate::sandbox::active() {
+        paths.extend([
+            PathBuf::from("/run/host/usr/bin/owly"),
+            PathBuf::from("/run/host/usr/local/bin/owly"),
+        ]);
+    }
     paths.sort();
     paths
         .into_iter()

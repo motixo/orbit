@@ -89,7 +89,12 @@ enum Distribution {
 }
 
 fn distribution() -> Option<Distribution> {
-    let release = std::fs::read_to_string("/etc/os-release").ok()?;
+    let release = std::fs::read_to_string(if crate::sandbox::active() {
+        "/run/host/etc/os-release"
+    } else {
+        "/etc/os-release"
+    })
+    .ok()?;
     for key in ["ID=", "ID_LIKE="] {
         if let Some(value) = release.lines().find_map(|line| line.strip_prefix(key)) {
             for id in value.trim_matches(['\'', '"']).split_whitespace() {
@@ -111,10 +116,21 @@ pub fn builds_from_source() -> bool {
     })
 }
 
+fn staging_directory(prefix: &str) -> std::io::Result<tempfile::TempDir> {
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(prefix);
+    if crate::sandbox::active() {
+        let directory =
+            dirs::cache_dir().ok_or_else(|| std::io::Error::other("Missing cache directory"))?;
+        std::fs::create_dir_all(&directory)?;
+        builder.tempdir_in(directory)
+    } else {
+        builder.tempdir()
+    }
+}
+
 async fn command(command: &mut Command) -> Result<(), String> {
-    let output = command
-        .stdin(Stdio::null())
-        .output()
+    let output = crate::sandbox::host_output(command)
         .await
         .map_err(|error| {
             eprintln!("Sharing installer: {error}");
@@ -196,10 +212,7 @@ async fn prepare_rust(
 ) -> Result<(), String> {
     let rust = tokio::time::timeout(
         Duration::from_secs(5),
-        Command::new("rustc")
-            .arg("--version")
-            .kill_on_drop(true)
-            .output(),
+        crate::sandbox::host_output(Command::new("rustc").arg("--version").kill_on_drop(true)),
     )
     .await
     .ok()
@@ -214,10 +227,7 @@ async fn prepare_rust(
     });
     let cargo = tokio::time::timeout(
         Duration::from_secs(5),
-        Command::new("cargo")
-            .arg("--version")
-            .kill_on_drop(true)
-            .output(),
+        crate::sandbox::host_output(Command::new("cargo").arg("--version").kill_on_drop(true)),
     )
     .await
     .is_ok_and(|result| result.is_ok_and(|result| result.status.success()));
@@ -371,9 +381,7 @@ pub async fn kde_connect(output: &mut Sender<Message>) -> Result<(), String> {
         return Err(fl!("sharing-setup-architecture-error"));
     }
     let result = async {
-        let directory = tempfile::Builder::new()
-            .prefix("orbit-kde-connect-")
-            .tempdir()?;
+        let directory = staging_directory("orbit-kde-connect-")?;
         let archive = directory.path().join("source.tar.gz");
         progress(output, Step::KdeDownloading(0.0)).await;
         download(
@@ -467,9 +475,36 @@ pub async fn kde_connect(output: &mut Sender<Message>) -> Result<(), String> {
             return Err(fl!("sharing-setup-kde-running").into());
         }
         progress(output, Step::KdeInstalling).await;
-        let data = dirs::data_local_dir().ok_or("Missing data directory")?;
+        let data = if crate::sandbox::active() {
+            let output = crate::sandbox::host_output(
+                Command::new("sh")
+                    .args(["-c", "printf '%s' \"${XDG_DATA_HOME:-$HOME/.local/share}\""]),
+            )
+            .await?;
+            if !output.status.success() {
+                return Err("Missing host data directory".into());
+            }
+            let path = PathBuf::from(String::from_utf8(output.stdout)?);
+            if !path.is_absolute() {
+                return Err("Invalid host data directory".into());
+            }
+            path
+        } else {
+            dirs::data_local_dir().ok_or("Missing data directory")?
+        };
         register_kde_connect(&source.join("target/release/kdeconnect-service"), &data)?;
-        dbus.reload_config().await?;
+        if crate::sandbox::active() {
+            command(Command::new("dbus-send").args([
+                "--session",
+                "--print-reply",
+                "--dest=org.freedesktop.DBus",
+                "/org/freedesktop/DBus",
+                "org.freedesktop.DBus.ReloadConfig",
+            ]))
+            .await?;
+        } else {
+            dbus.reload_config().await?;
+        }
         progress(output, Step::KdeVerifying).await;
         if !crate::kde_connect::installed().await {
             return Err(fl!("sharing-setup-kde-error").into());
@@ -520,10 +555,8 @@ pub async fn run(output: &mut Sender<Message>) -> Result<(), String> {
     if !matches!(architecture, "x86_64" | "aarch64") {
         return Err(fl!("sharing-setup-architecture-error"));
     }
-    let directory = tempfile::Builder::new()
-        .prefix("orbit-owly-")
-        .tempdir()
-        .map_err(|_| fl!("sharing-setup-install-error"))?;
+    let directory =
+        staging_directory("orbit-owly-").map_err(|_| fl!("sharing-setup-install-error"))?;
     let source_build = distribution == Distribution::Arch || architecture == "aarch64";
     let (url, checksum, filename) = match (distribution, architecture) {
         (Distribution::Arch, _) | (_, "aarch64") => (
@@ -581,9 +614,7 @@ pub async fn run(output: &mut Sender<Message>) -> Result<(), String> {
                 "iputils",
                 "util-linux",
             ]);
-            if !Command::new("cargo")
-                .arg("--version")
-                .output()
+            if !crate::sandbox::host_output(Command::new("cargo").arg("--version"))
                 .await
                 .is_ok_and(|result| result.status.success())
             {

@@ -24,6 +24,7 @@ mod pointer;
 mod presence;
 mod preview;
 mod rich_text;
+mod sandbox;
 mod share;
 mod sharing_setup;
 mod shelf;

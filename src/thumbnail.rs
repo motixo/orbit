@@ -42,6 +42,16 @@ pub fn bytes(path: &Path, size: u32) -> Option<Vec<u8>> {
                 .arg("--size")
                 .arg(size.to_string());
         }
+        Kind::Video if crate::sandbox::active() => {
+            command
+                .args(["ffmpeg", "-nostdin", "-v", "error", "-i"])
+                .arg(path)
+                .args(["-frames:v", "1", "-vf"])
+                .arg(format!(
+                    "scale={size}:{size}:force_original_aspect_ratio=decrease"
+                ))
+                .arg(&output);
+        }
         Kind::Video => {
             command
                 .arg("cosmic-player")
