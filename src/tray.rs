@@ -164,7 +164,12 @@ pub fn subscription() -> Subscription<Message> {
                             sender: sender.clone(),
                             recent: recent(),
                         };
-                        match tray.assume_sni_available(true).spawn().await {
+                        match tray
+                            .disable_dbus_name(crate::sandbox::active())
+                            .assume_sni_available(true)
+                            .spawn()
+                            .await
+                        {
                             Ok(handle) => service = Some(Service(handle)),
                             Err(error) => {
                                 if output
