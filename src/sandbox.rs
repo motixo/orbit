@@ -44,11 +44,7 @@ pub async fn host_output(source: &mut tokio::process::Command) -> io::Result<Out
             .output()
             .await
     } else {
-        source
-            .stdin(Stdio::null())
-            .kill_on_drop(true)
-            .output()
-            .await
+        source.stdin(Stdio::null()).output().await
     }
 }
 
