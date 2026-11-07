@@ -43,12 +43,25 @@ type hub struct {
 	attempts    map[string]context.CancelFunc
 }
 
-func runtimePath() (string, error) {
-	directory := os.Getenv("XDG_RUNTIME_DIR")
+func runtimeRoot() (string, error) {
+	directory := os.Getenv("ORBIT_PEER_RUNTIME_DIR")
+	if directory == "" {
+		directory = os.Getenv("XDG_RUNTIME_DIR")
+		if directory != "" {
+			directory = filepath.Join(directory, "orbit-share")
+		}
+	}
 	if directory == "" || !filepath.IsAbs(directory) {
 		return "", errors.New("missing runtime directory")
 	}
-	directory = filepath.Join(directory, "orbit-share")
+	return directory, nil
+}
+
+func runtimePath() (string, error) {
+	directory, err := runtimeRoot()
+	if err != nil {
+		return "", err
+	}
 	if version := os.Getenv("ORBIT_PEER_VERSION"); version != "" {
 		decoded, err := hex.DecodeString(version)
 		if err != nil || len(decoded) != 8 {
@@ -344,7 +357,11 @@ func runService() error {
 	startup, stopStartup := context.WithTimeout(context.Background(), 25*time.Second)
 	defer stopStartup()
 	// Different executable versions still share one network port and pairing identity.
-	networkLock, err := lockNetworkService(startup, filepath.Join(os.Getenv("XDG_RUNTIME_DIR"), "orbit-share", "network.lock"))
+	root, err := runtimeRoot()
+	if err != nil {
+		return err
+	}
+	networkLock, err := lockNetworkService(startup, filepath.Join(root, "network.lock"))
 	if err != nil {
 		return err
 	}

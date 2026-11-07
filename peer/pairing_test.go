@@ -280,3 +280,36 @@ func TestServiceVersionsCannotOwnTheNetworkIdentityTogether(t *testing.T) {
 	}
 	second.Close()
 }
+
+func TestFlatpakAndNativeServicesUseIndependentRuntimeLocks(t *testing.T) {
+	directory := t.TempDir()
+	t.Setenv("XDG_RUNTIME_DIR", directory)
+	t.Setenv("ORBIT_PEER_RUNTIME_DIR", "")
+	t.Setenv("ORBIT_PEER_VERSION", "0123456789abcdef")
+	native, err := runtimePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	nativeLock, err := lockNetworkService(context.Background(), filepath.Join(filepath.Dir(native), "network.lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nativeLock.Close()
+	root := filepath.Join(directory, "app", "io.github.motixo.Orbit", "orbit-share")
+	t.Setenv("ORBIT_PEER_RUNTIME_DIR", root)
+	flatpak, err := runtimePath()
+	if err != nil || flatpak != filepath.Join(root, "0123456789abcdef") || flatpak == native {
+		t.Fatalf("invalid isolated runtime: %q, %v", flatpak, err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	flatpakLock, err := lockNetworkService(ctx, filepath.Join(root, "network.lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer flatpakLock.Close()
+	t.Setenv("ORBIT_PEER_RUNTIME_DIR", "relative/path")
+	if _, err := runtimePath(); err == nil {
+		t.Fatal("accepted a relative runtime directory")
+	}
+}

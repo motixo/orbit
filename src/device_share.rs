@@ -49,7 +49,14 @@ fn peer_runtime() -> std::io::Result<std::path::PathBuf> {
     std::env::var_os("XDG_RUNTIME_DIR")
         .map(std::path::PathBuf::from)
         .filter(|path| path.is_absolute())
-        .map(|path| path.join("orbit-share").join(peer_version()))
+        .map(|path| {
+            let path = if crate::sandbox::active() {
+                path.join("app").join(crate::config::ID)
+            } else {
+                path
+            };
+            path.join("orbit-share").join(peer_version())
+        })
         .ok_or_else(|| std::io::Error::other("Missing runtime directory"))
 }
 
@@ -121,6 +128,7 @@ pub fn listen() {
                 .unwrap_or_default();
             if let Ok(mut child) = std::process::Command::new(executable)
                 .env("ORBIT_PEER_VERSION", version)
+                .env("ORBIT_PEER_RUNTIME_DIR", runtime.parent().unwrap())
                 .env("ORBIT_EXECUTABLE", orbit.with_file_name("orbit"))
                 .env("ORBIT_PEER_BIND", bind)
                 .env("ORBIT_SHARE_PWA", pwa.as_str())
@@ -547,6 +555,7 @@ pub async fn start(
         Err(_) => {
             let mut child = tokio::process::Command::new(executable)
                 .env("ORBIT_PEER_VERSION", &peer_version)
+                .env("ORBIT_PEER_RUNTIME_DIR", runtime.parent().unwrap())
                 .env(
                     "ORBIT_EXECUTABLE",
                     std::env::current_exe()
