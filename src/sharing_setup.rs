@@ -178,7 +178,9 @@ impl cosmic::Application for Setup {
     }
 
     fn init(mut core: cosmic::Core, lease: File) -> (Self, Task<cosmic::Action<Message>>) {
+        core.window.show_minimize = false;
         core.window.show_maximize = false;
+        core.window.show_close = false;
         core.set_header_title(fl!("sharing-setup-title"));
         let title = core.set_title(core.main_window_id(), fl!("sharing-setup-title"));
         let mut app = Self {
@@ -301,16 +303,10 @@ impl cosmic::Application for Setup {
                     .on_press_maybe((!self.busy).then_some(Message::CheckHardware)),
             );
         }
-        if needs_install
-            || !self.croc_ready
-            || !self.localsend_installed
-            || self.kde_ready != Some(true)
-        {
-            buttons = buttons.push(
-                widget::button::standard(fl!("sharing-setup-later"))
-                    .on_press_maybe((!self.busy).then_some(Message::Finish)),
-            );
-        }
+        buttons = buttons.push(
+            widget::button::standard(fl!("close"))
+                .on_press_maybe((!self.busy).then_some(Message::Finish)),
+        );
         widget::container(
             widget::column::with_children(vec![
                 widget::scrollable(body)
