@@ -14,7 +14,9 @@ fn on_host(source: &Command) -> Command {
     let mut command = Command::new("flatpak-spawn");
     command.args(["--host", "--watch-bus"]);
     if let Some(directory) = source.get_current_dir() {
-        command.arg("--directory").arg(directory);
+        let mut argument = std::ffi::OsString::from("--directory=");
+        argument.push(directory);
+        command.arg(argument);
     }
     for (name, value) in source.get_envs() {
         let mut argument = std::ffi::OsString::from(if value.is_some() {
@@ -63,11 +65,7 @@ mod tests {
         let wrapped = on_host(&source);
         let arguments: Vec<_> = wrapped.get_args().collect();
         assert_eq!(wrapped.get_program(), "flatpak-spawn");
-        assert!(
-            arguments
-                .windows(2)
-                .any(|pair| pair == ["--directory", "/tmp/a b"])
-        );
+        assert!(arguments.contains(&std::ffi::OsStr::new("--directory=/tmp/a b")));
         assert!(arguments.contains(&std::ffi::OsStr::new("--env=CARGO_HOME=/tmp/a b/cargo")));
         assert!(arguments.contains(&std::ffi::OsStr::new("--unset-env=CARGO_TARGET_DIR")));
         assert!(arguments.ends_with(&[
