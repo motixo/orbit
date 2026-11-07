@@ -74,6 +74,7 @@ pub struct Orbit {
     compression_dialog: Option<CompressionDialog>,
     owly_capabilities: Option<crate::owly::Capabilities>,
     owly_dialog: Option<crate::owly::Dialog>,
+    localsend_dialog: Option<crate::localsend::Dialog>,
     kde_dialog: Option<crate::kde_connect::Dialog>,
     preview: Option<crate::preview::Preview>,
     share: Option<crate::share::Share>,
@@ -173,6 +174,17 @@ pub enum Message {
     FocusItem(PathBuf),
     Copy,
     ToggleCopyMode,
+    LocalSend,
+    LocalSendAction(crate::localsend::Action),
+    LocalSendEvent(window::Id, crate::localsend::Event),
+    LocalSendPrepared(
+        window::Id,
+        u64,
+        String,
+        Result<Arc<crate::share::Bundle>, String>,
+    ),
+    CloseLocalSend,
+    DragLocalSend,
     OwlyProbe(Option<crate::owly::Capabilities>),
     Owly,
     OwlyRefresh,
@@ -275,6 +287,7 @@ impl cosmic::Application for Orbit {
             compression_dialog: None,
             owly_capabilities: None,
             owly_dialog: None,
+            localsend_dialog: None,
             kde_dialog: None,
             preview: None,
             share: None,
@@ -400,6 +413,13 @@ impl cosmic::Application for Orbit {
             return Some(Message::KdeConnectAction(crate::kde_connect::Action::Close));
         }
         if self
+            .localsend_dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.id == id)
+        {
+            return Some(Message::CloseLocalSend);
+        }
+        if self
             .owly_dialog
             .as_ref()
             .is_some_and(|dialog| dialog.id == id)
@@ -451,6 +471,11 @@ impl cosmic::Application for Orbit {
 
     fn view_window(&self, id: window::Id) -> Element<'_, Message> {
         if let Some(dialog) = &self.kde_dialog
+            && dialog.id == id
+        {
+            return dialog.view(self.shelf.export_paths().len());
+        }
+        if let Some(dialog) = &self.localsend_dialog
             && dialog.id == id
         {
             return dialog.view(self.shelf.export_paths().len());
@@ -749,6 +774,23 @@ impl cosmic::Application for Orbit {
                         }
                     ) {
                         self.update(Message::KdeConnectAction(crate::kde_connect::Action::Close))
+                    } else {
+                        Task::none()
+                    };
+                }
+                if self
+                    .localsend_dialog
+                    .as_ref()
+                    .is_some_and(|dialog| dialog.id == window)
+                {
+                    return if matches!(
+                        &event,
+                        iced::keyboard::Event::KeyPressed {
+                            key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+                            ..
+                        }
+                    ) {
+                        self.update(Message::CloseLocalSend)
                     } else {
                         Task::none()
                     };
@@ -1631,6 +1673,211 @@ impl cosmic::Application for Orbit {
                 }
             }
             Message::ToggleCopyMode => self.copy_mode = !self.copy_mode,
+            Message::LocalSend => {
+                if let Some(dialog) = &self.localsend_dialog {
+                    return window::gain_focus(dialog.id);
+                }
+                if !crate::localsend::installed() {
+                    crate::sharing_setup::launch(true);
+                    self.status = fl!("localsend-setup-hint");
+                    return Task::none();
+                }
+                let directory = match self.preferences.download_directory() {
+                    Ok(directory) => directory,
+                    Err(error) => {
+                        self.status = error.to_string();
+                        return Task::none();
+                    }
+                };
+                let (dialog, open) = crate::localsend::Dialog::open(directory);
+                let id = dialog.id;
+                self.localsend_dialog = Some(dialog);
+                return Task::batch([open, self.set_window_title(fl!("localsend"), id)]);
+            }
+            Message::CloseLocalSend => {
+                if let Some(dialog) = self.localsend_dialog.take() {
+                    return window::close(dialog.id);
+                }
+            }
+            Message::DragLocalSend => {
+                if let Some(dialog) = &self.localsend_dialog {
+                    return window::drag(dialog.id);
+                }
+            }
+            Message::LocalSendAction(action) => {
+                use crate::localsend::Action;
+                if let Action::Send(device) = action {
+                    let paths = self.shelf.export_paths();
+                    if paths.is_empty() {
+                        return Task::none();
+                    }
+                    let mut items: Vec<_> = self
+                        .shelf
+                        .items
+                        .iter()
+                        .filter(|item| paths.contains(&item.path))
+                        .cloned()
+                        .collect();
+                    let transfer =
+                        Arc::new(self.export_transfer(self.shelf.transfer(paths, false)));
+                    for (item, path) in items.iter_mut().zip(&transfer.files.0) {
+                        item.path = path.clone();
+                    }
+                    let Some(dialog) = self.localsend_dialog.as_mut().filter(|dialog| {
+                        dialog.ready
+                            && !dialog.busy
+                            && !dialog.receiving
+                            && dialog.request.is_none()
+                            && dialog.progress.is_empty()
+                    }) else {
+                        return Task::none();
+                    };
+                    dialog.busy = true;
+                    dialog.generation = dialog.generation.wrapping_add(1);
+                    dialog.cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    dialog.status.clear();
+                    let (id, generation, cancelled) =
+                        (dialog.id, dialog.generation, dialog.cancelled.clone());
+                    return cosmic::task::future(async move {
+                        let result = tokio::task::spawn_blocking(move || {
+                            crate::share::Bundle::prepare(items, transfer, None, || {
+                                cancelled.load(std::sync::atomic::Ordering::Relaxed)
+                            })
+                        })
+                        .await
+                        .map_err(|error| error.to_string())
+                        .and_then(|result| result);
+                        Message::LocalSendPrepared(id, generation, device, result)
+                    });
+                }
+                if let Some(dialog) = &mut self.localsend_dialog {
+                    match action {
+                        Action::Refresh => {
+                            dialog.status.clear();
+                            dialog.command(serde_json::json!({"action":"refresh"}));
+                        }
+                        Action::Cancel => {
+                            if dialog.busy && !dialog.receiving && dialog.bundle.is_none() {
+                                dialog
+                                    .cancelled
+                                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                                dialog.busy = false;
+                                return Task::none();
+                            }
+                            dialog.command(serde_json::json!({"action":"cancel"}));
+                        }
+                        Action::Answer(accept) => {
+                            if let Some(request) = dialog.request.take() {
+                                dialog.command(serde_json::json!({"action":"answer","id":request.id,"accept":accept}));
+                            }
+                        }
+                        Action::Send(_) => (),
+                    }
+                }
+            }
+            Message::LocalSendPrepared(id, generation, device, result) => {
+                if let Some(dialog) = self.localsend_dialog.as_mut().filter(|dialog| {
+                    dialog.id == id && dialog.busy && dialog.generation == generation
+                }) {
+                    match result {
+                        Ok(bundle) => {
+                            let text = (bundle.files.len() == 1)
+                                .then(|| bundle.files[0].text.clone())
+                                .flatten();
+                            let files: Vec<_> = bundle
+                                .files
+                                .iter()
+                                .map(|file| file.path.as_path())
+                                .collect();
+                            let request =
+                                crate::localsend::send_request(&device, &files, text.as_deref());
+                            if request.is_ok_and(|request| dialog.command(request)) {
+                                dialog.bundle = Some(bundle);
+                            } else {
+                                dialog.busy = false;
+                                dialog.status = fl!("localsend-send-error");
+                            }
+                        }
+                        Err(error) => {
+                            dialog.busy = false;
+                            dialog.status = error;
+                        }
+                    }
+                }
+            }
+            Message::LocalSendEvent(id, event) => {
+                use crate::localsend::{Event, Update};
+                let Some(dialog) = self
+                    .localsend_dialog
+                    .as_mut()
+                    .filter(|dialog| dialog.id == id)
+                else {
+                    return Task::none();
+                };
+                match event {
+                    Event::Started(controller) => dialog.controller = Some(controller),
+                    Event::Update(update) => match update {
+                        Update::Ready => {
+                            dialog.ready = true;
+                            dialog.status.clear();
+                        }
+                        Update::Receiving => {
+                            dialog.receiving = true;
+                            dialog
+                                .cancelled
+                                .store(true, std::sync::atomic::Ordering::Relaxed);
+                            dialog.busy = false;
+                            dialog.bundle = None;
+                            dialog.status.clear();
+                        }
+                        Update::Devices { devices } => dialog.devices = devices,
+                        Update::Request(request) => {
+                            dialog.request = Some(request);
+                            dialog.status.clear();
+                        }
+                        Update::RequestClosed => dialog.request = None,
+                        Update::Progress { id, progress } => {
+                            dialog.progress.insert(id, progress);
+                        }
+                        Update::ProgressEnd { id } => {
+                            dialog.progress.remove(&id);
+                        }
+                        Update::Received { paths } => {
+                            dialog.status = fl!("share-received");
+                            return self.update(Message::Incoming(Ok(FileList(paths))));
+                        }
+                        Update::Text { text } => {
+                            dialog.status = fl!("share-received");
+                            return self.begin_import(
+                                text.into_bytes(),
+                                crate::transfer::TEXT.into(),
+                                Source::Clipboard,
+                            );
+                        }
+                        Update::Done { receiving, error } => {
+                            if receiving {
+                                dialog.receiving = false;
+                            } else {
+                                dialog.busy = false;
+                                dialog.bundle = None;
+                            }
+                            dialog
+                                .progress
+                                .retain(|_, progress| progress.receiving != receiving);
+                            dialog.status = error.unwrap_or_else(|| fl!("localsend-done"));
+                        }
+                        Update::Error { error } => {
+                            dialog.busy = false;
+                            dialog.receiving = false;
+                            dialog.ready = false;
+                            dialog.bundle = None;
+                            dialog.progress.clear();
+                            dialog.request = None;
+                            dialog.status = error;
+                        }
+                    },
+                }
+            }
             Message::KdeConnect => {
                 if let Some(dialog) = &self.kde_dialog {
                     return window::gain_focus(dialog.id);
@@ -2764,6 +3011,7 @@ impl Orbit {
     }
 
     fn close_shelf(&mut self) -> Task<cosmic::Action<Message>> {
+        let localsend_window = self.localsend_dialog.take().map(|dialog| dialog.id);
         let kde_window = self.kde_dialog.take().map(|dialog| dialog.id);
         let owly_window = self.owly_dialog.as_ref().map(|dialog| dialog.id);
         let owly = self.owly_dialog.take().and_then(|mut dialog| {
@@ -2809,6 +3057,9 @@ impl Orbit {
         self.copy_mode = false;
         self.status.clear();
         Task::batch([
+            localsend_window
+                .map(window::close)
+                .unwrap_or_else(Task::none),
             preview,
             share,
             kde_window.map(window::close).unwrap_or_else(Task::none),
@@ -2933,6 +3184,12 @@ impl Orbit {
             conversions,
         ));
         let mut sharing = vec![item(fl!("share"), None, Some(Message::Share), false)];
+        sharing.push(item(
+            fl!("localsend"),
+            None,
+            Some(Message::LocalSend),
+            false,
+        ));
         if self.owly_capabilities.is_some() {
             sharing.push(item(fl!("owly"), None, Some(Message::Owly), false));
         }

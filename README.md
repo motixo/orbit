@@ -42,6 +42,10 @@ Complete **Initial file sharing** once. Reopen it from the applet or tray **Sett
 
 Choose **Find devices** to send selected items, or **Receive** to accept files. Set the receiving Apple device to **Everyone for 10 Minutes**. [Owly](https://github.com/t4t5/owly) uses Apple's AWDL protocol and requires compatible Wi-Fi hardware. Wi-Fi disconnects during AirDrop and reconnects when you leave it.
 
+**LocalSend**
+
+Install support from **Initial file sharing**, then open **Share → LocalSend** to send files or text to the LocalSend app on another device, or receive them into the shelf. Incoming transfers require approval; Orbit uses the [official Rust core](https://github.com/localsend/localsend/tree/v1.18.2/packages/core) over HTTPS on your local network.
+
 **KDE Connect**
 
 Install the optional service from **Initial file sharing**. It currently uses [Orbit's COSMIC KDE Connect fork](https://github.com/motixo/kdeconnect). Pair with KDE Connect on another device to send selected items or receive files into the shelf, with per-file progress.

@@ -20,6 +20,7 @@ const KDE_SOURCE: &str = "42b15cf5b822382470270c97299025f88e9917cd";
 
 #[derive(Clone, Copy, Debug)]
 pub enum Step {
+    LocalSendInstalling,
     CrocInstalling,
     CrocVerifying,
     KdeDownloading(f32),
@@ -37,6 +38,7 @@ pub enum Step {
 impl Step {
     pub fn label(self) -> String {
         match self {
+            Self::LocalSendInstalling => fl!("localsend-installing"),
             Self::CrocInstalling => fl!("sharing-setup-croc-installing"),
             Self::CrocVerifying => fl!("sharing-setup-croc-verifying"),
             Self::KdeDownloading(_) => fl!("sharing-setup-kde-downloading"),

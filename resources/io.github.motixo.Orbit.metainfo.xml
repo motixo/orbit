@@ -18,6 +18,9 @@
   <supports><control>keyboard</control><control>pointing</control></supports>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.5.1" date="2026-11-07">
+      <description><p>Add LocalSend and KDE Connect sharing, with pairing controls, per-file progress, and fixes for interrupted LocalSend transfers.</p></description>
+    </release>
     <release version="0.5.0" date="2026-11-05">
       <description><p>Local device sharing with Croc, paired and nearby devices, AirDrop transfers, and sharing settings.</p></description>
     </release>

@@ -26,7 +26,7 @@ trap 'rm -rf "$orbit_work"' EXIT HUP INT TERM
 orbit_root=$orbit_work/root
 orbit_appid=io.github.motixo.Orbit
 install -Dm0755 "$orbit_binary" "$orbit_root/usr/bin/orbit"
-for orbit_desktop in "$orbit_appid" "$orbit_appid.Applet" "$orbit_appid.Preview" "$orbit_appid.Menu" "$orbit_appid.Share" "$orbit_appid.AirDrop" "$orbit_appid.KdeConnect" "$orbit_appid.Setup"; do
+for orbit_desktop in "$orbit_appid" "$orbit_appid.Applet" "$orbit_appid.Preview" "$orbit_appid.Menu" "$orbit_appid.Share" "$orbit_appid.AirDrop" "$orbit_appid.LocalSend" "$orbit_appid.KdeConnect" "$orbit_appid.Setup"; do
     install -Dm0644 "$orbit_source/resources/$orbit_desktop.desktop" "$orbit_root/usr/share/applications/$orbit_desktop.desktop"
 done
 install -Dm0644 "$orbit_source/resources/$orbit_appid.metainfo.xml" "$orbit_root/usr/share/metainfo/$orbit_appid.metainfo.xml"
@@ -34,6 +34,7 @@ for orbit_icon in "scalable/apps/$orbit_appid.svg" "symbolic/apps/$orbit_appid-s
     install -Dm0644 "$orbit_source/resources/icons/hicolor/$orbit_icon" "$orbit_root/usr/share/icons/hicolor/$orbit_icon"
 done
 install -Dm0644 "$orbit_source/LICENSE" "$orbit_root/usr/share/licenses/orbit/LICENSE"
+install -Dm0644 "$orbit_source/resources/localsend-LICENSE" "$orbit_root/usr/share/licenses/orbit/localsend-LICENSE"
 
 cat > "$orbit_work/refresh" <<'EOF'
 if command -v update-desktop-database >/dev/null 2>&1; then
@@ -93,6 +94,7 @@ cp -a "$orbit_root/." "%{buildroot}/"
 /usr/share/applications/$orbit_appid.Menu.desktop
 /usr/share/applications/$orbit_appid.Share.desktop
 /usr/share/applications/$orbit_appid.AirDrop.desktop
+/usr/share/applications/$orbit_appid.LocalSend.desktop
 /usr/share/applications/$orbit_appid.KdeConnect.desktop
 /usr/share/applications/$orbit_appid.Setup.desktop
 /usr/share/metainfo/$orbit_appid.metainfo.xml
@@ -100,6 +102,7 @@ cp -a "$orbit_root/." "%{buildroot}/"
 /usr/share/icons/hicolor/symbolic/apps/$orbit_appid-symbolic.svg
 /usr/share/icons/hicolor/symbolic/apps/$orbit_appid-tray-symbolic.svg
 %license /usr/share/licenses/orbit/LICENSE
+%license /usr/share/licenses/orbit/localsend-LICENSE
 
 %post
 $(cat "$orbit_work/refresh")

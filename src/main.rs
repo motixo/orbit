@@ -16,6 +16,7 @@ mod import;
 mod kde_connect;
 mod launch;
 mod layer_input;
+mod localsend;
 mod orbit_icon;
 mod owly;
 mod pin;
