@@ -10,6 +10,17 @@ pub fn active() -> bool {
     Path::new("/.flatpak-info").is_file()
 }
 
+pub fn process_id() -> &'static str {
+    static ID: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+        if active() {
+            format!("f{}", uuid::Uuid::new_v4().simple())
+        } else {
+            std::process::id().to_string()
+        }
+    });
+    &ID
+}
+
 fn on_host(source: &Command) -> Command {
     let mut command = Command::new("flatpak-spawn");
     command.args(["--host", "--watch-bus"]);
@@ -53,6 +64,19 @@ pub async fn host_output(source: &mut tokio::process::Command) -> io::Result<Out
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn process_identity_is_stable_and_preserves_native_lease_names() {
+        let id = process_id();
+        assert_eq!(id, process_id());
+        assert!(id.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        if active() {
+            assert_eq!(id.len(), 33);
+            assert!(uuid::Uuid::parse_str(&id[1..]).is_ok());
+        } else {
+            assert_eq!(id, std::process::id().to_string());
+        }
+    }
 
     #[test]
     fn host_commands_keep_paths_and_environment_as_separate_arguments() {

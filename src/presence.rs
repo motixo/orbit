@@ -28,7 +28,7 @@ pub fn announce() -> Subscription<()> {
 async fn hold_name() -> zbus::Result<()> {
     let connection = zbus::Connection::session().await?;
     connection
-        .request_name(format!("{}p{}", prefix(), std::process::id()))
+        .request_name(format!("{}p{}", prefix(), crate::sandbox::process_id()))
         .await?;
     std::future::pending::<()>().await;
     drop(connection);

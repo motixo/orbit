@@ -150,7 +150,7 @@ impl Placement {
         area.output.hash(&mut hasher);
         let registry = open(directory.join("layout.lock"))?;
         registry.lock()?;
-        let lease = open(directory.join(format!("{}.pin", std::process::id())))?;
+        let lease = open(directory.join(format!("{}.pin", crate::sandbox::process_id())))?;
         lease.try_lock().map_err(io::Error::from)?;
         let mut placement = Self {
             directory,
@@ -233,7 +233,7 @@ impl Placement {
 
     fn place(&mut self, anchor: Anchor, near: Option<(u32, u32)>) -> io::Result<IcedMargin> {
         let mut occupied = Vec::new();
-        let own_name = format!("{}.pin", std::process::id());
+        let own_name = format!("{}.pin", crate::sandbox::process_id());
         for entry in fs::read_dir(&self.directory)? {
             let entry = entry?;
             if entry.file_name() == own_name.as_str()
