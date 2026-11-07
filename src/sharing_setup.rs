@@ -78,11 +78,21 @@ pub struct Report {
 }
 
 async fn check() -> Result<Report, String> {
-    let capabilities = tokio::task::spawn_blocking(|| {
-        owly_radio::probe::from_config(owly_radio::rundir::RunDir::new(owly_radio::rundir::RUN_DIR))
+    let capabilities = tokio::task::spawn_blocking(|| -> Result<_, String> {
+        if crate::sandbox::active() {
+            let settings = host_radio_settings(std::path::Path::new("/run/host"))?;
+            Ok(owly_radio::probe::capabilities(
+                &owly_radio::sys::System,
+                &settings,
+            ))
+        } else {
+            Ok(owly_radio::probe::from_config(owly_radio::rundir::RunDir::new(
+                owly_radio::rundir::RUN_DIR,
+            )))
+        }
     })
     .await
-    .map_err(|_| fl!("sharing-setup-check-error"))?;
+    .map_err(|_| fl!("sharing-setup-check-error"))??;
     let supported = capabilities.hardware
         && capabilities.card.is_some()
         && !capabilities
@@ -105,6 +115,21 @@ async fn check() -> Result<Report, String> {
         ),
         details,
     })
+}
+
+fn host_radio_settings(host: &std::path::Path) -> Result<owly_radio::injection::Settings, String> {
+    let mut config = owly_radio::config::Config::load(&host.join("etc/owly/radio.toml"))?;
+    config.hostapd = Some(match config.hostapd {
+        Some(path) => host.join(path.strip_prefix("/").unwrap_or(&path)),
+        None => ["usr/bin/hostapd", "usr/sbin/hostapd", "sbin/hostapd"]
+            .into_iter()
+            .map(|path| host.join(path))
+            .find(|path| path.is_file())
+            .unwrap_or_else(|| host.join("usr/bin/hostapd")),
+    });
+    let mut settings = config.settings(owly_radio::rundir::RunDir::new(owly_radio::rundir::RUN_DIR))?;
+    settings.quirks = owly_radio::quirks::Quirks::load(&host.join("etc/owly/drivers.toml"))?;
+    Ok(settings)
 }
 
 async fn installed() -> bool {
@@ -476,6 +501,37 @@ impl cosmic::Application for Setup {
 mod tests {
     use super::*;
     use cosmic::Application;
+
+    #[test]
+    fn flatpak_hardware_check_reads_host_radio_settings_and_driver_overrides() {
+        let host = tempfile::tempdir().unwrap();
+        let config = host.path().join("etc/owly");
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::write(
+            config.join("radio.toml"),
+            "station = \"wlan1\"\nallow_untested = true\n",
+        )
+        .unwrap();
+        std::fs::write(
+            config.join("drivers.toml"),
+            "[drivers.orbit_test]\nstatus = \"tested\"\nmode = \"exclusive\"\n",
+        )
+        .unwrap();
+        let hostapd = host.path().join("usr/sbin/hostapd");
+        std::fs::create_dir_all(hostapd.parent().unwrap()).unwrap();
+        std::fs::write(&hostapd, []).unwrap();
+        let settings = host_radio_settings(host.path()).unwrap();
+        assert_eq!(settings.station.as_deref(), Some("wlan1"));
+        assert!(settings.allow_untested);
+        assert_eq!(settings.hostapd, hostapd);
+        let (driver, source) = settings.quirks.get("orbit_test", None);
+        assert_eq!(source, owly_radio::quirks::Source::Driver);
+        assert_eq!(driver.mode, owly_radio::quirks::Mode::Exclusive);
+        std::fs::write(config.join("radio.toml"), "hostapd = \"/opt/owly/hostapd\"\n")
+            .unwrap();
+        let settings = host_radio_settings(host.path()).unwrap();
+        assert_eq!(settings.hostapd, host.path().join("opt/owly/hostapd"));
+    }
 
     #[test]
     fn installed_owly_versions_are_parsed() {
