@@ -49,7 +49,7 @@
         {
           "type": "git",
           "url": "https://github.com/motixo/orbit.git",
-          "commit": "01e69f8ff0a32f5f7906719bddb6a8b5308a72a0"
+          "commit": "d21e25f901236083b19f197ff5179f7dfce81443"
         },
         "cargo-sources.json",
         "go.mod.json"
