@@ -313,3 +313,31 @@ func TestFlatpakAndNativeServicesUseIndependentRuntimeLocks(t *testing.T) {
 		t.Fatal("accepted a relative runtime directory")
 	}
 }
+
+func TestServiceRetiresWhenFlatpakDeploymentChanges(t *testing.T) {
+	branch := t.TempDir()
+	previous := filepath.Join(branch, "previous", "files")
+	current := filepath.Join(branch, "current", "files")
+	for _, directory := range []string{previous, current} {
+		if err := os.MkdirAll(directory, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	active := filepath.Join(branch, "active")
+	if err := os.Symlink("previous", active); err != nil {
+		t.Fatal(err)
+	}
+	if !deploymentCurrent("") || !deploymentCurrent(previous) || deploymentCurrent(current) {
+		t.Fatal("incorrect initial deployment state")
+	}
+	staged := filepath.Join(branch, "new-active")
+	if err := os.Symlink("current", staged); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(staged, active); err != nil {
+		t.Fatal(err)
+	}
+	if deploymentCurrent(previous) || !deploymentCurrent(current) {
+		t.Fatal("the old service did not notice the deployment switch")
+	}
+}

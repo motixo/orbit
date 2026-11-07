@@ -42,6 +42,9 @@ pub fn executable() -> std::io::Result<std::path::PathBuf> {
 fn peer_version() -> String {
     let mut hash = DefaultHasher::new();
     hash.write(PEER);
+    if let Some(deployment) = crate::sandbox::deployment() {
+        hash.write(deployment.as_os_str().as_encoded_bytes());
+    }
     format!("{:016x}", hash.finish())
 }
 
@@ -129,6 +132,10 @@ pub fn listen() {
             if let Ok(mut child) = std::process::Command::new(executable)
                 .env("ORBIT_PEER_VERSION", version)
                 .env("ORBIT_PEER_RUNTIME_DIR", runtime.parent().unwrap())
+                .env(
+                    "ORBIT_FLATPAK_DEPLOYMENT",
+                    crate::sandbox::deployment().unwrap_or(std::path::Path::new("")),
+                )
                 .env("ORBIT_EXECUTABLE", orbit.with_file_name("orbit"))
                 .env("ORBIT_PEER_BIND", bind)
                 .env("ORBIT_SHARE_PWA", pwa.as_str())
@@ -556,6 +563,10 @@ pub async fn start(
             let mut child = tokio::process::Command::new(executable)
                 .env("ORBIT_PEER_VERSION", &peer_version)
                 .env("ORBIT_PEER_RUNTIME_DIR", runtime.parent().unwrap())
+                .env(
+                    "ORBIT_FLATPAK_DEPLOYMENT",
+                    crate::sandbox::deployment().unwrap_or(std::path::Path::new("")),
+                )
                 .env(
                     "ORBIT_EXECUTABLE",
                     std::env::current_exe()

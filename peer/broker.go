@@ -341,6 +341,18 @@ func lockNetworkService(ctx context.Context, path string) (*os.File, error) {
 	}
 }
 
+func deploymentCurrent(directory string) bool {
+	if directory == "" {
+		return true
+	}
+	expected, err := os.Stat(directory)
+	if err != nil {
+		return false
+	}
+	active, err := os.Stat(filepath.Join(directory, "..", "..", "active", "files"))
+	return err == nil && os.SameFile(expected, active)
+}
+
 func runService() error {
 	runtime, err := runtimePath()
 	if err != nil {
@@ -437,6 +449,7 @@ func runService() error {
 		emptySince := time.Now()
 		executable, _ := os.Executable()
 		running, _ := os.Stat("/proc/self/exe")
+		deployment := os.Getenv("ORBIT_FLATPAK_DEPLOYMENT")
 		advertisements := make(map[string]func())
 		var stopHostname func()
 		advertisedBind := ""
@@ -462,6 +475,10 @@ func runService() error {
 				bind := h.bind
 				h.mu.Unlock()
 				empty := len(sessions) == 0
+				if empty && !deploymentCurrent(deployment) {
+					mux.Close()
+					return
+				}
 				if _, err := os.Stat(h.opener); os.IsNotExist(err) {
 					mux.Close()
 					return

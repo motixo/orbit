@@ -10,6 +10,27 @@ pub fn active() -> bool {
     Path::new("/.flatpak-info").is_file()
 }
 
+pub fn deployment() -> Option<&'static Path> {
+    static DEPLOYMENT: std::sync::LazyLock<Option<std::path::PathBuf>> =
+        std::sync::LazyLock::new(|| {
+            deployment_path(&std::fs::read_to_string("/.flatpak-info").ok()?)
+        });
+    DEPLOYMENT.as_deref()
+}
+
+fn deployment_path(info: &str) -> Option<std::path::PathBuf> {
+    let commit = info
+        .lines()
+        .find_map(|line| line.strip_prefix("app-commit="))?;
+    let path = Path::new(
+        info.lines()
+            .find_map(|line| line.strip_prefix("app-path="))?,
+    );
+    // Flatpak hides installation directories outside the host filesystem mirror.
+    (path.is_absolute() && path.file_name()? == "files" && path.parent()?.file_name()? == commit)
+        .then(|| Path::new("/run/host/root").join(path.strip_prefix("/").unwrap()))
+}
+
 pub fn process_id() -> &'static str {
     static ID: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
         if active() {
@@ -64,6 +85,25 @@ pub async fn host_output(source: &mut tokio::process::Command) -> io::Result<Out
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deployment_uses_the_installed_commit_and_skips_build_sandboxes() {
+        let commit = "a".repeat(64);
+        let path = format!("/home/user/flatpak/app/Orbit/x86_64/devel/{commit}/files");
+        let info = format!("[Instance]\napp-path={path}\napp-commit={commit}\n");
+        assert_eq!(
+            deployment_path(&info),
+            Some(Path::new("/run/host/root").join(path.strip_prefix('/').unwrap()))
+        );
+        for info in [
+            String::new(),
+            "app-path=/home/user/build/files\n".into(),
+            format!("app-path=relative/{commit}/files\napp-commit={commit}\n"),
+            format!("app-path=/home/user/build/files\napp-commit={commit}\n"),
+        ] {
+            assert!(deployment_path(&info).is_none());
+        }
+    }
 
     #[test]
     fn process_identity_is_stable_and_preserves_native_lease_names() {
