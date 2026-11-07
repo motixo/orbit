@@ -17,7 +17,7 @@
   <screenshots>
     <screenshot type="default">
       <caption>Collect files from different folders on one shelf.</caption>
-      <image type="source" width="960" height="580">https://raw.githubusercontent.com/motixo/orbit/main/.github/showcase/orbit.png</image>
+      <image type="source" width="960" height="580">https://raw.githubusercontent.com/motixo/orbit/b74aa86e2f38b28cd15c7241a1fc05070b3748a9/.github/showcase/orbit.png</image>
     </screenshot>
   </screenshots>
   <categories><category>Utility</category><category>FileTools</category></categories>
