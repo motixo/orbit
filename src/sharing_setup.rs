@@ -18,7 +18,11 @@ fn completed() -> bool {
 }
 
 pub fn launch(manual: bool) {
-    if !manual && completed() && crate::device_share::installed() {
+    if !manual
+        && completed()
+        && crate::device_share::installed()
+        && (!crate::sandbox::active() || crate::localsend::installed())
+    {
         return;
     }
     let Ok(executable) = std::env::current_exe() else {
@@ -158,7 +162,7 @@ pub enum Message {
     Progress(install::Step),
     Installed(Result<(), String>),
     Finish,
-    LocalSendChecked(bool),
+    LocalSendChecked(Result<bool, String>),
     InstallLocalSend,
     LocalSendInstalled(Result<(), String>),
 }
@@ -195,9 +199,15 @@ impl cosmic::Application for Setup {
         let prepare = app.update(Message::Check);
         let localsend = cosmic::task::future(async {
             Message::LocalSendChecked(
-                tokio::task::spawn_blocking(crate::localsend::installed)
-                    .await
-                    .unwrap_or(false),
+                tokio::task::spawn_blocking(|| {
+                    if crate::sandbox::active() {
+                        crate::localsend::install()?;
+                    }
+                    Ok::<_, std::io::Error>(crate::localsend::installed())
+                })
+                .await
+                .map_err(|error| error.to_string())
+                .and_then(|result| result.map_err(|error| error.to_string())),
             )
         });
         (app, Task::batch([title, prepare, localsend]))
@@ -339,7 +349,10 @@ impl cosmic::Application for Setup {
 
     fn update(&mut self, message: Message) -> Task<cosmic::Action<Message>> {
         match message {
-            Message::LocalSendChecked(installed) => self.localsend_installed = installed,
+            Message::LocalSendChecked(result) => match result {
+                Ok(installed) => self.localsend_installed = installed,
+                Err(error) => self.error = Some(error),
+            },
             Message::InstallLocalSend if !self.busy && !self.localsend_installed => {
                 self.busy = true;
                 self.error = None;
@@ -515,5 +528,26 @@ mod tests {
         let _ = setup.update(Message::Install);
         assert!(!setup.busy && setup.croc_ready);
         assert!(!setup.report.as_ref().unwrap().supported);
+    }
+
+    #[test]
+    fn localsend_preparation_does_not_finish_other_setup_checks() {
+        let mut setup = Setup {
+            core: cosmic::Core::default(),
+            _lease: tempfile::tempfile().unwrap(),
+            report: None,
+            croc_ready: false,
+            localsend_installed: false,
+            kde_ready: None,
+            busy: true,
+            step: Some(install::Step::CrocInstalling),
+            error: None,
+        };
+        let _ = setup.update(Message::LocalSendChecked(Ok(true)));
+        assert!(setup.localsend_installed && setup.busy && !setup.croc_ready);
+        assert!(matches!(setup.step, Some(install::Step::CrocInstalling)));
+        let _ = setup.update(Message::LocalSendChecked(Err("Permission denied".into())));
+        assert!(setup.busy && !setup.croc_ready);
+        assert_eq!(setup.error.as_deref(), Some("Permission denied"));
     }
 }
