@@ -44,7 +44,7 @@ Choose **Find devices** to send selected items, or **Receive** to accept files. 
 
 **LocalSend**
 
-Install optional LocalSend support from **Initial file sharing**, then choose **Share → LocalSend**. Open LocalSend on the other device to send or receive. Keep the sharing window open; incoming transfers require approval. Uses the [official Rust core](https://github.com/localsend/localsend/tree/v1.18.2/packages/core) over encrypted local connections.
+Install support from **Initial file sharing**, then open **Share → LocalSend** to send files or text to the LocalSend app on another device, or receive them into the shelf. Incoming transfers require approval; Orbit uses the [official Rust core](https://github.com/localsend/localsend/tree/v1.18.2/packages/core) over HTTPS on your local network.
 
 **KDE Connect**
 
