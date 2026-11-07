@@ -10,7 +10,7 @@ curl -fsSL https://github.com/motixo/orbit/releases/latest/download/install.sh |
 
 ## Flatpak preview
 
-Run `sh scripts/build-flatpak.sh` to build a local bundle in `~/.cache/orbit-flatpak/`. This preview needs host file and session access for shelf files, pinned windows and optional sharing tools. Flatpak 1.18.4 currently strips COSMIC applet metadata during installation.
+Run `sh scripts/build-flatpak.sh` to build the pinned sources into a bundle in `~/.cache/orbit-flatpak/`. This preview needs host file and session access for shelf files, pinned windows and optional sharing tools. Flatpak 1.18.4 currently strips COSMIC applet metadata during installation.
 
 ## Mouse
 

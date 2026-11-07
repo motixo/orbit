@@ -47,14 +47,9 @@
       ],
       "sources": [
         {
-          "type": "dir",
-          "path": "../..",
-          "skip": [
-            ".*",
-            "target",
-            "localsend/target",
-            ".flatpak-builder"
-          ]
+          "type": "git",
+          "url": "https://github.com/motixo/orbit.git",
+          "commit": "0f8ea6888c34df00238ae15b81d4c9c7e05f4d99"
         },
         "cargo-sources.json",
         "go.mod.json"
