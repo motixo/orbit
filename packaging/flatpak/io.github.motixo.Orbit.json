@@ -1,0 +1,64 @@
+{
+  "app-id": "io.github.motixo.Orbit",
+  "runtime": "org.freedesktop.Platform",
+  "runtime-version": "26.08",
+  "sdk": "org.freedesktop.Sdk",
+  "sdk-extensions": [
+    "org.freedesktop.Sdk.Extension.rust-stable",
+    "org.freedesktop.Sdk.Extension.golang"
+  ],
+  "command": "orbit",
+  "finish-args": [
+    "--socket=wayland",
+    "--socket=inherit-wayland-socket",
+    "--share=ipc",
+    "--share=network",
+    "--device=dri",
+    "--filesystem=host",
+    "--filesystem=/run/user",
+    "--filesystem=xdg-config/cosmic",
+    "--filesystem=xdg-run/pipewire-0:ro",
+    "--filesystem=/run/owly:ro",
+    "--talk-name=com.system76.CosmicSettingsDaemon",
+    "--talk-name=com.system76.CosmicSettingsDaemon.*",
+    "--talk-name=org.kde.StatusNotifierWatcher",
+    "--talk-name=org.freedesktop.Notifications",
+    "--talk-name=org.freedesktop.Flatpak",
+    "--talk-name=io.github.hepp3n.kdeconnect",
+    "--system-talk-name=io.github.t4t5.Owly",
+    "--env=XDG_DATA_DIRS=/app/share:/usr/share:/run/host/usr/share:/run/host/usr/local/share"
+  ],
+  "build-options": {
+    "append-path": "/usr/lib/sdk/rust-stable/bin:/usr/lib/sdk/golang/bin",
+    "env": {
+      "CARGO_HOME": "/run/build/orbit/cargo",
+      "CARGO_NET_OFFLINE": "true",
+      "GOTOOLCHAIN": "local",
+      "GOFLAGS": "-mod=vendor"
+    }
+  },
+  "modules": [
+    {
+      "name": "orbit",
+      "buildsystem": "simple",
+      "build-commands": [
+        "cargo build --release --locked --offline",
+        "sh packaging/flatpak/install.sh"
+      ],
+      "sources": [
+        {
+          "type": "dir",
+          "path": "../..",
+          "skip": [
+            ".*",
+            "target",
+            "localsend/target",
+            ".flatpak-builder"
+          ]
+        },
+        "cargo-sources.json",
+        "go.mod.json"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,43 @@
+name: Flatpak
+
+on:
+  push:
+    branches: [feature/flatpak]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Flatpak
+        run: |
+          sudo add-apt-repository --yes ppa:flatpak/stable
+          sudo apt-get update
+          sudo apt-get install --yes flatpak
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - uses: actions/cache@v5
+        with:
+          path: ~/.cache/orbit-flatpak/state
+          key: flatpak-${{ matrix.arch }}-${{ hashFiles('packaging/flatpak/cargo-sources.json', 'packaging/flatpak/go.mod.json') }}-${{ github.sha }}
+          restore-keys: flatpak-${{ matrix.arch }}-
+      - name: Build
+        run: dbus-run-session -- sh scripts/build-flatpak.sh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: orbit-${{ matrix.arch }}.flatpak
+          path: ~/.cache/orbit-flatpak/orbit-${{ matrix.arch }}.flatpak
+          if-no-files-found: error
+          compression-level: 0

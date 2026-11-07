@@ -8,6 +8,10 @@ Arch · Fedora · Ubuntu/Pop!_OS 22.04+ · x64/ARM64
 curl -fsSL https://github.com/motixo/orbit/releases/latest/download/install.sh | sh
 ```
 
+## Flatpak preview
+
+Run `sh scripts/build-flatpak.sh` to build a local bundle in `~/.cache/orbit-flatpak/`. This preview needs host file and session access for shelf files, pinned windows and optional sharing tools. Flatpak 1.18.4 currently strips COSMIC applet metadata during installation.
+
 ## Mouse
 
 Double-click the header to switch between floating and pinned. Drag a pinned header toward a screen corner to move it there.

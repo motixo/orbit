@@ -13,7 +13,13 @@
     files and leaves the originals in place.</p>
   </description>
   <launchable type="desktop-id">io.github.motixo.Orbit.desktop</launchable>
-  <provides><binary>orbit</binary></provides>
+  <provides><binary>orbit</binary><id>com.system76.CosmicApplication</id></provides>
+  <screenshots>
+    <screenshot type="default">
+      <caption>Collect files from different folders on one shelf.</caption>
+      <image type="source" width="960" height="580">https://raw.githubusercontent.com/motixo/orbit/main/.github/showcase/orbit.png</image>
+    </screenshot>
+  </screenshots>
   <categories><category>Utility</category><category>FileTools</category></categories>
   <supports><control>keyboard</control><control>pointing</control></supports>
   <content_rating type="oars-1.1"/>
