@@ -139,6 +139,7 @@ struct Setup {
     report: Option<Report>,
     croc_ready: bool,
     localsend_installed: bool,
+    localsend_error: Option<String>,
     kde_ready: Option<bool>,
     busy: bool,
     step: Option<install::Step>,
@@ -189,6 +190,7 @@ impl cosmic::Application for Setup {
             report: None,
             croc_ready: false,
             localsend_installed: false,
+            localsend_error: None,
             kde_ready: None,
             busy: true,
             step: None,
@@ -278,7 +280,7 @@ impl cosmic::Application for Setup {
                 body = body.push(widget::progress_bar::indeterminate_linear());
             }
         }
-        if let Some(error) = &self.error {
+        for error in self.error.iter().chain(self.localsend_error.iter()) {
             body = body.push(widget::text::body(error));
         }
         let needs_install = self
@@ -338,7 +340,7 @@ impl cosmic::Application for Setup {
             Message::LocalSendChecked(installed) => self.localsend_installed = installed,
             Message::InstallLocalSend if !self.busy && !self.localsend_installed => {
                 self.busy = true;
-                self.error = None;
+                self.localsend_error = None;
                 self.step = Some(install::Step::LocalSendInstalling);
                 return cosmic::task::future(async {
                     let result = tokio::task::spawn_blocking(crate::localsend::install)
@@ -352,8 +354,11 @@ impl cosmic::Application for Setup {
                 self.busy = false;
                 self.step = None;
                 match result {
-                    Ok(()) => self.localsend_installed = true,
-                    Err(error) => self.error = Some(error),
+                    Ok(()) => {
+                        self.localsend_installed = true;
+                        self.localsend_error = None;
+                    }
+                    Err(error) => self.localsend_error = Some(error),
                 }
             }
             Message::Check => {
@@ -494,6 +499,7 @@ mod tests {
             }),
             croc_ready: true,
             localsend_installed: false,
+            localsend_error: None,
             kde_ready: Some(true),
             busy: false,
             step: None,
@@ -511,5 +517,35 @@ mod tests {
         let _ = setup.update(Message::Install);
         assert!(!setup.busy && setup.croc_ready);
         assert!(!setup.report.as_ref().unwrap().supported);
+    }
+
+    #[test]
+    fn localsend_errors_survive_hardware_checks_and_clear_on_retry() {
+        let mut setup = Setup {
+            core: cosmic::Core::default(),
+            _lease: tempfile::tempfile().unwrap(),
+            report: None,
+            croc_ready: true,
+            localsend_installed: false,
+            localsend_error: None,
+            kde_ready: Some(true),
+            busy: true,
+            step: Some(install::Step::LocalSendInstalling),
+            error: None,
+        };
+        let _ = setup.update(Message::LocalSendInstalled(Err("Permission denied".into())));
+        assert!(!setup.localsend_installed && !setup.busy);
+        let _ = setup.update(Message::CheckHardware);
+        assert!(setup.busy);
+        assert_eq!(setup.localsend_error.as_deref(), Some("Permission denied"));
+        let _ = setup.update(Message::Checked(Err("Wi-Fi check failed".into())));
+        assert_eq!(setup.localsend_error.as_deref(), Some("Permission denied"));
+        assert_eq!(setup.error.as_deref(), Some("Wi-Fi check failed"));
+        let _ = setup.update(Message::InstallLocalSend);
+        assert!(setup.busy && setup.localsend_error.is_none());
+        assert_eq!(setup.error.as_deref(), Some("Wi-Fi check failed"));
+        let _ = setup.update(Message::LocalSendInstalled(Ok(())));
+        assert!(setup.localsend_installed && !setup.busy && setup.localsend_error.is_none());
+        assert_eq!(setup.error.as_deref(), Some("Wi-Fi check failed"));
     }
 }
